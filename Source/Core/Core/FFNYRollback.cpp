@@ -108,7 +108,9 @@ u32 s_frames = 0, s_rollbacks = 0, s_resim_frames = 0, s_max_depth = 0, s_waits 
 u64 s_wait_us = 0, s_save_us = 0, s_load_us = 0;
 u32 s_desyncs = 0, s_hash_checked = 0;
 bool s_log = false;
-u32 s_stress = 0;  // lab: force a rollback of up to N frames every frame (inputs unchanged)
+u32 s_stress = 0;
+u32 s_loop = 0;  // lab: pad 1 is played locally but its inputs arrive as "remote" inputs s_loop frames late
+std::vector<std::pair<u32, Record>> s_loop_q;  // lab: force a rollback of up to N frames every frame (inputs unchanged)
 std::unordered_map<u32, u32> s_first_hash;  // lab stress: hash at the first visit of each frame
 u32 s_stress_bad = 0, s_stress_checked = 0;
 
@@ -136,8 +138,9 @@ void BuildRanges(const u8* ram, u32 size, std::vector<std::pair<u32, u32>>& out)
   while (a >= base && a < end && n < 20000)
   {
     const u32 w = rd(a), sz = rd(a + 4), nx = rd(a + 8);
-    // header (heap layout) + the first 8 content bytes, which hold the free-list links of a free block
-    inc.push_back({a & 0x01FFFFFF, (a + 0x18) & 0x01FFFFFF});
+    // header (heap layout); of a free block also the first 8 content bytes (its free-list links). Not of a used
+    // block: a system block's first bytes are system data (e.g. the audio stream list links in the Aems stream buffer)
+    inc.push_back({a & 0x01FFFFFF, (a + ((w >> 16) == 0x4246 ? 0x18 : 0x10)) & 0x01FFFFFF});
     if ((w >> 16) == 0x424D && sz && !(w & 0x80))
     {
       const u32 mg = rd(a + 16);
@@ -156,7 +159,7 @@ void BuildRanges(const u8* ram, u32 size, std::vector<std::pair<u32, u32>>& out)
       ex.push_back({(h + 0x3C) & 0x01FFFFFF, (h + 0x54) & 0x01FFFFFF});
   }
   ex.push_back({0x0049A400, 0x0049A410});  // rbtag: previous hook, SysHeap index
-  ex.push_back({0x0049AE00, 0x0049AF00});  // rbtag: deferred-free queue (system state)
+  ex.push_back({0x0049B400, 0x0049BF00});  // rbtag: deferred-free queue, sound-ref / free logs and flags (system state)
   const u32 pool = rd(0x802E9B00);
   if (pool)
     ex.push_back({(pool + 0x2A4) & 0x01FFFFFF, (pool + 0x2BC) & 0x01FFFFFF});
@@ -597,9 +600,21 @@ void StressCheck(const u8* ram, u32 f, bool first)
     fprintf(stderr, "FFNYRB STRESS MISMATCH at frame %u after re-simulation\n", f);
 }
 
-void StartFight(const u8* ram, u32 tick_obj, u32 f)
+// rbtag v4 words (sound reference bookkeeping; see rbtag.c)
+constexpr u32 W_CONF = 0x8049A40C, W_ACT = 0x8049B500, W_FRAME = 0x8049B504, W_RB = 0x8049B508;
+void Wr32(u8* ram, u32 a, u32 v)
+{
+  u8* p = ram + (a & 0x01FFFFFF);
+  p[0] = u8(v >> 24); p[1] = u8(v >> 16); p[2] = u8(v >> 8); p[3] = u8(v);
+}
+
+void StartFight(u8* ram, u32 tick_obj, u32 f)
 {
   s_active = true;
+  Wr32(ram, W_CONF, f - 1);
+  Wr32(ram, W_RB, 0);
+  Wr32(ram, W_FRAME, f);
+  Wr32(ram, W_ACT, 1);
   s_start_frame = f;
   s_resim_target = 0;
   s_mispredict_from = 0xFFFFFFFF;
@@ -630,13 +645,26 @@ void StartFight(const u8* ram, u32 tick_obj, u32 f)
         fi.have = true;
         fi.rec = s_base[p];
       }
-  fprintf(stderr, "FFNYRB fight start at frame %u (local %x active %x delay %u)\n", f,
-          s_settings.local_ports, s_settings.active_ports, s_settings.input_delay);
+  if (s_loop)
+  {
+    // lab loopback: pad 1 stands for the remote player; its first delay frames come from the fight start
+    s_loop_q.clear();
+    for (u32 k = 0; k < s_settings.input_delay; k++)
+    {
+      FrameInput& fi = s_input[1][(f + k) % RING];
+      fi.frame = f + k;
+      fi.have = true;
+      fi.rec = s_base[1];
+    }
+    s_confirmed[1] = f + s_settings.input_delay - 1;
+  }
   s_rollbacks = s_resim_frames = s_max_depth = s_waits = s_frames = 0;
   s_wait_us = s_save_us = s_load_us = 0;
   OSD::AddMessage("FFNY rollback: fight started (input delay " + std::to_string(s_settings.input_delay) +
                       ")",
                   3000);
+  fprintf(stderr, "FFNYRB fight start at frame %u (local %x active %x delay %u)\n", f,
+          s_settings.local_ports, s_settings.active_ports, s_settings.input_delay);
 }
 
 void PrintStats(u32 f)
@@ -657,6 +685,7 @@ void Configure(const Settings& settings, Transport* transport)
   s_active = false;
   s_log = std::getenv("FFNY_RB_LOG") != nullptr;
   s_stress = std::getenv("FFNY_RB_STRESS") ? std::atoi(std::getenv("FFNY_RB_STRESS")) : 0;
+  s_loop = std::getenv("FFNY_RB_LOOP") ? std::atoi(std::getenv("FFNY_RB_LOOP")) : 0;
 }
 
 void SetFightEndCallback(std::function<void(Core::System&, u32 frame)> callback)
@@ -747,7 +776,7 @@ void OnVIField(Core::System& system)
     s_env_checked = true;
     const char* e = std::getenv("FFNY_RB");
     const char* u = std::getenv("FFNY_RB_UDP");
-    if (e && (u || std::getenv("FFNY_RB_STRESS")))
+    if (e && (u || std::getenv("FFNY_RB_STRESS") || std::getenv("FFNY_RB_LOOP")))
     {
       Settings st;
       unsigned lp = 1, ap = 3;
@@ -778,7 +807,9 @@ void OnVIField(Core::System& system)
     const u32 c = Rd32(r, ADDR_COUNTER);
     same = (c == last_ctr) ? same + 1 : 0;
     last_ctr = c;
-    if (same == 600 && dumped < 2 && Rd32(r, ADDR_FIGHT) == 1)
+    static u32 trashed = 0;
+    const bool bad = Rd32(r, ADDR_FIGHT) > 1 && trashed++ == 0;
+    if (bad || (same == 600 && dumped < 2 && Rd32(r, ADDR_FIGHT) == 1) || (same == 1800 && dumped < 2))
     {
       dumped++;
       auto& ppc = system.GetPPCState();
@@ -804,12 +835,12 @@ void OnVIField(Core::System& system)
   if (Rd32(ram, ADDR_PRE) != INSN_PRE || Rd32(ram, ADDR_TICK) != INSN_TICK)
     return;
   const u32 hook = Rd32(ram, ADDR_HEAP_HOOK);
-  if (hook < 0x8049A410 || hook >= 0x8049AE00 || Rd32(ram, 0x8049A408) != 0x52425432)  // "RBT2"
+  if (hook < 0x8049A410 || hook >= 0x8049B400 || Rd32(ram, 0x8049A408) != 0x52425435)  // "RBT5"
   {
     // the game installs the hook in main() right after the memory init; before that it is 0
     if (hook != 0)
     {
-      fprintf(stderr, "FFNYRB: this start.dol has no rbtag v2 patch (hook %08x) - rollback disabled\n", hook);
+      fprintf(stderr, "FFNYRB: this start.dol has no rbtag v5 patch (hook %08x) - rollback disabled\n", hook);
       s_install_failed = true;
     }
     return;
@@ -864,6 +895,8 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     StressCheck(ram, f, false);
     Inject(ram, tick_obj, f);
     SaveState(system, f);
+    Wr32(ram, W_CONF, std::min(MinConfirmed(), f - 1));
+    Wr32(ram, W_FRAME, f);
     s_resim_frames++;
     if (f > s_hashed_upto && MinConfirmed() >= f)
     {
@@ -895,6 +928,18 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       s_confirmed[p] = tf;
       SendInputs(p, tf);
     }
+    if (s_loop)
+    {
+      // lab loopback: pad 1's real input of this tick is delivered as remote input s_loop frames later
+      Record r;
+      memcpy(r.data(), ram + ((tick_obj + SNAP_OFS + REC_OFS + 1 * REC_SIZE) & 0x01FFFFFF), REC_SIZE);
+      s_loop_q.push_back({f + s_settings.input_delay, r});
+      while (!s_loop_q.empty() && s_loop_q.front().first + s_loop <= f + s_settings.input_delay)
+      {
+        OnRemoteInput(1, s_loop_q.front().first, s_loop_q.front().second.data());
+        s_loop_q.erase(s_loop_q.begin());
+      }
+    }
     if (s_log && s_frames % 600 == 0)
     {
       PrintStats(f);
@@ -924,6 +969,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
                       8000, OSD::Color::RED);
       s_settings.enabled = false;
       s_active = false;
+      Wr32(ram, W_ACT, 0);
       return;
     }
     waited = true;
@@ -956,6 +1002,12 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       ppc.npc = ADDR_PRE + 4;
       Inject(ram, ppc.gpr[28], s);
       SaveState(system, s);
+      {
+        const u32 old = Rd32(ram, W_RB);
+        Wr32(ram, W_RB, old ? std::min(old, s + 1) : s + 1);
+        Wr32(ram, W_CONF, std::min(MinConfirmed(), s - 1));
+        Wr32(ram, W_FRAME, s);
+      }
       s_resim_frames++;
       if (s > s_hashed_upto && MinConfirmed() >= s)
       {
@@ -972,6 +1024,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   {
     // fight over and every input confirmed: back to normal netplay
     s_active = false;
+    Wr32(ram, W_ACT, 0);  // rbtag: do the remaining deferred sound releases
     if (s_log)
       PrintStats(f);
     fprintf(stderr, "FFNYRB fight end at frame %u\n", f);
@@ -986,6 +1039,8 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
 
   Inject(ram, tick_obj, f);
   SaveState(system, f);
+  Wr32(ram, W_CONF, std::min(MinConfirmed(), f - 1));
+  Wr32(ram, W_FRAME, f);
   if (f > s_hashed_upto && MinConfirmed() >= f)
   {
     HashFrame(ram, f);
