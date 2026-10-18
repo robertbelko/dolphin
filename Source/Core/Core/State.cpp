@@ -996,7 +996,8 @@ void UndoSaveState(Core::System& system)
 
 bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& out)
 {
-  Common::UniqueBuffer<u8> buffer(s_last_state_size ? s_last_state_size : 64 * 1024 * 1024);
+  const std::size_t last = static_cast<std::size_t>(s_last_state_size);
+  Common::UniqueBuffer<u8> buffer(last ? last : std::size_t(64) << 20);
   const std::size_t size = SaveToBuffer(system, buffer);
   if (size == 0 || size > static_cast<std::size_t>(LZ4_MAX_INPUT_SIZE))
     return false;

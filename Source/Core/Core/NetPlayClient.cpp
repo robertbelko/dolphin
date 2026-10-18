@@ -65,6 +65,7 @@
 #include "Core/Movie.h"
 #include "Core/NetPlayCommon.h"
 #include "Core/SyncIdentifier.h"
+#include "Core/Core.h"
 #include "Core/State.h"
 #include "Core/HW/CPU.h"
 #include "Core/System.h"
