@@ -849,7 +849,12 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
       auto& system = Core::System::GetInstance();
       std::vector<u8> state;
       bool ok = false;
-      Core::RunOnCPUThread(system, [&] { ok = State::FFNYSaveCompressed(system, state); });
+      Common::Event done;
+      Core::RunOnCPUThread(system, [&] {
+        ok = State::FFNYSaveCompressed(system, state);
+        done.Set();
+      });
+      done.Wait();  // RunOnCPUThread only queues the job
       INFO_LOG_FMT(NETPLAY, "FFNY resync: host state {} bytes (ok {})", state.size(), ok);
       sf::Packet spac;
       spac << MessageID::FFNYState;

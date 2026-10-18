@@ -407,7 +407,12 @@ void NetPlayClient::OnData(sf::Packet& packet)
     {
       auto& system = Core::System::GetInstance();
       bool ok = false;
-      Core::RunOnCPUThread(system, [&] { ok = State::FFNYLoadCompressed(system, data, size); });
+      Common::Event done;
+      Core::RunOnCPUThread(system, [&] {
+        ok = State::FFNYLoadCompressed(system, data, size);
+        done.Set();
+      });
+      done.Wait();  // RunOnCPUThread only queues the job
       INFO_LOG_FMT(NETPLAY, "FFNY resync: host state of frame {} ({} bytes) loaded: {}", frame, size, ok);
       if (!ok)
         m_dialog->AppendChat(Common::GetStringT("FFNY rollback: loading the host's state failed."));
