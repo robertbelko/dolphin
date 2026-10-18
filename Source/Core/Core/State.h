@@ -100,7 +100,7 @@ void SaveAs(Core::System& system, std::string filename);
 
 // FFNY rollback netplay: the whole emulator state, LZ4-compressed, for the resync after a fight.
 // Must run on the CPU thread with the CPU paused (Core::RunOnCPUThread).
-bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& out);
+bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& compressed);
 bool FFNYLoadCompressed(Core::System& system, const u8* data, std::size_t size);
 void LoadAs(Core::System& system, std::string filename);
 

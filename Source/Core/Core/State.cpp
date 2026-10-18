@@ -994,7 +994,7 @@ void UndoSaveState(Core::System& system)
   LoadAs(system, File::GetUserPath(D_STATESAVES_IDX) + "lastState.sav");
 }
 
-bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& out)
+bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& compressed)
 {
   const std::size_t last = static_cast<std::size_t>(s_last_state_size);
   Common::UniqueBuffer<u8> buffer(last ? last : std::size_t(64) << 20);
@@ -1002,17 +1002,17 @@ bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& out)
   if (size == 0 || size > static_cast<std::size_t>(LZ4_MAX_INPUT_SIZE))
     return false;
   const int bound = LZ4_compressBound(static_cast<int>(size));
-  out.resize(4 + static_cast<std::size_t>(bound));
-  out[0] = u8(size >> 24);
-  out[1] = u8(size >> 16);
-  out[2] = u8(size >> 8);
-  out[3] = u8(size);
+  compressed.resize(4 + static_cast<std::size_t>(bound));
+  compressed[0] = u8(size >> 24);
+  compressed[1] = u8(size >> 16);
+  compressed[2] = u8(size >> 8);
+  compressed[3] = u8(size);
   const int c = LZ4_compress_default(reinterpret_cast<const char*>(buffer.data()),
-                                     reinterpret_cast<char*>(out.data() + 4), static_cast<int>(size),
+                                     reinterpret_cast<char*>(compressed.data() + 4), static_cast<int>(size),
                                      bound);
   if (c <= 0)
     return false;
-  out.resize(4 + static_cast<std::size_t>(c));
+  compressed.resize(4 + static_cast<std::size_t>(c));
   return true;
 }
 
