@@ -383,6 +383,18 @@ void NetPlayClient::OnData(sf::Packet& packet)
     OnWiimoteMapping(packet);
     break;
 
+  case MessageID::FFNYRollback:
+  {
+    u32 size = 0;
+    packet >> size;
+    std::vector<u8> msg(size);
+    for (u32 i = 0; i < size && !packet.endOfPacket(); i++)
+      packet >> msg[i];
+    std::lock_guard lk(m_ffny_mutex);
+    m_ffny_in.push_back(std::move(msg));
+  }
+  break;
+
   case MessageID::PadData:
     OnPadData(packet);
     break;
@@ -935,6 +947,8 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
     packet >> m_net_settings.golf_mode;
     packet >> m_net_settings.use_fma;
     packet >> m_net_settings.hide_remote_gbas;
+    packet >> m_net_settings.ffny_rollback;
+    packet >> m_net_settings.ffny_rollback_delay;
 
     for (size_t i = 0; i < sizeof(m_net_settings.sram); ++i)
       packet >> m_net_settings.sram[i];
@@ -1773,6 +1787,25 @@ bool NetPlayClient::StartGame(const std::string& path)
 
   m_first_pad_status_received.fill(false);
 
+  {
+    // FFNY rollback netcode (fights only); everything else stays normal netplay
+    FFNYRollback::Settings rb;
+    rb.enabled = m_net_settings.ffny_rollback;
+    rb.input_delay = std::clamp<u32>(m_net_settings.ffny_rollback_delay, 0, 6);
+    for (int i = 0; i < 4; i++)
+    {
+      if (m_net_settings.pad_map[i] > 0 && !m_net_settings.gba_config[i].enabled)
+        rb.active_ports |= 1u << i;
+      if (m_net_settings.pad_map[i] == m_local_player->pid)
+        rb.local_ports |= 1u << i;
+    }
+    {
+      std::lock_guard lk(m_ffny_mutex);
+      m_ffny_in.clear();
+    }
+    FFNYRollback::Configure(rb, rb.enabled ? &m_ffny_transport : nullptr);
+  }
+
   if (m_dialog->IsRecording())
   {
     auto& movie = Core::System::GetInstance().GetMovie();
@@ -1979,6 +2012,28 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
   // enabled, the poll is probably from MMIO, which can poll any
   // specific pad arbitrarily. In this case, we poll just that pad
   // and send it.
+
+  // FFNY rollback: during a fight the game's inputs come from the rollback layer (it overwrites the
+  // game's per-frame pad snapshot), so the pads are not exchanged and never waited for here.
+  if (m_net_settings.ffny_rollback && FFNYRollback::IsActive())
+  {
+    const int local_pad = InGamePadToLocalPad(pad_nb);
+    if (local_pad < 4)
+    {
+      if (Config::Get(Config::GetInfoForSIDevice(local_pad)) == SerialInterface::SIDEVICE_WIIU_ADAPTER)
+        *pad_status = GCAdapter::Input(local_pad);
+      else
+        *pad_status = Pad::GetStatus(local_pad);
+    }
+    else
+    {
+      *pad_status = GCPadStatus{};
+      pad_status->stickX = pad_status->stickY = GCPadStatus::MAIN_STICK_CENTER_X;
+      pad_status->substickX = pad_status->substickY = GCPadStatus::C_STICK_CENTER_X;
+      pad_status->isConnected = true;
+    }
+    return true;
+  }
 
   // When here when told to so we don't deadlock in certain situations
   while (m_wait_on_input)
@@ -2291,6 +2346,7 @@ void NetPlayClient::InvokeStop()
 bool NetPlayClient::StopGame()
 {
   InvokeStop();
+  FFNYRollback::Shutdown();
 
   NetPlay_Disable();
 
@@ -2809,4 +2865,25 @@ int SerialInterface::CSIDevice_GCController::NetPlay_InGamePadToLocalPad(int pad
     return NetPlay::netplay_client->InGamePadToLocalPad(pad_num);
 
   return pad_num;
+}
+
+// FFNY rollback netcode transport (CPU thread side)
+void NetPlayClient::FFNYTransport::Send(const std::vector<u8>& msg)
+{
+  sf::Packet packet;
+  packet << MessageID::FFNYRollback;
+  packet << static_cast<u32>(msg.size());
+  for (u8 b : msg)
+    packet << b;
+  m_client->SendAsync(std::move(packet));
+}
+
+bool NetPlayClient::FFNYTransport::Receive(std::vector<u8>& msg)
+{
+  std::lock_guard lk(m_client->m_ffny_mutex);
+  if (m_client->m_ffny_in.empty())
+    return false;
+  msg = std::move(m_client->m_ffny_in.front());
+  m_client->m_ffny_in.erase(m_client->m_ffny_in.begin());
+  return true;
 }

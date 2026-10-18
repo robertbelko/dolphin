@@ -134,6 +134,8 @@ add_library(core
   HLE/HLE_OS.h
   HLE/HLE_VarArgs.cpp
   HLE/HLE_VarArgs.h
+  FFNYRollback.cpp
+  FFNYRollback.h
   HLE/HLE.cpp
   HLE/HLE.h
   Host.h

@@ -19,6 +19,7 @@
 #include "Common/Event.h"
 #include "Common/SPSCQueue.h"
 #include "Common/TraversalClient.h"
+#include "Core/FFNYRollback.h"
 #include "Core/NetPlayProto.h"
 #include "Core/SyncIdentifier.h"
 #include "InputCommon/GCPadStatus.h"
@@ -325,6 +326,22 @@ private:
   std::thread m_game_digest_thread;
   bool m_should_compute_game_digest = false;
   Common::Event m_gc_pad_event;
+
+  // FFNY rollback netcode: its messages travel over this connection
+  class FFNYTransport final : public FFNYRollback::Transport
+  {
+  public:
+    explicit FFNYTransport(NetPlayClient* client) : m_client(client) {}
+    void Send(const std::vector<u8>& msg) override;
+    bool Receive(std::vector<u8>& msg) override;
+
+  private:
+    NetPlayClient* m_client;
+  };
+  friend class FFNYTransport;
+  FFNYTransport m_ffny_transport{this};
+  std::mutex m_ffny_mutex;
+  std::vector<std::vector<u8>> m_ffny_in;
   Common::Event m_wii_pad_event;
   Common::Event m_first_pad_status_received_event;
   Common::Event m_wait_on_input_event;

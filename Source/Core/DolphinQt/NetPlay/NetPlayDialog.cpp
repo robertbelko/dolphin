@@ -209,6 +209,14 @@ void NetPlayDialog::CreateMainLayout()
   m_network_mode_group->addAction(m_golf_mode_action);
   m_fixed_delay_action->setChecked(true);
 
+  m_network_menu->addSeparator();
+  m_ffny_rollback_action = m_network_menu->addAction(tr("FFNY Rollback (fights)"));
+  m_ffny_rollback_action->setToolTip(
+      tr("Def Jam: Fight for NY only (start.dol with the rbstate + rbtag patches): fights use rollback "
+         "netcode (no input delay beyond 2 frames; mispredicted frames are replayed), menus stay normal "
+         "netplay.\nEveryone must use this Dolphin build and the same start.dol."));
+  m_ffny_rollback_action->setCheckable(true);
+
   m_game_digest_menu = m_menu_bar->addMenu(tr("Checksum"));
   m_game_digest_menu->addAction(tr("Current game"), this, [this] {
     Settings::Instance().GetNetPlayServer()->ComputeGameDigest(m_current_game_identifier);
@@ -424,6 +432,7 @@ void NetPlayDialog::ConnectWidgets()
   connect(m_golf_mode_overlay_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
   connect(m_fixed_delay_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
   connect(m_hide_remote_gbas_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
+  connect(m_ffny_rollback_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
 }
 
 void NetPlayDialog::SendMessage(const std::string& msg)
@@ -856,6 +865,7 @@ void NetPlayDialog::SetOptionsEnabled(bool enabled)
     m_host_input_authority_action->setEnabled(enabled);
     m_golf_mode_action->setEnabled(enabled);
     m_fixed_delay_action->setEnabled(enabled);
+    m_ffny_rollback_action->setEnabled(enabled);
   }
 
   m_record_input_action->setEnabled(enabled);
@@ -1144,6 +1154,7 @@ void NetPlayDialog::LoadSettings()
   m_strict_settings_sync_action->setChecked(strict_settings_sync);
   m_golf_mode_overlay_action->setChecked(golf_mode_overlay);
   m_hide_remote_gbas_action->setChecked(hide_remote_gbas);
+  m_ffny_rollback_action->setChecked(Config::Get(Config::NETPLAY_FFNY_ROLLBACK));
 
   const std::string network_mode = Config::Get(Config::NETPLAY_NETWORK_MODE);
 
@@ -1187,6 +1198,7 @@ void NetPlayDialog::SaveSettings()
   Config::SetBase(Config::NETPLAY_STRICT_SETTINGS_SYNC, m_strict_settings_sync_action->isChecked());
   Config::SetBase(Config::NETPLAY_GOLF_MODE_OVERLAY, m_golf_mode_overlay_action->isChecked());
   Config::SetBase(Config::NETPLAY_HIDE_REMOTE_GBAS, m_hide_remote_gbas_action->isChecked());
+  Config::SetBase(Config::NETPLAY_FFNY_ROLLBACK, m_ffny_rollback_action->isChecked());
 
   std::string network_mode;
   if (m_fixed_delay_action->isChecked())

@@ -812,6 +812,26 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
   }
   break;
 
+  case MessageID::FFNYRollback:
+  {
+    // relay as is to everyone else
+    if (player.current_game != m_current_game)
+      break;
+    sf::Packet spac;
+    spac << MessageID::FFNYRollback;
+    u32 size = 0;
+    packet >> size;
+    spac << size;
+    for (u32 i = 0; i < size && !packet.endOfPacket(); i++)
+    {
+      u8 b = 0;
+      packet >> b;
+      spac << b;
+    }
+    SendAsyncToClients(std::move(spac), player.pid);
+  }
+  break;
+
   case MessageID::PadData:
   {
     // if this is pad data from the last game still being received, ignore it
@@ -1479,6 +1499,8 @@ bool NetPlayServer::SetupNetSettings()
   settings.golf_mode = Config::Get(Config::NETPLAY_NETWORK_MODE) == "golf";
   settings.use_fma = DoAllPlayersHaveHardwareFMA();
   settings.hide_remote_gbas = Config::Get(Config::NETPLAY_HIDE_REMOTE_GBAS);
+  settings.ffny_rollback = Config::Get(Config::NETPLAY_FFNY_ROLLBACK);
+  settings.ffny_rollback_delay = Config::Get(Config::NETPLAY_FFNY_ROLLBACK_DELAY);
 
   // Unload GameINI to restore things to normal
   Config::RemoveLayer(Config::LayerType::GlobalGame);
@@ -1687,6 +1709,8 @@ bool NetPlayServer::StartGame()
   spac << m_settings.golf_mode;
   spac << m_settings.use_fma;
   spac << m_settings.hide_remote_gbas;
+  spac << m_settings.ffny_rollback;
+  spac << m_settings.ffny_rollback_delay;
 
   for (size_t i = 0; i < sizeof(m_settings.sram); ++i)
     spac << m_settings.sram[i];

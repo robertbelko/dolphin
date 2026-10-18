@@ -122,6 +122,8 @@ struct NetSettings
   bool golf_mode = false;
   bool use_fma = false;
   bool hide_remote_gbas = false;
+  bool ffny_rollback = false;      // Def Jam: Fight for NY rollback netcode in fights
+  u32 ffny_rollback_delay = 2;     // its local input delay (frames)
 
   Sram sram;
 
@@ -173,6 +175,7 @@ enum class MessageID : u8
   PadBuffer = 0x62,
   PadHostData = 0x63,
   GBAConfig = 0x64,
+  FFNYRollback = 0x68,  // FFNY rollback netcode data (opaque, relayed by the host to the other players)
 
   WiimoteData = 0x70,
   WiimoteMapping = 0x71,

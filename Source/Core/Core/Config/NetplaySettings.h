@@ -51,5 +51,7 @@ extern const Info<bool> NETPLAY_STRICT_SETTINGS_SYNC;
 extern const Info<std::string> NETPLAY_NETWORK_MODE;
 extern const Info<bool> NETPLAY_GOLF_MODE_OVERLAY;
 extern const Info<bool> NETPLAY_HIDE_REMOTE_GBAS;
+extern const Info<bool> NETPLAY_FFNY_ROLLBACK;
+extern const Info<u32> NETPLAY_FFNY_ROLLBACK_DELAY;
 
 }  // namespace Config
