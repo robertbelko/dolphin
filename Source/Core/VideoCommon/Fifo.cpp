@@ -268,10 +268,10 @@ u32 FifoManager::FifoBatchBytes(u32 read_ptr) const
 }
 
 // The deterministic_gpu_thread version.
-void FifoManager::ReadDataFromFifoOnCPU(u32 read_ptr)
+void FifoManager::ReadDataFromFifoOnCPU(u32 read_ptr, u32 len)
 {
   u8* write_ptr = m_video_buffer_write_ptr;
-  if (GPFifo::GATHER_PIPE_SIZE > static_cast<size_t>(m_video_buffer + FIFO_SIZE - write_ptr))
+  if (len > static_cast<size_t>(m_video_buffer + FIFO_SIZE - write_ptr))
   {
     // We can't wrap around while the GPU is working on the data.
     // This should be very rare due to the reset in SyncGPU.
@@ -289,19 +289,19 @@ void FifoManager::ReadDataFromFifoOnCPU(u32 read_ptr)
     }
     write_ptr = m_video_buffer_write_ptr;
     const size_t existing_len = write_ptr - m_video_buffer_pp_read_ptr;
-    if (GPFifo::GATHER_PIPE_SIZE > static_cast<size_t>(FIFO_SIZE - existing_len))
+    if (len > static_cast<size_t>(FIFO_SIZE - existing_len))
     {
       PanicAlertFmt("FIFO out of bounds (existing {} + new {} > {})", existing_len,
-                    GPFifo::GATHER_PIPE_SIZE, FIFO_SIZE);
+                    len, FIFO_SIZE);
       return;
     }
   }
   auto& memory = m_system.GetMemory();
-  memory.CopyFromEmu(m_video_buffer_write_ptr, read_ptr, GPFifo::GATHER_PIPE_SIZE);
+  memory.CopyFromEmu(m_video_buffer_write_ptr, read_ptr, len);
   m_video_buffer_pp_read_ptr = OpcodeDecoder::RunFifo<true>(
-      DataReader(m_video_buffer_pp_read_ptr, write_ptr + GPFifo::GATHER_PIPE_SIZE), nullptr);
+      DataReader(m_video_buffer_pp_read_ptr, write_ptr + len), nullptr);
   // This would have to be locked if the GPU thread didn't spin.
-  m_video_buffer_write_ptr = write_ptr + GPFifo::GATHER_PIPE_SIZE;
+  m_video_buffer_write_ptr = write_ptr + len;
 }
 
 void FifoManager::ResetVideoBuffer()
@@ -480,7 +480,9 @@ int FifoManager::RunGpuOnCpu(int ticks)
     u32 batch = GPFifo::GATHER_PIPE_SIZE;
     if (m_use_deterministic_gpu_thread)
     {
-      ReadDataFromFifoOnCPU(fifo.CPReadPointer.load(std::memory_order_relaxed));
+      const u32 read_ptr = fifo.CPReadPointer.load(std::memory_order_relaxed);
+      batch = FifoBatchBytes(read_ptr);
+      ReadDataFromFifoOnCPU(read_ptr, batch);
       m_gpu_mainloop.Wakeup();
     }
     else

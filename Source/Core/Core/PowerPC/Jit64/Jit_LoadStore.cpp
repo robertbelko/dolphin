@@ -581,7 +581,7 @@ void Jit64::stX(UGeckoInstruction inst)
     // directly instead of taking the slow MMIO path.
     constexpr u32 gp_address = GPFifo::GATHER_PIPE_PHYSICAL_ADDRESS | 0xC0000000;
     const bool gp_check = jo.optimizeGatherPipe && !update &&
-                          js.fifoWriteAddresses.contains(js.compilerPC) &&
+                          js.fifoWriteAddresses.TestBit(js.compilerPC / sizeof(UGeckoInstruction)) &&
                           m_mmu.IsOptimizableGatherPipeWrite(gp_address);
     FixupBranch gp_done;
     if (gp_check)

@@ -99,7 +99,7 @@ void Jit64::psq_stXX(UGeckoInstruction inst)
       // path for every 8 bytes.
       FixupBranch gp_done;
       const bool gp_check = jo.optimizeGatherPipe && !update &&
-                            js.fifoWriteAddresses.contains(js.compilerPC) &&
+                            js.fifoWriteAddresses.TestBit(js.compilerPC / sizeof(UGeckoInstruction)) &&
                             m_mmu.IsOptimizableGatherPipeWrite(GPFifo::GATHER_PIPE_PHYSICAL_ADDRESS |
                                                                 0xC0000000);
       if (gp_check)
