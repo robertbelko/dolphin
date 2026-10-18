@@ -78,7 +78,8 @@ public:
 
 private:
   void RefreshConfig();
-  void ReadDataFromFifo(u32 read_ptr);
+  void ReadDataFromFifo(u32 read_ptr, u32 len = 32);
+  u32 FifoBatchBytes(u32 read_ptr) const;
   void ReadDataFromFifoOnCPU(u32 read_ptr);
   int RunGpuOnCpu(int ticks);
   int WaitForGpuThread(int ticks);

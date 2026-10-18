@@ -1,3 +1,4 @@
+#include <algorithm>
 // Copyright 2008 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -219,16 +220,15 @@ void* FifoManager::PopFifoAuxBuffer(size_t size)
 }
 
 // Description: RunGpuLoop() sends data through this function.
-void FifoManager::ReadDataFromFifo(u32 read_ptr)
+void FifoManager::ReadDataFromFifo(u32 read_ptr, u32 len)
 {
-  if (GPFifo::GATHER_PIPE_SIZE >
-      static_cast<size_t>(m_video_buffer + FIFO_SIZE - m_video_buffer_write_ptr))
+  if (len > static_cast<size_t>(m_video_buffer + FIFO_SIZE - m_video_buffer_write_ptr))
   {
     const size_t existing_len = m_video_buffer_write_ptr - m_video_buffer_read_ptr;
-    if (GPFifo::GATHER_PIPE_SIZE > static_cast<size_t>(FIFO_SIZE - existing_len))
+    if (len > static_cast<size_t>(FIFO_SIZE - existing_len))
     {
-      PanicAlertFmt("FIFO out of bounds (existing {} + new {} > {})", existing_len,
-                    GPFifo::GATHER_PIPE_SIZE, FIFO_SIZE);
+      PanicAlertFmt("FIFO out of bounds (existing {} + new {} > {})", existing_len, len,
+                    FIFO_SIZE);
       return;
     }
     memmove(m_video_buffer, m_video_buffer_read_ptr, existing_len);
@@ -237,8 +237,34 @@ void FifoManager::ReadDataFromFifo(u32 read_ptr)
   }
   // Copy new video instructions to m_video_buffer for future use in rendering the new picture
   auto& memory = m_system.GetMemory();
-  memory.CopyFromEmu(m_video_buffer_write_ptr, read_ptr, GPFifo::GATHER_PIPE_SIZE);
-  m_video_buffer_write_ptr += GPFifo::GATHER_PIPE_SIZE;
+  memory.CopyFromEmu(m_video_buffer_write_ptr, read_ptr, len);
+  m_video_buffer_write_ptr += len;
+}
+
+// How many bytes of FIFO data can be read in one go from read_ptr: whole 32-byte blocks, without
+// crossing the end of the FIFO (wrap-around) or the CP breakpoint (games use breakpoints as GPU
+// fences, so the read pointer must stop exactly there), capped to keep the GPU timing granular.
+// Reading and decoding many blocks at once instead of one 32-byte block per loop iteration saves
+// a lot of per-block overhead in games that stream large amounts of data through the FIFO.
+u32 FifoManager::FifoBatchBytes(u32 read_ptr) const
+{
+  constexpr u32 MAX_BATCH = 1024;
+  const auto& fifo = m_system.GetCommandProcessor().GetFifo();
+  const u32 distance = fifo.CPReadWriteDistance.load(std::memory_order_relaxed);
+  const u32 end = fifo.CPEnd.load(std::memory_order_relaxed);
+  u32 n = std::min(distance, MAX_BATCH);
+  if (read_ptr <= end)
+    n = std::min(n, end - read_ptr + GPFifo::GATHER_PIPE_SIZE);
+  else
+    n = GPFifo::GATHER_PIPE_SIZE;
+  if (fifo.bFF_BPEnable.load(std::memory_order_relaxed))
+  {
+    const u32 bp = fifo.CPBreakpoint.load(std::memory_order_relaxed);
+    if (bp > read_ptr && bp - read_ptr < n)
+      n = bp - read_ptr;
+  }
+  n &= ~(GPFifo::GATHER_PIPE_SIZE - 1);
+  return std::max(n, GPFifo::GATHER_PIPE_SIZE);
 }
 
 // The deterministic_gpu_thread version.
@@ -331,16 +357,18 @@ void FifoManager::RunGpuLoop()
 
             u32 cyclesExecuted = 0;
             u32 readPtr = fifo.CPReadPointer.load(std::memory_order_relaxed);
-            ReadDataFromFifo(readPtr);
+            const u32 batch = FifoBatchBytes(readPtr);
+            ReadDataFromFifo(readPtr, batch);
 
-            if (readPtr == fifo.CPEnd.load(std::memory_order_relaxed))
+            if (readPtr + batch - GPFifo::GATHER_PIPE_SIZE ==
+                fifo.CPEnd.load(std::memory_order_relaxed))
               readPtr = fifo.CPBase.load(std::memory_order_relaxed);
             else
-              readPtr += GPFifo::GATHER_PIPE_SIZE;
+              readPtr += batch;
 
             const s32 distance =
                 static_cast<s32>(fifo.CPReadWriteDistance.load(std::memory_order_relaxed)) -
-                GPFifo::GATHER_PIPE_SIZE;
+                static_cast<s32>(batch);
             ASSERT_MSG(COMMANDPROCESSOR, distance >= 0,
                        "Negative fifo.CPReadWriteDistance = {} in FIFO Loop !\nThat can produce "
                        "instability in the game. Please report it.",
@@ -351,7 +379,7 @@ void FifoManager::RunGpuLoop()
                 DataReader(m_video_buffer_read_ptr, write_ptr), &cyclesExecuted);
 
             fifo.CPReadPointer.store(readPtr, std::memory_order_relaxed);
-            fifo.CPReadWriteDistance.fetch_sub(GPFifo::GATHER_PIPE_SIZE, std::memory_order_seq_cst);
+            fifo.CPReadWriteDistance.fetch_sub(batch, std::memory_order_seq_cst);
             if ((write_ptr - m_video_buffer_read_ptr) == 0)
             {
               fifo.SafeCPReadPointer.store(fifo.CPReadPointer.load(std::memory_order_relaxed),
@@ -449,6 +477,7 @@ int FifoManager::RunGpuOnCpu(int ticks)
          fifo.CPReadWriteDistance.load(std::memory_order_relaxed) && !AtBreakpoint(m_system) &&
          available_ticks >= 0)
   {
+    u32 batch = GPFifo::GATHER_PIPE_SIZE;
     if (m_use_deterministic_gpu_thread)
     {
       ReadDataFromFifoOnCPU(fifo.CPReadPointer.load(std::memory_order_relaxed));
@@ -462,25 +491,27 @@ int FifoManager::RunGpuOnCpu(int ticks)
         Common::FPU::LoadDefaultSIMDState();
         reset_simd_state = true;
       }
-      ReadDataFromFifo(fifo.CPReadPointer.load(std::memory_order_relaxed));
+      const u32 read_ptr = fifo.CPReadPointer.load(std::memory_order_relaxed);
+      batch = FifoBatchBytes(read_ptr);
+      ReadDataFromFifo(read_ptr, batch);
       u32 cycles = 0;
       m_video_buffer_read_ptr = OpcodeDecoder::RunFifo(
           DataReader(m_video_buffer_read_ptr, m_video_buffer_write_ptr), &cycles);
       available_ticks -= cycles;
     }
 
-    if (fifo.CPReadPointer.load(std::memory_order_relaxed) ==
-        fifo.CPEnd.load(std::memory_order_relaxed))
+    const u32 cur = fifo.CPReadPointer.load(std::memory_order_relaxed);
+    if (cur + batch - GPFifo::GATHER_PIPE_SIZE == fifo.CPEnd.load(std::memory_order_relaxed))
     {
       fifo.CPReadPointer.store(fifo.CPBase.load(std::memory_order_relaxed),
                                std::memory_order_relaxed);
     }
     else
     {
-      fifo.CPReadPointer.fetch_add(GPFifo::GATHER_PIPE_SIZE, std::memory_order_relaxed);
+      fifo.CPReadPointer.fetch_add(batch, std::memory_order_relaxed);
     }
 
-    fifo.CPReadWriteDistance.fetch_sub(GPFifo::GATHER_PIPE_SIZE, std::memory_order_relaxed);
+    fifo.CPReadWriteDistance.fetch_sub(batch, std::memory_order_relaxed);
   }
 
   command_processor.SetCPStatusFromGPU();

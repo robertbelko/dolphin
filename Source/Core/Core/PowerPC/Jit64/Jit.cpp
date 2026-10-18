@@ -1028,7 +1028,7 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
 
       // Gather pipe writes using an immediate address are explicitly tracked.
       if (jo.optimizeGatherPipe &&
-          (js.fifoBytesSinceCheck >= GPFifo::GATHER_PIPE_SIZE || js.mustCheckFifo))
+          (js.fifoBytesSinceCheck >= GPFifo::GATHER_PIPE_CHECK_BYTES || js.mustCheckFifo))
       {
         js.fifoBytesSinceCheck = 0;
         js.mustCheckFifo = false;

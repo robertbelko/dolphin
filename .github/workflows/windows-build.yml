@@ -25,7 +25,9 @@ jobs:
         run: |
           cmake --version
           ninja --version
-          cl 2>&1 | Select-Object -First 1
+          $v = (cl 2>&1 | Select-Object -First 1)
+          Write-Host $v
+          Write-Host "::notice::MSVC: $v"
 
       - name: Configure
         shell: pwsh
@@ -33,7 +35,22 @@ jobs:
 
       - name: Build
         shell: pwsh
-        run: cmake --build --preset ninja-build-release-x64
+        run: |
+          cmake --build --preset ninja-build-release-x64 -- -k 0 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Report build errors
+        if: failure()
+        shell: pwsh
+        run: |
+          # build logs are not readable from Claude's lab, annotations are
+          if (Test-Path build.log) {
+            $errs = Select-String -Path build.log -Pattern ': (fatal )?error ' | Select-Object -First 9
+            foreach ($e in $errs) { $m = $e.Line; if ($m.Length -gt 900) { $m = $m.Substring(0,900) }; Write-Host "::error::$m" }
+            $tail = (Get-Content build.log -Tail 6) -join ' | '
+            if ($tail.Length -gt 900) { $tail = $tail.Substring($tail.Length-900) }
+            Write-Host "::error::TAIL: $tail"
+          }
 
       - name: Collect binaries
         shell: pwsh

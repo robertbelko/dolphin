@@ -1,3 +1,4 @@
+#include <algorithm>
 // Copyright 2008 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -89,21 +90,30 @@ void GPFifoManager::UpdateGatherPipe()
   auto& processor_interface = system.GetProcessorInterface();
 
   size_t pipe_count = GetGatherPipeCount();
-  size_t processed;
-  for (processed = 0; pipe_count >= GATHER_PIPE_SIZE; processed += GATHER_PIPE_SIZE)
+  size_t processed = 0;
+  while (pipe_count >= GATHER_PIPE_SIZE)
   {
-    // copy the GatherPipe
-    memory.CopyToEmu(processor_interface.m_fifo_cpu_write_pointer, m_gather_pipe + processed,
-                     GATHER_PIPE_SIZE);
-    pipe_count -= GATHER_PIPE_SIZE;
+    // Copy as many whole bursts as fit before the end of the CPU FIFO, then tell the command
+    // processor about all of them at once.
+    u32 bursts = static_cast<u32>(pipe_count / GATHER_PIPE_SIZE);
+    const u32 wp = processor_interface.m_fifo_cpu_write_pointer;
+    const u32 end = processor_interface.m_fifo_cpu_end;
+    if (wp <= end)
+      bursts = std::min<u32>(bursts, (end - wp) / GATHER_PIPE_SIZE + 1);
+    else
+      bursts = 1;
+    const u32 bytes = bursts * GATHER_PIPE_SIZE;
+    memory.CopyToEmu(wp, m_gather_pipe + processed, bytes);
+    processed += bytes;
+    pipe_count -= bytes;
 
     // increase the CPUWritePointer
-    if (processor_interface.m_fifo_cpu_write_pointer == processor_interface.m_fifo_cpu_end)
+    if (wp + bytes - GATHER_PIPE_SIZE == end)
       processor_interface.m_fifo_cpu_write_pointer = processor_interface.m_fifo_cpu_base;
     else
-      processor_interface.m_fifo_cpu_write_pointer += GATHER_PIPE_SIZE;
+      processor_interface.m_fifo_cpu_write_pointer = wp + bytes;
 
-    system.GetCommandProcessor().GatherPipeBursted();
+    system.GetCommandProcessor().GatherPipeBursted(bursts);
   }
 
   // move back the spill bytes

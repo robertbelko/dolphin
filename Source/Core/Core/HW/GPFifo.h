@@ -20,6 +20,9 @@ constexpr u32 GATHER_PIPE_PHYSICAL_ADDRESS = 0x0C008000;
 
 constexpr u32 GATHER_PIPE_SIZE = 32;
 constexpr u32 GATHER_PIPE_EXTRA_SIZE = GATHER_PIPE_SIZE * 16;
+// JIT blocks hand the gather pipe contents to the command processor after this many bytes
+// (several 32-byte bursts at once; must stay well below GATHER_PIPE_EXTRA_SIZE).
+constexpr u32 GATHER_PIPE_CHECK_BYTES = GATHER_PIPE_SIZE * 8;
 
 class GPFifoManager final
 {
