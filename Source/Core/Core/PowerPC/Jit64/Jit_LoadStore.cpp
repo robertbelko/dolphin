@@ -5,6 +5,7 @@
 // Should give a very noticeable speed boost to paired single heavy code.
 
 #include "Core/PowerPC/Jit64/Jit.h"
+#include "Core/HW/GPFifo.h"
 
 #include "Common/Assert.h"
 #include "Common/BitSet.h"
@@ -574,8 +575,37 @@ void Jit64::stX(UGeckoInstruction inst)
       reg_value = gpr.BindOrImm(s, RCMode::Read);
     }
     RegCache::Realize(Ra, reg_value);
+
+    // This store has been seen writing to the gather pipe through a pointer that is not a
+    // compile-time constant: check the address at runtime and write into the gather pipe
+    // directly instead of taking the slow MMIO path.
+    constexpr u32 gp_address = GPFifo::GATHER_PIPE_PHYSICAL_ADDRESS | 0xC0000000;
+    const bool gp_check = jo.optimizeGatherPipe && !update &&
+                          js.fifoWriteAddresses.contains(js.compilerPC) &&
+                          m_mmu.IsOptimizableGatherPipeWrite(gp_address);
+    FixupBranch gp_done;
+    if (gp_check)
+    {
+      CMP(32, Ra, Imm32(gp_address - static_cast<u32>(offset)));
+      FixupBranch not_gp = J_CC(CC_NE, Jump::Near);
+      if (reg_value.IsImm())
+        MOV(32, R(RSCRATCH), Imm32(reg_value.Imm32()));
+      else
+        MOV(32, R(RSCRATCH), reg_value);
+      MOV(64, R(RSCRATCH2), PPCSTATE(gather_pipe_ptr));
+      SwapAndStore(accessSize, MatR(RSCRATCH2), RSCRATCH);
+      ADD(64, R(RSCRATCH2), Imm8(accessSize >> 3));
+      MOV(64, PPCSTATE(gather_pipe_ptr), R(RSCRATCH2));
+      gp_done = J(Jump::Near);
+      SetJumpTarget(not_gp);
+      js.fifoBytesSinceCheck += accessSize >> 3;
+    }
+
     SafeWriteRegToReg(reg_value, Ra, accessSize, offset, CallerSavedRegistersInUse(),
                       SAFE_LOADSTORE_CLOBBER_RSCRATCH_INSTEAD_OF_ADDR);
+
+    if (gp_check)
+      SetJumpTarget(gp_done);
 
     if (update)
       ADD(32, Ra, Imm32((u32)offset));

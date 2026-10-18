@@ -5,6 +5,7 @@
 // Should give a very noticeable speed boost to paired single heavy code.
 
 #include "Core/PowerPC/Jit64/Jit.h"
+#include "Core/HW/GPFifo.h"
 
 #include "Common/CommonTypes.h"
 #include "Common/x64Emitter.h"
@@ -33,6 +34,35 @@ void Jit64::psq_stXX(UGeckoInstruction inst)
   int i = indexed ? inst.Ix : inst.I;
   int w = indexed ? inst.Wx : inst.W;
   FALLBACK_IF(!a);
+
+  // Paired float stores to the gather pipe (e.g. immediate-mode vertex streaming in
+  // Def Jam: Fight for NY). When the address is a (speculative) constant pointing at the
+  // gather pipe and the GQR says plain floats, write straight into the gather pipe instead of
+  // taking the slow MMIO path for every store.
+  if (!update && jo.optimizeGatherPipe && gpr.IsImm(a) && (!indexed || gpr.IsImm(b)) &&
+      js.constantGqrValid[i] && (js.constantGqr[i] & 0xffff) == 0)
+  {
+    const u32 gp_address = gpr.Imm32(a) + (indexed ? gpr.Imm32(b) : static_cast<u32>(offset));
+    if (m_mmu.IsOptimizableGatherPipeWrite(gp_address))
+    {
+      RCOpArg Rs = fpr.Use(s, RCMode::Read);
+      RegCache::Realize(Rs);
+      if (w)
+      {
+        CVTSD2SS(XMM0, Rs);
+        MOVD_xmm(R(RSCRATCH), XMM0);
+        WriteToConstAddress(32, R(RSCRATCH), gp_address, CallerSavedRegistersInUse());
+      }
+      else
+      {
+        CVTPD2PS(XMM0, Rs);
+        MOVQ_xmm(R(RSCRATCH), XMM0);
+        ROL(64, R(RSCRATCH), Imm8(32));
+        WriteToConstAddress(64, R(RSCRATCH), gp_address, CallerSavedRegistersInUse());
+      }
+      return;
+    }
+  }
 
   FlushRegistersBeforeSlowAccess();
 
@@ -63,10 +93,40 @@ void Jit64::psq_stXX(UGeckoInstruction inst)
     // performance right now, but if we can improve fastmem support this might change
     if (gqrValue == 0)
     {
+      // This store has been seen writing to the gather pipe through a pointer that is not a
+      // compile-time constant (e.g. loaded from memory inside the block). Check the address at
+      // runtime and write directly into the gather pipe instead of going through the slow MMIO
+      // path for every 8 bytes.
+      FixupBranch gp_done;
+      const bool gp_check = jo.optimizeGatherPipe && !update &&
+                            js.fifoWriteAddresses.contains(js.compilerPC) &&
+                            m_mmu.IsOptimizableGatherPipeWrite(GPFifo::GATHER_PIPE_PHYSICAL_ADDRESS |
+                                                                0xC0000000);
+      if (gp_check)
+      {
+        CMP(32, R(RSCRATCH_EXTRA), Imm32(GPFifo::GATHER_PIPE_PHYSICAL_ADDRESS | 0xC0000000));
+        FixupBranch not_gp = J_CC(CC_NE, Jump::Near);
+        if (w)
+          MOVD_xmm(R(RSCRATCH), XMM0);
+        else
+        {
+          MOVQ_xmm(R(RSCRATCH), XMM0);
+          ROL(64, R(RSCRATCH), Imm8(32));
+        }
+        MOV(64, R(RSCRATCH2), PPCSTATE(gather_pipe_ptr));
+        SwapAndStore(w ? 32 : 64, MatR(RSCRATCH2), RSCRATCH);
+        ADD(64, R(RSCRATCH2), Imm8(w ? 4 : 8));
+        MOV(64, PPCSTATE(gather_pipe_ptr), R(RSCRATCH2));
+        gp_done = J(Jump::Near);
+        SetJumpTarget(not_gp);
+        js.fifoBytesSinceCheck += w ? 4 : 8;
+      }
       if (w)
         GenQuantizedStore(true, static_cast<EQuantizeType>(type), (gqrValue & 0x3F00) >> 8);
       else
         GenQuantizedStore(false, static_cast<EQuantizeType>(type), (gqrValue & 0x3F00) >> 8);
+      if (gp_check)
+        SetJumpTarget(gp_done);
     }
     else
     {

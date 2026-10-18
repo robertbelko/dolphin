@@ -495,13 +495,21 @@ void CommandProcessorManager::SetCPStatusFromGPU()
   if (interrupt != m_interrupt_set.IsSet() && !m_interrupt_waiting.IsSet())
   {
     const u64 userdata = interrupt ? 1 : 0;
+    // FFNY rollback fix (same behaviour as the one-byte Dolphin.exe patch): with the deterministic
+    // GPU thread ("fake-completion" / netplay) this runs on the CPU thread (Fifo::RunGpuOnCpu) and
+    // UpdateInterruptsFromVideoBackend() does nothing in that mode, so a FIFO breakpoint interrupt
+    // was never delivered and m_interrupt_waiting stayed set (Def Jam: Fight for NY hangs at boot in
+    // GXDrawDone). Deliver it directly instead (UpdateInterrupts clears m_interrupt_waiting).
     if (IsOnThread(m_system))
     {
       if (!interrupt || bpInt || undfInt || ovfInt)
       {
         // Schedule the interrupt asynchronously
         m_interrupt_waiting.Set();
-        UpdateInterruptsFromVideoBackend(userdata);
+        if (!m_system.GetFifo().UseDeterministicGPUThread())
+          UpdateInterruptsFromVideoBackend(userdata);
+        else
+          UpdateInterrupts(userdata);
       }
     }
     else

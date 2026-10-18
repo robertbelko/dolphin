@@ -1,0 +1,52 @@
+name: Windows build (FFNY speed branch)
+
+on:
+  push:
+    branches: [ 'ffny-*' ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Show tool versions
+        shell: pwsh
+        run: |
+          cmake --version
+          ninja --version
+          cl 2>&1 | Select-Object -First 1
+
+      - name: Configure
+        shell: pwsh
+        run: cmake --preset ninja-release-x64 -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build --preset ninja-build-release-x64
+
+      - name: Collect binaries
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse -Filter Dolphin.exe | Where-Object { $_.FullName -notmatch '\\Externals\\' } | Select-Object -First 1
+          if (-not $exe) { Get-ChildItem -Recurse -Filter *.exe | Select-Object -First 50 FullName; throw "Dolphin.exe not found" }
+          Write-Host "Found $($exe.FullName)"
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item -Recurse "$($exe.DirectoryName)\*" out\
+          "Built from $env:GITHUB_SHA on branch $env:GITHUB_REF_NAME" | Out-File out\build_info_ffny.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dolphin-ffny-${{ github.sha }}
+          path: out
+          retention-days: 30
