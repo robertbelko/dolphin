@@ -41,6 +41,7 @@
 #include "Core/Config/SessionSettings.h"
 #include "Core/ConfigLoaders/GameConfigLoader.h"
 #include "Core/ConfigManager.h"
+#include "Core/Core.h"
 #include "Core/GeckoCode.h"
 #include "Core/GeckoCodeConfig.h"
 #include "Core/HW/EXI/EXI.h"
@@ -60,7 +61,9 @@
 #include "Core/IOS/Uids.h"
 #include "Core/NetPlayClient.h"  //for NetPlayUI
 #include "Core/NetPlayCommon.h"
+#include "Core/State.h"
 #include "Core/SyncIdentifier.h"
+#include "Core/System.h"
 
 #include "DiscIO/Enums.h"
 #include "DiscIO/RiivolutionPatcher.h"
@@ -829,6 +832,57 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
       spac << b;
     }
     SendAsyncToClients(std::move(spac), player.pid);
+  }
+  break;
+
+  case MessageID::FFNYFightEnd:
+  {
+    u32 frame = 0;
+    packet >> frame;
+    m_ffny_fight_ended.insert(player.pid);
+    INFO_LOG_FMT(NETPLAY, "FFNY: player {} finished the rollback fight at frame {}", player.pid, frame);
+    if (m_ffny_fight_ended.size() >= m_players.size())
+    {
+      // every machine is paused right after the fight: send the host's emulator state to the others
+      m_ffny_fight_ended.clear();
+      m_ffny_state_loaded.clear();
+      auto& system = Core::System::GetInstance();
+      std::vector<u8> state;
+      bool ok = false;
+      Core::RunOnCPUThread(system, [&] { ok = State::FFNYSaveCompressed(system, state); });
+      INFO_LOG_FMT(NETPLAY, "FFNY resync: host state {} bytes (ok {})", state.size(), ok);
+      sf::Packet spac;
+      spac << MessageID::FFNYState;
+      spac << frame;
+      if (ok)
+        spac.append(state.data(), state.size());
+      if (m_players.size() > 1)
+        SendChunkedToClients(std::move(spac), 1, "FFNY resync");
+      // the host's own client has nothing to load
+      m_ffny_state_loaded.insert(1);
+      if (m_ffny_state_loaded.size() >= m_players.size())
+      {
+        sf::Packet rpac;
+        rpac << MessageID::FFNYResume;
+        SendToClients(rpac);
+        m_timebase_by_frame.clear();
+      }
+    }
+  }
+  break;
+
+  case MessageID::FFNYStateLoaded:
+  {
+    m_ffny_state_loaded.insert(player.pid);
+    if (m_ffny_state_loaded.size() >= m_players.size())
+    {
+      m_ffny_state_loaded.clear();
+      sf::Packet rpac;
+      rpac << MessageID::FFNYResume;
+      SendToClients(rpac);
+      m_timebase_by_frame.clear();
+      INFO_LOG_FMT(NETPLAY, "FFNY resync complete");
+    }
   }
   break;
 

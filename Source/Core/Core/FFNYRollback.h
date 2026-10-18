@@ -39,6 +39,9 @@ struct Settings
 
 // Called by netplay (or the lab environment variables) before / when the game starts.
 void Configure(const Settings& settings, Transport* transport);
+// Called on the CPU thread when a rollback fight is over (all inputs confirmed). Netplay pauses the
+// CPU there and resynchronises the whole emulator state from the host before menus continue.
+void SetFightEndCallback(std::function<void(Core::System&, u32 frame)> callback);
 void Shutdown();
 bool IsActive();  // a fight is currently running in rollback mode
 

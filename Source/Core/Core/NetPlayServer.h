@@ -6,6 +6,7 @@
 #include <SFML/Network/Packet.hpp>
 
 #include <map>
+#include <set>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -183,6 +184,9 @@ private:
 
   std::unordered_map<u32, std::vector<std::pair<PlayerId, u64>>> m_timebase_by_frame;
   bool m_desync_detected = false;
+  // FFNY rollback: resync of the whole emulator state after a fight
+  std::set<PlayerId> m_ffny_fight_ended;
+  std::set<PlayerId> m_ffny_state_loaded;
 
   struct
   {

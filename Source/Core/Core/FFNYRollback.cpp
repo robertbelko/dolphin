@@ -42,6 +42,7 @@
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
+#include "VideoCommon/OnScreenDisplay.h"
 
 namespace FFNYRollback
 {
@@ -86,6 +87,7 @@ struct SavedState
 };
 
 Settings s_settings;
+std::function<void(Core::System&, u32)> s_fight_end_cb;
 Transport* s_transport = nullptr;
 bool s_installed = false;
 bool s_install_failed = false;
@@ -465,6 +467,9 @@ void Pump()
         {
           s_desyncs++;
           fprintf(stderr, "FFNYRB DESYNC at frame %u (local %08x remote %08x)\n", f, it->second, h);
+          if (s_desyncs <= 3)
+            OSD::AddMessage("FFNY rollback: DESYNC detected at frame " + std::to_string(f), 8000,
+                            OSD::Color::RED);
         }
       }
     }
@@ -547,6 +552,9 @@ void HashFrame(const u8* ram, u32 f)
     {
       s_desyncs++;
       fprintf(stderr, "FFNYRB DESYNC at frame %u (local %08x remote %08x)\n", f, h, it->second);
+      if (s_desyncs <= 3)
+        OSD::AddMessage("FFNY rollback: DESYNC detected at frame " + std::to_string(f), 8000,
+                        OSD::Color::RED);
     }
   }
   if (s_transport)
@@ -624,6 +632,11 @@ void StartFight(const u8* ram, u32 tick_obj, u32 f)
       }
   fprintf(stderr, "FFNYRB fight start at frame %u (local %x active %x delay %u)\n", f,
           s_settings.local_ports, s_settings.active_ports, s_settings.input_delay);
+  s_rollbacks = s_resim_frames = s_max_depth = s_waits = s_frames = 0;
+  s_wait_us = s_save_us = s_load_us = 0;
+  OSD::AddMessage("FFNY rollback: fight started (input delay " + std::to_string(s_settings.input_delay) +
+                      ")",
+                  3000);
 }
 
 void PrintStats(u32 f)
@@ -646,8 +659,14 @@ void Configure(const Settings& settings, Transport* transport)
   s_stress = std::getenv("FFNY_RB_STRESS") ? std::atoi(std::getenv("FFNY_RB_STRESS")) : 0;
 }
 
+void SetFightEndCallback(std::function<void(Core::System&, u32 frame)> callback)
+{
+  s_fight_end_cb = std::move(callback);
+}
+
 void Shutdown()
 {
+  s_fight_end_cb = nullptr;
   s_settings.enabled = false;
   s_transport = nullptr;
   s_active = false;
@@ -901,6 +920,8 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     if (std::chrono::steady_clock::now() - wait_start > std::chrono::seconds(10))
     {
       fprintf(stderr, "FFNYRB: no inputs from the other side for 10 s - rollback stopped\n");
+      OSD::AddMessage("FFNY rollback: no inputs from the other player for 10 s - rollback stopped",
+                      8000, OSD::Color::RED);
       s_settings.enabled = false;
       s_active = false;
       return;
@@ -954,6 +975,12 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     if (s_log)
       PrintStats(f);
     fprintf(stderr, "FFNYRB fight end at frame %u\n", f);
+    OSD::AddMessage("FFNY rollback: fight over - " + std::to_string(s_rollbacks) + " rollbacks (max " +
+                        std::to_string(s_max_depth) + " frames), " + std::to_string(s_desyncs) +
+                        " desyncs; synchronising...",
+                    6000);
+    if (s_fight_end_cb)
+      s_fight_end_cb(system, f);
     return;
   }
 

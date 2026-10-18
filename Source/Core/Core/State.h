@@ -9,6 +9,7 @@
 #include <functional>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 #include "Common/CommonTypes.h"
 
@@ -96,6 +97,11 @@ void Save(Core::System& system, u32 slot);
 void Load(Core::System& system, u32 slot);
 
 void SaveAs(Core::System& system, std::string filename);
+
+// FFNY rollback netplay: the whole emulator state, LZ4-compressed, for the resync after a fight.
+// Must run on the CPU thread with the CPU paused (Core::RunOnCPUThread).
+bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& out);
+bool FFNYLoadCompressed(Core::System& system, const u8* data, std::size_t size);
 void LoadAs(Core::System& system, std::string filename);
 
 void LoadLastSaved(Core::System& system, int i = 1);

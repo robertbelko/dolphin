@@ -176,6 +176,10 @@ enum class MessageID : u8
   PadHostData = 0x63,
   GBAConfig = 0x64,
   FFNYRollback = 0x68,  // FFNY rollback netcode data (opaque, relayed by the host to the other players)
+  FFNYFightEnd = 0x69,     // client -> server: my rollback fight ended (CPU paused), u32 frame
+  FFNYState = 0x6A,        // server -> clients (chunked): host's emulator state, LZ4
+  FFNYStateLoaded = 0x6B,  // client -> server
+  FFNYResume = 0x6C,       // server -> clients: clear pad buffers, continue
 
   WiimoteData = 0x70,
   WiimoteMapping = 0x71,

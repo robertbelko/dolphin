@@ -5,6 +5,7 @@
 
 #include <SFML/Network/Packet.hpp>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <map>
 #include <memory>
@@ -342,6 +343,7 @@ private:
   FFNYTransport m_ffny_transport{this};
   std::mutex m_ffny_mutex;
   std::vector<std::vector<u8>> m_ffny_in;
+  std::atomic<bool> m_ffny_resync_pending{false};
   Common::Event m_wii_pad_event;
   Common::Event m_first_pad_status_received_event;
   Common::Event m_wait_on_input_event;

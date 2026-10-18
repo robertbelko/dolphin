@@ -65,6 +65,8 @@
 #include "Core/Movie.h"
 #include "Core/NetPlayCommon.h"
 #include "Core/SyncIdentifier.h"
+#include "Core/State.h"
+#include "Core/HW/CPU.h"
 #include "Core/System.h"
 #include "DiscIO/Blob.h"
 
@@ -392,6 +394,37 @@ void NetPlayClient::OnData(sf::Packet& packet)
       packet >> msg[i];
     std::lock_guard lk(m_ffny_mutex);
     m_ffny_in.push_back(std::move(msg));
+  }
+  break;
+
+  case MessageID::FFNYState:
+  {
+    u32 frame = 0;
+    packet >> frame;
+    const u8* data = static_cast<const u8*>(packet.getData()) + packet.getReadPosition();
+    const std::size_t size = packet.getDataSize() - packet.getReadPosition();
+    if (!m_local_player->IsHost())
+    {
+      auto& system = Core::System::GetInstance();
+      bool ok = false;
+      Core::RunOnCPUThread(system, [&] { ok = State::FFNYLoadCompressed(system, data, size); });
+      INFO_LOG_FMT(NETPLAY, "FFNY resync: host state of frame {} ({} bytes) loaded: {}", frame, size, ok);
+      if (!ok)
+        m_dialog->AppendChat(Common::GetStringT("FFNY rollback: loading the host's state failed."));
+    }
+    sf::Packet spac;
+    spac << MessageID::FFNYStateLoaded;
+    SendAsync(std::move(spac));
+  }
+  break;
+
+  case MessageID::FFNYResume:
+  {
+    ClearBuffers();
+    m_timebase_frame = 0;
+    m_ffny_resync_pending = false;
+    Core::System::GetInstance().GetCPU().Continue();
+    INFO_LOG_FMT(NETPLAY, "FFNY resync done, continuing");
   }
   break;
 
@@ -1804,6 +1837,17 @@ bool NetPlayClient::StartGame(const std::string& path)
       m_ffny_in.clear();
     }
     FFNYRollback::Configure(rb, rb.enabled ? &m_ffny_transport : nullptr);
+    m_ffny_resync_pending = false;
+    FFNYRollback::SetFightEndCallback([this](Core::System& system, u32 frame) {
+      // CPU thread: stop here; the host sends its whole emulator state, then everyone continues
+      m_ffny_resync_pending = true;
+      system.GetCPU().Break();
+      sf::Packet packet;
+      packet << MessageID::FFNYFightEnd;
+      packet << frame;
+      SendAsync(std::move(packet));
+      INFO_LOG_FMT(NETPLAY, "FFNY rollback fight over at frame {}, waiting for the resync", frame);
+    });
   }
 
   if (m_dialog->IsRecording())
@@ -2531,6 +2575,12 @@ void NetPlayClient::SendTimeBase()
 {
   std::lock_guard lk(crit_netplay_client);
 
+  // FFNY rollback: during a fight (and until the resync after it) the machines are only identical
+  // in the game state, not in emulated time; don't report time bases then.
+  if (netplay_client->m_net_settings.ffny_rollback &&
+      (FFNYRollback::IsActive() || netplay_client->m_ffny_resync_pending))
+    return;
+
   if (netplay_client->m_timebase_frame % 60 == 0)
   {
     const u64 timebase = Core::System::GetInstance().GetSystemTimers().GetFakeTimeBase();
@@ -2867,6 +2917,8 @@ int SerialInterface::CSIDevice_GCController::NetPlay_InGamePadToLocalPad(int pad
   return pad_num;
 }
 
+namespace NetPlay
+{
 // FFNY rollback netcode transport (CPU thread side)
 void NetPlayClient::FFNYTransport::Send(const std::vector<u8>& msg)
 {
@@ -2887,3 +2939,4 @@ bool NetPlayClient::FFNYTransport::Receive(std::vector<u8>& msg)
   m_client->m_ffny_in.erase(m_client->m_ffny_in.begin());
   return true;
 }
+}  // namespace NetPlay
