@@ -45,7 +45,7 @@ jobs:
         run: |
           # build logs are not readable from Claude's lab, annotations are
           if (Test-Path build.log) {
-            $errs = Select-String -Path build.log -Pattern ': (fatal )?error |: warning C' | Select-Object -First 12
+            $errs = Select-String -Path build.log -Pattern ': (fatal )?error |warning C\d' | Where-Object { $_.Line -notmatch 'Externals|C4711|C5045' } | Select-Object -First 12
             foreach ($e in $errs) { $m = $e.Line; if ($m.Length -gt 900) { $m = $m.Substring(0,900) }; Write-Host "::error::$m" }
             $tail = (Get-Content build.log -Tail 6) -join ' | '
             if ($tail.Length -gt 900) { $tail = $tail.Substring($tail.Length-900) }
