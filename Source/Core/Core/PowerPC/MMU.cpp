@@ -24,6 +24,7 @@
  */
 
 #include "Core/PowerPC/MMU.h"
+#include "Core/FFNYRollback.h"
 
 #include <algorithm>
 #include <bit>
@@ -1213,6 +1214,7 @@ void MMU::GenerateDSIException(u32 effective_address, bool write)
   // DSI exceptions are only supported in MMU mode.
   if (!m_system.IsMMUMode())
   {
+    FFNYRollback::OnInvalidAccess(m_system, effective_address, m_ppc_state.pc, write);
     if (write)
     {
       PanicAlertFmtT(

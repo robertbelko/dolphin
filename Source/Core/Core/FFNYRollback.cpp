@@ -55,6 +55,7 @@ constexpr u32 ADDR_TICK = 0x80004CFC;  // bl 0x800EC144 (tick)
 constexpr u32 ADDR_TICK_FN = 0x800EC144;
 constexpr u32 INSN_PRE = 0x7F43D378;
 constexpr u32 INSN_TICK = 0x480E7449;
+constexpr u32 ADDR_LOADER = 0x80121B4C;  // EAGL ELF .o loader: converts the file data in place
 constexpr u32 ADDR_COUNTER = 0x80440C24;  // logic update counter (rewound with the state)
 constexpr u32 ADDR_FIGHT = 0x803F1000;    // fight loop state, 1 = fight running
 constexpr u32 ADDR_HEAP_HOOK = 0x8040BD64;  // allocator post-alloc hook word (rbtag installs 0x8049A454)
@@ -87,6 +88,8 @@ struct SavedState
 };
 
 Settings s_settings;
+std::function<void(const std::string&)> s_report_cb;
+u32 s_reports = 0;
 std::function<void(Core::System&, u32)> s_fight_end_cb;
 Transport* s_transport = nullptr;
 bool s_installed = false;
@@ -101,6 +104,7 @@ std::array<u32, 4> s_confirmed{};                     // all inputs <= this fram
 std::array<SavedState, NSLOTS> s_states;
 std::unordered_map<u32, u32> s_local_hash, s_remote_hash;
 u32 s_hashed_upto = 0;
+std::unordered_map<u32, std::array<u32, 8>> s_local_parts, s_remote_parts;
 u32 s_time_base = 0, s_time_dt = 0;  // game timing object 0x8035D618: +8 VI count, +0xC measured dt
 
 // statistics
@@ -112,7 +116,43 @@ u32 s_stress = 0;
 u32 s_loop = 0;  // lab: pad 1 is played locally but its inputs arrive as "remote" inputs s_loop frames late
 std::vector<std::pair<u32, Record>> s_loop_q;  // lab: force a rollback of up to N frames every frame (inputs unchanged)
 std::unordered_map<u32, u32> s_first_hash;  // lab stress: hash at the first visit of each frame
+std::unordered_map<u32, std::vector<u8>> s_first_copy;  // lab stress: the hashed regions at the first visit
+u32 s_stress_from = 0;  // lab: FFNY_RB_STRESS_FROM=frame -> forced rollbacks only from that frame on
 u32 s_stress_bad = 0, s_stress_checked = 0;
+
+// The game's ELF .o resource loader (0x80121B4C) converts a loaded file IN PLACE (byte swap of the
+// header / section table / symbols, relocations) and has no "already converted" check. The file data
+// lives in memory the rollback state does not rewind. Whether a rewind makes the game call the loader
+// again depends on the caller (lab, 22 October: the ~30 files loaded ~50 frames into a fight are NOT
+// converted again after a rewind; Robert's friend's crash shows other callers are). A second
+// conversion swaps the header back -> crash at 0x80121DF0 (read from 0xC). Fix: on every conversion of
+// fresh (little-endian) data keep a copy of the original bytes; when the loader is called on data that
+// is already converted and a copy of the same address and size exists, put the original bytes back
+// first, so the loader converts fresh data again, exactly like the first time. Copies are dropped once
+// their frame is confirmed (no rewind can reach it any more) and at fight end.
+struct LoaderUndo
+{
+  u32 frame;
+  u32 addr;
+  std::vector<u8> orig;
+};
+std::vector<LoaderUndo> s_loader_undo;
+bool s_loader_fix = true;
+u32 s_loader_calls = 0, s_loader_restores = 0;
+u32 s_lab_mom_every = 0;
+u32 s_rng_from = 0, s_rng_to = 0;  // lab: FFNY_RB_RNGLOG=from:to -> log draws from generator 2 (0x803BE03C)
+char s_phase = '-';  // 'U' = inside a logic update (after PRE), 'T' = after the TICK hook, 'R' = render part of the loop
+// Render-side code also draws from the two shared random generators (lab 22 October: 0x800EDA24, called from the
+// mode's render method 0x800838F4 via 0x80086690, draws randint(gen2, 255) every rendered frame while its effect is
+// on, e.g. in Blazin' mode). Rendering happens once per DISPLAYED frame, never for re-simulated frames, so the number
+// of draws per logic frame differs between the two machines -> the fight's random numbers diverge -> desync (the
+// "Blazin' desync"). Fix: while a rollback fight runs, draws made in the render part of the main loop use the
+// private generator states the rbaudrng part of the DOL already has for the audio module.
+constexpr u32 ADDR_RENDER = 0x80004D88;  // bl 0x8001ED94: start of the render part (tick() returned 0)
+constexpr u32 GEN1_FN = 0x8001FC88, GEN1_SHARED = 0x8035D588, GEN1_PRIVATE = 0x8049A210;
+constexpr u32 GEN2_FN = 0x800B7DAC, GEN2_SHARED = 0x803BE03C, GEN2_PRIVATE = 0x8049A228;
+bool s_rng_redirect = false;  // the DOL has the private states (rbaudrng stub at 0x8049A200)
+u32 s_rng_redirected = 0;  // lab: FFNY_RB_MOM=N -> every N frames of the fight both momentum bars = 98.5 (deterministic)
 
 u32 Rd32(const u8* ram, u32 a)
 {
@@ -441,6 +481,10 @@ void OnRemoteInput(int port, u32 f, const u8* rec)
     s_mispredict_from = std::min(s_mispredict_from, f);
 }
 
+const u8* s_ram = nullptr;  // emulated RAM (set by the hooks; for reports from Pump)
+constexpr int NPARTS_FWD = 8;
+void CompareParts(u32 f, const std::array<u32, NPARTS_FWD>& local, const std::array<u32, NPARTS_FWD>& remote,
+                  const u8* ram);
 void Pump()
 {
   if (!s_transport)
@@ -462,6 +506,15 @@ void Pump()
     {
       const u32 f = Get32(&m[1]), h = Get32(&m[5]);
       s_remote_hash[f] = h;
+      if (m.size() >= 9 + 4 * NPARTS_FWD)
+      {
+        std::array<u32, NPARTS_FWD> parts;
+        for (int i = 0; i < NPARTS_FWD; i++)
+          parts[i] = Get32(&m[9 + 4 * i]);
+        s_remote_parts[f] = parts;
+        if (f >= 4096)
+          s_remote_parts.erase(f - 4096);
+      }
       auto it = s_local_hash.find(f);
       if (it != s_local_hash.end())
       {
@@ -473,6 +526,10 @@ void Pump()
           if (s_desyncs <= 3)
             OSD::AddMessage("FFNY rollback: DESYNC detected at frame " + std::to_string(f), 8000,
                             OSD::Color::RED);
+          auto lp = s_local_parts.find(f);
+          auto rp = s_remote_parts.find(f);
+          if (s_desyncs <= 3 && lp != s_local_parts.end() && rp != s_remote_parts.end() && s_ram)
+            CompareParts(f, lp->second, rp->second, s_ram);
         }
       }
     }
@@ -503,8 +560,12 @@ const Record& InputFor(int port, u32 f)
   return s_base[port];
 }
 
+void Wr32(u8* ram, u32 a, u32 v);
 void Inject(u8* ram, u32 tick_obj, u32 f)
 {
+  if (s_lab_mom_every && f > s_start_frame && (f - s_start_frame) % s_lab_mom_every == 0)
+    for (u32 i = 0; i < 2; i++)
+      Wr32(ram, 0x803F1144 + i * 0x12F8 + 0x364, 0x42C50000);  // 98.5
   // The game's per-update timing object (written by 0x80021D80 right before each update) holds the VI
   // retrace count of the update (+8) and the measured time step (+0xC). Both come from real time, so a
   // re-simulated or remote frame would see other values: make them a function of the frame number.
@@ -535,6 +596,49 @@ u32 Fnv(const u8* p, size_t n, u32 h)
   return h;
 }
 
+// parts of the checked state, hashed separately so that a desync report can name what differs
+constexpr int NPARTS = 8;
+const char* const PART_NAMES[NPARTS] = {"fighter 1", "fighter 2", "fighter 3", "fighter 4",
+                                        "fight RNG (0x803F6AC8)", "random generator 1 (0x8035D588)",
+                                        "random generator 2 (0x803BE03C)", "frame counter"};
+constexpr u32 PART_RANGE[NPARTS][2] = {{0x3F1144, 0x12F8}, {0x3F1144 + 0x12F8, 0x12F8},
+                                       {0x3F1144 + 2 * 0x12F8, 0x12F8}, {0x3F1144 + 3 * 0x12F8, 0x12F8},
+                                       {0x3F6AC8, 0x88}, {0x35D588, 0x18}, {0x3BE03C, 0x88}, {0x440C24, 4}};
+static_assert(NPARTS == NPARTS_FWD);
+
+void Report(const std::string& text)
+{
+  fprintf(stderr, "FFNYRB REPORT: %s\n", text.c_str());
+  if (s_reports++ < 12 && s_report_cb)
+    s_report_cb(text);
+}
+
+std::string FightSummary(const u8* ram)
+{
+  // Blazin' byte +0x93E, momentum +0x364, health +0x... not decoded here: state word +0x30
+  char b[400];
+  auto fl = [&](u32 a) { const u32 w = Rd32(ram, a); float v; memcpy(&v, &w, 4); return v; };
+  const u32 F0 = 0x803F1144, F1 = F0 + 0x12F8;
+  snprintf(b, sizeof b,
+           "P1 state %u blazin %02x momentum %.1f | P2 state %u blazin %02x momentum %.1f | rollbacks %u (max %u, "
+           "last %u->%u) | loads %u fixed %u | render draws %u",
+           Rd32(ram, F0 + 0x30), ram[(F0 + 0x93E) & 0x01FFFFFF], fl(F0 + 0x364), Rd32(ram, F1 + 0x30),
+           ram[(F1 + 0x93E) & 0x01FFFFFF], fl(F1 + 0x364), s_rollbacks, s_max_depth, s_last_rb_from, s_last_rb_to,
+           s_loader_calls, s_loader_restores, s_rng_redirected);
+  return b;
+}
+
+void CompareParts(u32 f, const std::array<u32, NPARTS>& local, const std::array<u32, NPARTS>& remote, const u8* ram)
+{
+  std::string which;
+  for (int i = 0; i < NPARTS; i++)
+    if (local[i] != remote[i])
+      which += (which.empty() ? "" : ", ") + std::string(PART_NAMES[i]);
+  if (which.empty())
+    which = "(no single part - hash method mismatch: are both players on the same build?)";
+  Report("FFNY DESYNC at frame " + std::to_string(f) + ": " + which + " differ. Mine now: " + FightSummary(ram));
+}
+
 void HashFrame(const u8* ram, u32 f)
 {
   // fighters, fight RNG, both shared random generators, logic counter
@@ -544,6 +648,12 @@ void HashFrame(const u8* ram, u32 f)
   h = Fnv(ram + 0x35D588, 0x18, h);
   h = Fnv(ram + 0x3BE03C, 0x88, h);
   h = Fnv(ram + 0x440C24, 4, h);
+  std::array<u32, NPARTS> parts;
+  for (int i = 0; i < NPARTS; i++)
+    parts[i] = Fnv(ram + PART_RANGE[i][0], PART_RANGE[i][1], 2166136261u);
+  s_local_parts[f] = parts;
+  if (f >= 4096)
+    s_local_parts.erase(f - 4096);
   s_local_hash[f] = h;
   if (s_local_hash.size() > 4096)
     s_local_hash.erase(s_local_hash.begin());
@@ -558,6 +668,9 @@ void HashFrame(const u8* ram, u32 f)
       if (s_desyncs <= 3)
         OSD::AddMessage("FFNY rollback: DESYNC detected at frame " + std::to_string(f), 8000,
                         OSD::Color::RED);
+      if (s_desyncs <= 3)
+        if (auto rp = s_remote_parts.find(f); rp != s_remote_parts.end())
+          CompareParts(f, parts, rp->second, ram);
     }
   }
   if (s_transport)
@@ -566,10 +679,16 @@ void HashFrame(const u8* ram, u32 f)
     m.push_back('H');
     Put32(m, f);
     Put32(m, h);
+    for (u32 v : parts)
+      Put32(m, v);
     s_transport->Send(m);
   }
 }
 
+u32 Get32Fwd(const u8* p)
+{
+  return (u32(p[0]) << 24) | (u32(p[1]) << 16) | (u32(p[2]) << 8) | p[3];
+}
 u32 StressHash(const u8* ram)
 {
   u32 h = 2166136261u;
@@ -580,6 +699,13 @@ u32 StressHash(const u8* ram)
   return h;
 }
 
+constexpr u32 SC_REG[4][2] = {{0x3F1144, 4 * 0x12F8}, {0x3F6AC8, 0x88}, {0x35D588, 0x18}, {0x3BE03C, 0x88}};
+void StressCopy(const u8* ram, std::vector<u8>& out)
+{
+  out.clear();
+  for (auto& r : SC_REG)
+    out.insert(out.end(), ram + r[0], ram + r[0] + r[1]);
+}
 void StressCheck(const u8* ram, u32 f, bool first)
 {
   if (!s_stress)
@@ -588,9 +714,38 @@ void StressCheck(const u8* ram, u32 f, bool first)
   if (first)
   {
     s_first_hash[f] = h;
-    if (s_first_hash.size() > 600)
-      s_first_hash.erase(s_first_hash.begin());
+    StressCopy(ram, s_first_copy[f]);
+    // drop old frames (unordered maps: erase by key, not begin())
+    if (f >= 600)
+      s_first_hash.erase(f - 600);
+    if (f >= 64)
+      s_first_copy.erase(f - 64);
     return;
+  }
+  if (auto c = s_first_copy.find(f); c != s_first_copy.end() && s_first_hash.count(f) && s_first_hash[f] != h &&
+                                      s_stress_bad < 20)
+  {
+    std::vector<u8> now;
+    StressCopy(ram, now);
+    size_t o = 0;
+    int shown = 0;
+    for (auto& r : SC_REG)
+    {
+      for (u32 k = 0; k + 4 <= r[1]; k += 4)
+      {
+        if (memcmp(&now[o + k], &c->second[o + k], 4) && shown++ < 24)
+        {
+          const u32 a = 0x80000000u | (r[0] + k);
+          const u32 was = Get32Fwd(&c->second[o + k]), is = Get32Fwd(&now[o + k]);
+          if (r[0] == 0x3F1144)
+            fprintf(stderr, "FFNYRB STRESS DIFF frame %u: fighter %u +0x%03X (%08x) first %08x now %08x\n", f,
+                    k / 0x12F8, k % 0x12F8, a, was, is);
+          else
+            fprintf(stderr, "FFNYRB STRESS DIFF frame %u: %08x first %08x now %08x\n", f, a, was, is);
+        }
+      }
+      o += r[1];
+    }
   }
   auto it = s_first_hash.find(f);
   if (it == s_first_hash.end())
@@ -606,6 +761,40 @@ void Wr32(u8* ram, u32 a, u32 v)
 {
   u8* p = ram + (a & 0x01FFFFFF);
   p[0] = u8(v >> 24); p[1] = u8(v >> 16); p[2] = u8(v >> 8); p[3] = u8(v);
+}
+
+bool ElfConverted(const u8* h)
+{
+  // e_ehsize (0x28) is 52: little-endian 34 00 in a fresh file, 00 34 after the loader's byte swap
+  return h[0] == 0x7F && h[1] == 'E' && h[2] == 'L' && h[3] == 'F' && h[0x28] == 0 && h[0x29] == 0x34;
+}
+bool ElfFresh(const u8* h)
+{
+  return h[0] == 0x7F && h[1] == 'E' && h[2] == 'L' && h[3] == 'F' && h[0x28] == 0x34 && h[0x29] == 0;
+}
+
+// heap-0 block that holds address a: header address and first header word (0 = not in heap 0)
+std::pair<u32, u32> HeapBlockOf(const u8* ram, u32 a)
+{
+  const u32 H0 = 0x8060C050, base = Rd32(ram, H0 + 8), end = Rd32(ram, H0 + 0xC);
+  u32 b = base + 0x90, n = 0;
+  while (b >= base && b < end && n++ < 20000)
+  {
+    const u32 nx = Rd32(ram, b + 8);
+    if (a >= b && (nx <= b || a < nx))
+      return {b, Rd32(ram, b)};
+    if (nx <= b)
+      break;
+    b = nx;
+  }
+  return {0, 0};
+}
+
+void LoaderDropConfirmed(u32 conf)
+{
+  s_loader_undo.erase(std::remove_if(s_loader_undo.begin(), s_loader_undo.end(),
+                                     [conf](const LoaderUndo& u) { return u.frame <= conf; }),
+                      s_loader_undo.end());
 }
 
 void StartFight(u8* ram, u32 tick_obj, u32 f)
@@ -635,6 +824,9 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
     s.frame = 0xFFFFFFFF;
   s_local_hash.clear();
   s_remote_hash.clear();
+  s_local_parts.clear();
+  s_remote_parts.clear();
+  s_reports = 0;
   // frames f .. f+delay-1: every machine uses its own fight-start records for its local pads
   for (int p = 0; p < 4; p++)
     if (s_settings.local_ports >> p & 1)
@@ -658,6 +850,7 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
     }
     s_confirmed[1] = f + s_settings.input_delay - 1;
   }
+  s_loader_undo.clear();
   s_rollbacks = s_resim_frames = s_max_depth = s_waits = s_frames = 0;
   s_wait_us = s_save_us = s_load_us = 0;
   OSD::AddMessage("FFNY rollback: fight started (input delay " + std::to_string(s_settings.input_delay) +
@@ -671,10 +864,11 @@ void PrintStats(u32 f)
 {
   fprintf(stderr,
           "FFNYRB frame %u: %u frames, %u rollbacks, %u re-simulated (max depth %u), %u waits "
-          "(%.1f ms), save %.2f ms/frame, load %.2f ms/rollback, hashes checked %u, desyncs %u\n",
+          "(%.1f ms), save %.2f ms/frame, load %.2f ms/rollback, hashes checked %u, desyncs %u, "
+          "loader calls %u second conversions fixed %u, render random draws redirected %u\n",
           f, s_frames, s_rollbacks, s_resim_frames, s_max_depth, s_waits, s_wait_us / 1000.0,
           s_frames ? s_save_us / 1000.0 / s_frames : 0.0,
-          s_rollbacks ? s_load_us / 1000.0 / s_rollbacks : 0.0, s_hash_checked, s_desyncs);
+          s_rollbacks ? s_load_us / 1000.0 / s_rollbacks : 0.0, s_hash_checked, s_desyncs, s_loader_calls, s_loader_restores, s_rng_redirected);
 }
 }  // namespace
 
@@ -686,6 +880,11 @@ void Configure(const Settings& settings, Transport* transport)
   s_log = std::getenv("FFNY_RB_LOG") != nullptr;
   s_stress = std::getenv("FFNY_RB_STRESS") ? std::atoi(std::getenv("FFNY_RB_STRESS")) : 0;
   s_loop = std::getenv("FFNY_RB_LOOP") ? std::atoi(std::getenv("FFNY_RB_LOOP")) : 0;
+  s_loader_fix = std::getenv("FFNY_RB_NOLOADFIX") == nullptr;
+  s_stress_from = std::getenv("FFNY_RB_STRESS_FROM") ? std::atoi(std::getenv("FFNY_RB_STRESS_FROM")) : 0;
+  if (const char* r = std::getenv("FFNY_RB_RNGLOG"))
+    sscanf(r, "%u:%u", &s_rng_from, &s_rng_to);
+  s_lab_mom_every = std::getenv("FFNY_RB_MOM") ? std::atoi(std::getenv("FFNY_RB_MOM")) : 0;  // lab: reproduce the double conversion
 }
 
 void SetFightEndCallback(std::function<void(Core::System&, u32 frame)> callback)
@@ -696,6 +895,7 @@ void SetFightEndCallback(std::function<void(Core::System&, u32 frame)> callback)
 void Shutdown()
 {
   s_fight_end_cb = nullptr;
+  s_report_cb = nullptr;
   s_settings.enabled = false;
   s_transport = nullptr;
   s_active = false;
@@ -847,13 +1047,119 @@ void OnVIField(Core::System& system)
   }
   HLE::Patch(system, ADDR_PRE, "FFNYRollbackPre");
   HLE::Patch(system, ADDR_TICK, "FFNYRollbackTick");
+  HLE::Patch(system, ADDR_LOADER, "FFNYRollbackLoader");
+  if (Rd32(ram, 0x80274180) == 0x9421FFC0)  // stwu sp,-0x40(sp): the SDK's unhandled-exception handler
+    HLE::Patch(system, 0x80274180, "FFNYRollbackCrash");
+  s_rng_redirect = Rd32(ram, 0x8049A200) == 0x3C60804A && Rd32(ram, 0x8049A204) == 0x3863A210 &&
+                   std::getenv("FFNY_RB_NORNGFIX") == nullptr;
+  if (s_rng_redirect || s_rng_to)
+  {
+    HLE::Patch(system, ADDR_RENDER, "FFNYRollbackRender");
+    HLE::Patch(system, GEN1_FN, "FFNYRollbackRng1");
+    HLE::Patch(system, GEN2_FN, "FFNYRollbackRng");
+  }
+  fprintf(stderr, "FFNYRB: render-side random draws %s\n", s_rng_redirect ? "use private generators" : "NOT redirected");
   system.GetJitInterface().ClearSafe();
   s_installed = true;
   fprintf(stderr, "FFNYRB: hooks installed\n");
 }
 
+void HookLoader(const Core::CPUThreadGuard& guard)
+{
+  // HookType::Start: runs before the loader's first instruction, then the loader runs normally
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  const u32 desc = ppc.gpr[3];
+  if ((desc & 0xFE000000) != 0x80000000)
+    return;
+  const u32 data = Rd32(ram, desc + 0x10), size = Rd32(ram, desc + 0x14), sht = Rd32(ram, desc + 0x18);
+  const u32 thread = Rd32(ram, 0x800000E4);
+  const u32 frame = Rd32(ram, W_FRAME);
+  const u8* h = ram + (data & 0x01FFFFFF);
+  const bool le = (data & 0xFE000000) == 0x80000000 && h[5] == 1;
+  const u32 shoff = le ? (h[0x20] | h[0x21] << 8 | h[0x22] << 16 | u32(h[0x23]) << 24) : 0;
+  const u32 shnum = le ? (h[0x30] | h[0x31] << 8) : 0;
+  s_loader_calls++;
+  if (s_log)
+  {
+    const auto blk = HeapBlockOf(ram, data);
+    fprintf(stderr,
+            "FFNYRB LOADER call: frame %u active %d resim %d thread %08x lr %08x desc %08x data %08x size %08x "
+            "shtab %08x ident %02x%02x%02x%02x ei_data %u shoff %x shnum %u block %08x tag %08x\n",
+            Rd32(ram, ADDR_COUNTER), s_active, s_resim_target != 0, thread, ppc.spr[SPR_LR], desc, data, size, sht,
+            h[0], h[1], h[2], h[3], h[5], shoff, shnum, blk.first, blk.second);
+  }
+  if (!s_active || !s_loader_fix || (data & 0xFE000000) != 0x80000000 || size < 0x34 || size > 0x01000000 ||
+      sht != 0)
+    return;
+  u8* d = ram + (data & 0x01FFFFFF);
+  auto it = std::find_if(s_loader_undo.begin(), s_loader_undo.end(),
+                         [&](const LoaderUndo& u) { return u.addr == data && u.orig.size() == size; });
+  if (ElfFresh(d))
+  {
+    if (it != s_loader_undo.end())
+      s_loader_undo.erase(it);
+    s_loader_undo.push_back(LoaderUndo{frame, data, std::vector<u8>(d, d + size)});
+  }
+  else if (ElfConverted(d) && it != s_loader_undo.end())
+  {
+    memcpy(d, it->orig.data(), size);
+    s_loader_restores++;
+    fprintf(stderr, "FFNYRB LOADER second conversion of %08x (%u bytes, first in frame %u) at frame %u: original bytes restored\n",
+            data, size, it->frame, Rd32(ram, ADDR_COUNTER));
+  }
+}
+
+void HookRender(const Core::CPUThreadGuard& guard)
+{
+  s_phase = 'R';
+}
+
+void HookRng1(const Core::CPUThreadGuard& guard)
+{
+  auto& ppc = guard.GetSystem().GetPPCState();
+  if (s_active && s_rng_redirect && s_phase == 'R' && ppc.gpr[3] == GEN1_SHARED)
+  {
+    ppc.gpr[3] = GEN1_PRIVATE;
+    s_rng_redirected++;
+  }
+}
+
+void HookRng(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  if (s_active && s_rng_redirect && s_phase == 'R' && ppc.gpr[3] == GEN2_SHARED)
+  {
+    ppc.gpr[3] = GEN2_PRIVATE;
+    s_rng_redirected++;
+    if (!s_rng_to)
+      return;
+  }
+  if (ppc.gpr[3] != 0x803BE03C && !(s_phase == 'R' && ppc.gpr[3] == GEN2_PRIVATE))
+    return;
+  if (!s_rng_to)
+    return;
+  const u32 f = Rd32(ram, ADDR_COUNTER);
+  if (f < s_rng_from || f > s_rng_to)
+    return;
+  auto ok = [](u32 a) { return (a & 0xFE000000) == 0x80000000; };
+  const u32 sp = ppc.gpr[1];
+  const u32 c1 = ok(sp) ? Rd32(ram, sp) : 0;
+  const u32 b1 = ok(c1) ? Rd32(ram, c1 + 4) : 0;
+  const u32 c2 = ok(c1) ? Rd32(ram, c1) : 0;
+  const u32 b2 = ok(c2) ? Rd32(ram, c2 + 4) : 0;
+  const u32 c3 = ok(c2) ? Rd32(ram, c2) : 0;
+  const u32 b3 = ok(c3) ? Rd32(ram, c3 + 4) : 0;
+  fprintf(stderr, "RNG2 f %u %c%s thread %08x lr %08x bt %08x %08x %08x state %08x\n", f, s_phase,
+          s_resim_target ? " resim" : "", Rd32(ram, 0x800000E4), ppc.spr[SPR_LR], b1, b2, b3, Rd32(ram, 0x803BE0BC));
+}
+
 void HookTick(const Core::CPUThreadGuard& guard)
 {
+  s_phase = 'T';
   auto& ppc = guard.GetSystem().GetPPCState();
   ppc.spr[SPR_LR] = ADDR_TICK + 4;
   if (s_active && s_resim_target)
@@ -879,6 +1185,8 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     return;
 
   const u32 tick_obj = ppc.gpr[28];
+  s_phase = 'U';
+  s_ram = ram;
   u32 f = Rd32(ram, ADDR_COUNTER);
   const bool fight = Rd32(ram, ADDR_FIGHT) == 1;
 
@@ -947,7 +1255,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
         fprintf(stderr, "FFNYRB stress: %u re-simulated frames compared, %u mismatches\n", s_stress_checked, s_stress_bad);
     }
     StressCheck(ram, f, true);
-    if (s_stress && f > s_start_frame + s_stress && fight)
+    if (s_stress && f > s_start_frame + s_stress && f >= s_stress_from && fight)
       s_mispredict_from = f - 1 - (std::rand() % s_stress);
   }
 
@@ -1024,6 +1332,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   {
     // fight over and every input confirmed: back to normal netplay
     s_active = false;
+    s_loader_undo.clear();
     Wr32(ram, W_ACT, 0);  // rbtag: do the remaining deferred sound releases
     if (s_log)
       PrintStats(f);
@@ -1039,6 +1348,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
 
   Inject(ram, tick_obj, f);
   SaveState(system, f);
+  LoaderDropConfirmed(std::min(MinConfirmed(), f - 1));
   Wr32(ram, W_CONF, std::min(MinConfirmed(), f - 1));
   Wr32(ram, W_FRAME, f);
   if (f > s_hashed_upto && MinConfirmed() >= f)
@@ -1046,5 +1356,41 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     HashFrame(ram, f);
     s_hashed_upto = f;
   }
+}
+
+void SetReportCallback(std::function<void(const std::string&)> callback)
+{
+  s_report_cb = std::move(callback);
+}
+
+void OnInvalidAccess(Core::System& system, u32 address, u32 pc, bool write)
+{
+  if (!s_settings.enabled)
+    return;
+  const u8* ram = system.GetMemory().GetRAM();
+  auto& ppc = system.GetPPCState();
+  char b[300];
+  snprintf(b, sizeof b, "FFNY CRASH (Dolphin): invalid %s %08x at PC %08x LR %08x, frame %u, fight %s%s. ",
+           write ? "write to" : "read from", address, pc, ppc.spr[SPR_LR], ram ? Rd32(ram, ADDR_COUNTER) : 0,
+           s_active ? "running" : "not running", s_resim_target ? ", during a re-simulation" : "");
+  Report(std::string(b) + (ram ? FightSummary(ram) : std::string()));
+}
+
+void HookUnhandledException(const Core::CPUThreadGuard& guard)
+{
+  // the GameCube SDK's crash handler (prints the context, then halts): r3 = exception number, r4 = OSContext,
+  // r5 = DSISR, r6 = DAR
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  const u32 ctx = ppc.gpr[4];
+  const bool ok = (ctx & 0xFE000000) == 0x80000000;
+  char b[300];
+  snprintf(b, sizeof b,
+           "FFNY CRASH (game exception %u): PC %08x LR %08x DSISR %08x DAR %08x, frame %u, fight %s%s. ",
+           ppc.gpr[3] & 0xFF, ok ? Rd32(ram, ctx + 0x198) : 0, ok ? Rd32(ram, ctx + 0x84) : 0, ppc.gpr[5],
+           ppc.gpr[6], Rd32(ram, ADDR_COUNTER), s_active ? "running" : "not running",
+           s_resim_target ? ", during a re-simulation" : "");
+  Report(std::string(b) + FightSummary(ram));
 }
 }  // namespace FFNYRollback
