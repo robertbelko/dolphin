@@ -47,6 +47,7 @@
 namespace FFNYRollback
 {
 void DumpDraws(u32 from, u32 to);
+u32 s_probe_addr = 0;  // lab: FFNY_RB_PROBE=hexaddr -> log r3 and its heap block at that function (once per r3)
 #include "Core/FFNYRollbackRanges.inc"
 
 namespace
@@ -1084,6 +1085,11 @@ void OnVIField(Core::System& system)
     HLE::Patch(system, 0x80274180, "FFNYRollbackCrash");
   s_rng_redirect = Rd32(ram, 0x8049A200) == 0x3C60804A && Rd32(ram, 0x8049A204) == 0x3863A210 &&
                    std::getenv("FFNY_RB_NORNGFIX") == nullptr;
+  if (const char* pa = std::getenv("FFNY_RB_PROBE"))
+  {
+    s_probe_addr = std::strtoul(pa, nullptr, 16);
+    HLE::Patch(system, s_probe_addr, "FFNYRollbackProbe");
+  }
   if (s_rng_redirect || s_rng_to)
   {
     HLE::Patch(system, ADDR_RENDER, "FFNYRollbackRender");
@@ -1152,7 +1158,7 @@ void HookLoader(const Core::CPUThreadGuard& guard)
   }
 }
 
-void RecordDraw(Core::System& system, char gen)
+static void RecordDraw(Core::System& system, char gen)
 {
   if (!s_stress || !s_active)
     return;
@@ -1192,6 +1198,21 @@ void DumpDraws(u32 from, u32 to)
         pr("resim", b[i]);
     }
   }
+}
+
+void HookProbe(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  static std::vector<u32> seen;
+  if (std::find(seen.begin(), seen.end(), ppc.gpr[3]) != seen.end() || seen.size() > 40)
+    return;
+  seen.push_back(ppc.gpr[3]);
+  const auto blk = HeapBlockOf(ram, ppc.gpr[3]);
+  fprintf(stderr, "PROBE %08x r3 %08x lr %08x block %08x tag %08x size %08x magic %08x frame %u\n", ppc.pc,
+          ppc.gpr[3], ppc.spr[SPR_LR], blk.first, blk.second, blk.first ? Rd32(ram, blk.first + 4) : 0,
+          blk.first ? Rd32(ram, blk.first + 16) : 0, Rd32(ram, ADDR_COUNTER));
 }
 
 void HookRender(const Core::CPUThreadGuard& guard)

@@ -60,6 +60,7 @@ void HookLoader(const Core::CPUThreadGuard& guard);  // 0x80121B4C (EAGL ELF .o 
 void HookRng(const Core::CPUThreadGuard& guard);     // generator 2 entry 0x800B7DAC
 void HookRng1(const Core::CPUThreadGuard& guard);    // generator 1 entry 0x8001FC88
 void HookRender(const Core::CPUThreadGuard& guard);
+void HookProbe(const Core::CPUThreadGuard& guard);  // lab
 void HookUnhandledException(const Core::CPUThreadGuard& guard);  // 0x80274180, the SDK's crash screen  // 0x80004D88, render part of the main loop
 
 // Status line for the OSD / logs.
