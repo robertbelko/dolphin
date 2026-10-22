@@ -24,6 +24,8 @@
  */
 
 #include "Core/PowerPC/MMU.h"
+#include "Core/FFNYLab.h"
+#include "Core/FFNYRollback.h"
 
 #include <algorithm>
 #include <bit>
@@ -695,6 +697,8 @@ template std::optional<ReadResult<u64>> MMU::HostTryRead<u64>(const Core::CPUThr
 template <std::unsigned_integral T>
 void MMU::Write(const Common::MakeAtLeastU32<T> var, const u32 address)
 {
+  if (FFNYLab::g_store_trace)
+    FFNYLab::StoreTrace(m_system, address, sizeof(T));
   Memcheck(address, var, true, sizeof(T));
   WriteToHardware<XCheckTLBFlag::Write>(address, var, sizeof(T));
 }
@@ -704,6 +708,8 @@ template void MMU::Write<u32>(const u32 var, const u32 address);
 template <>
 void MMU::Write<u64>(const u64 var, const u32 address)
 {
+  if (FFNYLab::g_store_trace)
+    FFNYLab::StoreTrace(m_system, address, 8);
   Memcheck(address, var, true, 8);
   WriteToHardware<XCheckTLBFlag::Write>(address, static_cast<u32>(var >> 32), 4);
   WriteToHardware<XCheckTLBFlag::Write>(address + sizeof(u32), static_cast<u32>(var), 4);
@@ -1029,6 +1035,8 @@ static bool TranslateBatAddress(const BatTable& bat_table, u32* address, bool* w
 
 void MMU::ClearDCacheLine(u32 address)
 {
+  if (FFNYLab::g_store_trace)
+    FFNYLab::StoreTrace(m_system, address & ~31u, 32);
   DEBUG_ASSERT((address & 0x1F) == 0);
   if (m_ppc_state.msr.DR)
   {
@@ -1213,6 +1221,7 @@ void MMU::GenerateDSIException(u32 effective_address, bool write)
   // DSI exceptions are only supported in MMU mode.
   if (!m_system.IsMMUMode())
   {
+    FFNYRollback::OnInvalidAccess(m_system, effective_address, m_ppc_state.pc, write);
     if (write)
     {
       PanicAlertFmtT(

@@ -1843,6 +1843,11 @@ bool NetPlayClient::StartGame(const std::string& path)
       m_ffny_in.clear();
     }
     FFNYRollback::Configure(rb, rb.enabled ? &m_ffny_transport : nullptr);
+    // debug reports (desync details, crashes): shown in this chat window and sent to the other players
+    FFNYRollback::SetReportCallback([this](const std::string& text) {
+      m_dialog->AppendChat(text);
+      SendChatMessage(text);
+    });
     m_ffny_resync_pending = false;
     FFNYRollback::SetFightEndCallback([this](Core::System& system, u32 frame) {
       // CPU thread: stop here; the host sends its whole emulator state, then everyone continues

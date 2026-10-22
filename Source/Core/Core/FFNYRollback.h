@@ -43,6 +43,11 @@ void Configure(const Settings& settings, Transport* transport);
 // CPU there and resynchronises the whole emulator state from the host before menus continue.
 void SetFightEndCallback(std::function<void(Core::System&, u32 frame)> callback);
 void Shutdown();
+// Debug reports (desync details, crashes) for the players: netplay shows them in the chat window and sends
+// them to the other players. Also printed to stderr.
+void SetReportCallback(std::function<void(const std::string&)> callback);
+// Called by the MMU right before Dolphin's "Invalid read / write" alert (non-MMU mode).
+void OnInvalidAccess(Core::System& system, u32 address, u32 pc, bool write);
 bool IsActive();  // a fight is currently running in rollback mode
 
 // Called once per VI field on the CPU thread: installs the hooks once the game code is in memory.
@@ -51,6 +56,11 @@ void OnVIField(Core::System& system);
 // HLE hooks (registered in HLE.cpp as fixed Replace hooks).
 void HookPreUpdate(const Core::CPUThreadGuard& guard);  // 0x80004D14 (mr r3,r26)
 void HookTick(const Core::CPUThreadGuard& guard);       // 0x80004CFC (bl 0x800EC144)
+void HookLoader(const Core::CPUThreadGuard& guard);  // 0x80121B4C (EAGL ELF .o loader entry)
+void HookRng(const Core::CPUThreadGuard& guard);     // generator 2 entry 0x800B7DAC
+void HookRng1(const Core::CPUThreadGuard& guard);    // generator 1 entry 0x8001FC88
+void HookRender(const Core::CPUThreadGuard& guard);
+void HookUnhandledException(const Core::CPUThreadGuard& guard);  // 0x80274180, the SDK's crash screen  // 0x80004D88, render part of the main loop
 
 // Status line for the OSD / logs.
 std::string GetStatus();

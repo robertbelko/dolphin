@@ -12,6 +12,7 @@
 
 #include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
+#include "Core/FFNYLab.h"
 #include "Core/GeckoCode.h"
 #include "Core/HLE/HLE_Misc.h"
 #include "Core/HLE/HLE_OS.h"
@@ -27,7 +28,7 @@ namespace HLE
 static std::map<u32, u32> s_hooked_addresses;
 
 // clang-format off
-constexpr std::array<Hook, 25> os_patches{{
+constexpr std::array<Hook, 34> os_patches{{
     // Placeholder, os_patches[0] is the "non-existent function" index
     {"FAKE_TO_SKIP_0",               HLE_Misc::UnimplementedFunction,       HookType::Replace, HookFlag::Generic},
 
@@ -61,7 +62,16 @@ constexpr std::array<Hook, 25> os_patches{{
     {"GeckoHandlerReturnTrampoline", HLE_Misc::GeckoReturnTrampoline,       HookType::Replace, HookFlag::Fixed},
     {"AppLoaderReport",              HLE_OS::HLE_GeneralDebugPrint,         HookType::Start,   HookFlag::Fixed}, // apploader needs OSReport-like function
     {"FFNYRollbackPre",              FFNYRollback::HookPreUpdate,           HookType::Replace, HookFlag::Fixed},
-    {"FFNYRollbackTick",             FFNYRollback::HookTick,                HookType::Replace, HookFlag::Fixed}
+    {"FFNYRollbackTick",             FFNYRollback::HookTick,                HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackLoader",           FFNYRollback::HookLoader,              HookType::Start,   HookFlag::Fixed},
+    {"FFNYRollbackRng",              FFNYRollback::HookRng,                 HookType::Start,   HookFlag::Fixed},
+    {"FFNYRollbackRng1",             FFNYRollback::HookRng1,                HookType::Start,   HookFlag::Fixed},
+    {"FFNYRollbackRender",           FFNYRollback::HookRender,              HookType::Start,   HookFlag::Fixed},
+    {"FFNYRollbackCrash",            FFNYRollback::HookUnhandledException,  HookType::Start,   HookFlag::Fixed},
+    {"FFNYLabLoop",                  FFNYLab::OnLoopTop,                    HookType::Start,   HookFlag::Fixed},
+    {"FFNYLabPre",                   FFNYLab::OnPreUpdate,                  HookType::Start,   HookFlag::Fixed},
+    {"FFNYLabPost",                  FFNYLab::OnPostUpdate,                 HookType::Start,   HookFlag::Fixed},
+    {"FFNYLabTrace",                 FFNYLab::OnTrace,                      HookType::Start,   HookFlag::Fixed}
 }};
 // clang-format on
 

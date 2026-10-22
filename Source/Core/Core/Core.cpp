@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/Core.h"
+#include "Core/FFNYLab.h"
 
 #include <algorithm>
 #include <atomic>
@@ -890,6 +891,7 @@ void Callback_NewField(Core::System& system)
   }
 
   AchievementManager::GetInstance().DoFrame();
+  FFNYLab::OnNewField(system);
 }
 
 void UpdateTitle(Core::System& system)
