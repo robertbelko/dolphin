@@ -67,7 +67,9 @@ constexpr u32 REC_OFS = 0x10;
 constexpr u32 REC_SIZE = 0x94;
 constexpr u32 RING = 128;  // frames of input history kept
 constexpr u32 NSLOTS = 12;  // saved states
-constexpr u32 SEND_WINDOW = 8;  // redundant frames per input message
+constexpr u32 SEND_WINDOW = 8;  // redundant frames per input message (old 'I' format)
+// unreliable input messages stay below one ENet packet (MTU 1400 minus headers), so they are never fragmented
+constexpr size_t MAX_UNRELIABLE_BYTES = 1100;
 
 using Record = std::array<u8, REC_SIZE>;
 
@@ -95,6 +97,10 @@ std::function<void(const std::string&)> s_report_cb;
 u32 s_reports = 0;
 std::function<void(Core::System&, u32)> s_fight_end_cb;
 Transport* s_transport = nullptr;
+// s_ack[r][p]: newest frame of our port p's inputs that the player on remote port r has confirmed (it holds every
+// frame up to it); input messages always restart there, so any number of lost packets is repaired by one
+u32 s_ack[4][4] = {};
+u32 s_input_msgs_in = 0, s_input_msgs_stale = 0;  // stats
 bool s_installed = false;
 bool s_install_failed = false;
 bool s_active = false;
@@ -464,23 +470,61 @@ u32 Get32(const u8* p)
   return (u32(p[0]) << 24) | (u32(p[1]) << 16) | (u32(p[2]) << 8) | p[3];
 }
 
-// message 'I': port, first frame, count, count records
-void SendInputs(int port, u32 last)
+// message 'J': port, first frame, count, 4 acks (newest confirmed frame we hold of each port, 0xFFFFFFFF for
+// ports that are not remote here), then count records, each a flag byte (0: same as the previous record in this
+// message, 1: 148 record bytes follow). Starts at the oldest frame a remote player still lacks.
+void SendInputs(int port, u32 last, bool reliable = false)
 {
   if (!s_transport)
     return;
-  const u32 first = std::max(s_start_frame, last >= SEND_WINDOW - 1 ? last - (SEND_WINDOW - 1) : 0);
+  u32 first = last;
+  for (int r = 0; r < 4; r++)
+    if (IsRemote(r))
+      first = std::min(first, s_ack[r][port] + 1);
+  first = std::max({first, s_start_frame, last >= RING - 1 ? last - (RING - 2) : 0u});
   std::vector<u8> m;
-  m.push_back('I');
+  m.reserve(MAX_UNRELIABLE_BYTES);
+  m.push_back('J');
   m.push_back(u8(port));
   Put32(m, first);
-  m.push_back(u8(last - first + 1));
-  for (u32 f = first; f <= last; f++)
+  const size_t count_pos = m.size();
+  m.push_back(0);
+  for (int r = 0; r < 4; r++)
+    Put32(m, IsRemote(r) ? s_confirmed[r] : 0xFFFFFFFF);
+  const Record* prev = nullptr;
+  u32 n = 0;
+  for (u32 f = first; f <= last && n < 255; f++)
   {
     const FrameInput& fi = s_input[port][f % RING];
-    m.insert(m.end(), fi.rec.begin(), fi.rec.end());
+    if (!fi.have || fi.frame != f)
+      break;
+    if (prev && *prev == fi.rec)
+    {
+      m.push_back(0);
+    }
+    else
+    {
+      if (!reliable && m.size() + 1 + REC_SIZE > MAX_UNRELIABLE_BYTES)
+        break;  // the rest goes in the next message (the oldest frames first: they unblock the other side)
+      m.push_back(1);
+      m.insert(m.end(), fi.rec.begin(), fi.rec.end());
+    }
+    prev = &fi.rec;
+    n++;
   }
-  s_transport->Send(m);
+  m[count_pos] = u8(n);
+  if (reliable)
+    s_transport->Send(m);
+  else
+    s_transport->SendUnreliable(m);
+}
+
+// all local pads: resend what the other side lacks (while waiting for it, and reliably at fight end)
+void ResendInputs(bool reliable)
+{
+  for (int p = 0; p < 4; p++)
+    if (s_settings.local_ports >> p & 1)
+      SendInputs(p, s_confirmed[p], reliable);
 }
 
 u32 s_mispredict_from = 0xFFFFFFFF;
@@ -488,7 +532,8 @@ u32 s_last_rb_from = 0, s_last_rb_to = 0;  // earliest frame whose used input tu
 
 void OnRemoteInput(int port, u32 f, const u8* rec)
 {
-  if (!IsRemote(port) || f < s_start_frame)
+  // unreliable delivery: late, duplicated and reordered frames arrive; keep only frames we lack that fit the ring
+  if (!IsRemote(port) || f < s_start_frame || f <= s_confirmed[port] || f >= s_confirmed[port] + RING)
     return;
   FrameInput& fi = s_input[port][f % RING];
   if (fi.have && fi.frame == f)
@@ -521,7 +566,43 @@ void Pump()
   std::vector<u8> m;
   while (s_transport->Receive(m))
   {
-    if (m.size() >= 7 && m[0] == 'I')
+    if (m.size() >= 23 && m[0] == 'J')
+    {
+      const int port = m[1] & 3;
+      const u32 first = Get32(&m[2]);
+      const u32 count = m[6];
+      s_input_msgs_in++;
+      if (s_active && first + count <= s_confirmed[port] + 1)
+        s_input_msgs_stale++;  // nothing new in it (duplicate or late)
+      for (int lp = 0; lp < 4; lp++)
+      {
+        const u32 a = Get32(&m[7 + 4 * lp]);
+        if (a != 0xFFFFFFFF && (s_settings.local_ports >> lp & 1) && a > s_ack[port][lp] && a <= s_confirmed[lp])
+          s_ack[port][lp] = a;
+      }
+      size_t pos = 23;
+      const u8* prev = nullptr;
+      for (u32 i = 0; i < count && pos < m.size(); i++)
+      {
+        const u8* rec;
+        if (m[pos++] == 0)
+        {
+          if (!prev)
+            break;
+          rec = prev;
+        }
+        else
+        {
+          if (pos + REC_SIZE > m.size())
+            break;
+          rec = &m[pos];
+          pos += REC_SIZE;
+        }
+        OnRemoteInput(port, first + i, rec);
+        prev = rec;
+      }
+    }
+    else if (m.size() >= 7 && m[0] == 'I')
     {
       const int port = m[1] & 3;
       const u32 first = Get32(&m[2]);
@@ -873,6 +954,10 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
            REC_SIZE);
     s_confirmed[p] = f - 1;
   }
+  for (auto& row : s_ack)
+    for (u32& a : row)
+      a = f - 1;
+  s_input_msgs_in = s_input_msgs_stale = 0;
   for (auto& s : s_states)
     s.frame = 0xFFFFFFFF;
   s_local_hash.clear();
@@ -916,6 +1001,8 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
 u32 s_max_acq = 0, s_max_rel = 0, s_max_frl = 0;  // lab: highest fill of the rbtag logs (96 entries each)
 void PrintStats(u32 f)
 {
+  fprintf(stderr, "FFNYRB input messages received %u, without anything new %u\n", s_input_msgs_in,
+          s_input_msgs_stale);
   fprintf(stderr, "FFNYRB rbtag logs max: acquires %u releases %u frees %u (of 96)\n", s_max_acq, s_max_rel,
           s_max_frl);
   if (s_ram)
@@ -998,6 +1085,25 @@ public:
     m_out.push_back({now + std::chrono::milliseconds(d), msg});
     Flush();
   }
+  // lab: FFNY_RB_LOSS=percent drops unreliable messages, FFNY_RB_BURST=n makes every drop a run of n
+  void SendUnreliable(const std::vector<u8>& msg) override
+  {
+    if (m_burst_left > 0)
+    {
+      m_burst_left--;
+      m_dropped++;
+      return;
+    }
+    if (m_loss && std::rand() % 100 < m_loss)
+    {
+      m_burst_left = m_burst - 1;
+      m_dropped++;
+      return;
+    }
+    Send(msg);
+  }
+  int m_loss = 0, m_burst = 1, m_burst_left = 0;
+  u32 m_dropped = 0;
   bool Receive(std::vector<u8>& msg) override
   {
     Flush();
@@ -1055,7 +1161,13 @@ void OnVIField(Core::System& system)
       const int lag = std::getenv("FFNY_RB_LAG") ? std::atoi(std::getenv("FFNY_RB_LAG")) : 0;
       const int jit = std::getenv("FFNY_RB_JITTER") ? std::atoi(std::getenv("FFNY_RB_JITTER")) : 0;
       if (u)
+      {
         s_udp = std::make_unique<UdpTransport>((unsigned short)listen, host, (unsigned short)pport, lag, jit);
+        if (const char* l = std::getenv("FFNY_RB_LOSS"))
+          s_udp->m_loss = std::atoi(l);
+        if (const char* b = std::getenv("FFNY_RB_BURST"))
+          s_udp->m_burst = std::max(1, std::atoi(b));
+      }
       Configure(st, s_udp.get());
       fprintf(stderr, "FFNYRB: lab mode local %x active %x delay %u udp %s lag %d jitter %d stress %u\n", lp, ap,
               st.input_delay, u ? u : "-", lag, jit, s_stress);
@@ -1595,6 +1707,13 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     waited = true;
     std::this_thread::sleep_for(std::chrono::microseconds(250));
     Pump();
+    // a lost message must not stall us: resend what the other side lacks every 8 ms while waiting
+    static auto last_resend = std::chrono::steady_clock::now();
+    if (std::chrono::steady_clock::now() - last_resend > std::chrono::milliseconds(8))
+    {
+      last_resend = std::chrono::steady_clock::now();
+      ResendInputs(false);
+    }
   }
   if (waited)
   {
@@ -1643,7 +1762,9 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
 
   if (!fight)
   {
-    // fight over and every input confirmed: back to normal netplay
+    // fight over and every input confirmed: back to normal netplay. The other side may still lack our last
+    // frames (lost packets) and waits for them: send them once more, reliably.
+    ResendInputs(true);
     s_active = false;
     s_loader_undo.clear();
     Wr32(ram, W_ACT, 0);  // rbtag: do the remaining deferred sound releases

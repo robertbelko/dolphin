@@ -334,6 +334,7 @@ private:
   public:
     explicit FFNYTransport(NetPlayClient* client) : m_client(client) {}
     void Send(const std::vector<u8>& msg) override;
+    void SendUnreliable(const std::vector<u8>& msg) override;
     bool Receive(std::vector<u8>& msg) override;
 
   private:

@@ -24,6 +24,8 @@ class Transport
 public:
   virtual ~Transport() = default;
   virtual void Send(const std::vector<u8>& msg) = 0;
+  // may be lost, duplicated or reordered (inputs: every message repeats what the other side lacks)
+  virtual void SendUnreliable(const std::vector<u8>& msg) { Send(msg); }
   // Returns false when no message is waiting.
   virtual bool Receive(std::vector<u8>& msg) = 0;
 };
