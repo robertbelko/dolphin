@@ -1002,6 +1002,21 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_sync_next = f + 60;
   s_sync_delays = 0;
   s_input_msgs_in = s_input_msgs_stale = 0;
+  if (s_log)
+  {
+    // lab: the heaps at fight start (index, descriptor, range, base block tagged = not rewound)
+    for (u32 i = 0; i < 16; i++)
+    {
+      const u32 h = Rd32(ram, 0x8040BD70 + 4 * i);
+      if ((h & 0xFE000000) != 0x80000000)
+        continue;
+      const u32 base = Rd32(ram, h + 8), end = Rd32(ram, h + 0xC);
+      const bool okb = (base & 0xFE000000) == 0x80000000;
+      const u32 hdr = okb ? Rd32(ram, base - 16) : 0;
+      fprintf(stderr, "FFNYRB heap %u: desc %08x range %08x-%08x base block header %08x%s\n", i, h, base, end, hdr,
+              (hdr >> 16) == 0x424D && (hdr & 0x80) ? " (tagged: NOT rewound)" : "");
+    }
+  }
   for (auto& s : s_states)
     s.frame = 0xFFFFFFFF;
   s_local_hash.clear();
@@ -1048,6 +1063,26 @@ void PrintStats(u32 f)
   fprintf(stderr, "FFNYRB input messages received %u, without anything new %u; time sync: %u one-frame delays, "
           "lead now %d (2x frames)\n", s_input_msgs_in, s_input_msgs_stale, s_sync_delays,
           s_adv_n ? s_adv_hist[(s_adv_n - 1) % s_adv_hist.size()] : 0);
+  if (s_ram)
+  {
+    // lab: free space of the excluded heaps (2 = SndHeap, 3 = SysHeap); a full SysHeap makes rbtag fall back to
+    // the rewound main heap
+    for (u32 i = 2; i <= 3; i++)
+    {
+      const u32 h = Rd32(s_ram, 0x8040BD70 + 4 * i);
+      if ((h & 0xFE000000) != 0x80000000)
+        continue;
+      u32 n = Rd32(s_ram, h + 0x20), k = 0, total = 0, largest = 0;
+      while (n && n != h + 0x10 && (n & 0xFE000000) == 0x80000000 && k++ < 5000)
+      {
+        const u32 sz = Rd32(s_ram, n + 4);
+        total += sz;
+        largest = std::max(largest, sz);
+        n = Rd32(s_ram, n + 0x10);
+      }
+      fprintf(stderr, "FFNYRB heap %u free %u bytes in %u blocks (largest %u)\n", i, total, k, largest);
+    }
+  }
   fprintf(stderr, "FFNYRB rbtag logs max: acquires %u releases %u frees %u (of 96)\n", s_max_acq, s_max_rel,
           s_max_frl);
   if (s_ram)
