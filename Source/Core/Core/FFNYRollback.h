@@ -61,6 +61,7 @@ void HookRng(const Core::CPUThreadGuard& guard);     // generator 2 entry 0x800B
 void HookRng1(const Core::CPUThreadGuard& guard);    // generator 1 entry 0x8001FC88
 void HookRender(const Core::CPUThreadGuard& guard);
 void HookProbe(const Core::CPUThreadGuard& guard);  // lab
+void HookSndRelease(const Core::CPUThreadGuard& guard);  // lab, 0x801F33E4
 void HookViCount(const Core::CPUThreadGuard& guard);  // 0x8024E22C, VI retrace count getter
 void HookUnhandledException(const Core::CPUThreadGuard& guard);  // 0x80274180, the SDK's crash screen  // 0x80004D88, render part of the main loop
 

@@ -910,8 +910,11 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
           s_settings.local_ports, s_settings.active_ports, s_settings.input_delay);
 }
 
+u32 s_max_acq = 0, s_max_rel = 0, s_max_frl = 0;  // lab: highest fill of the rbtag logs (96 entries each)
 void PrintStats(u32 f)
 {
+  fprintf(stderr, "FFNYRB rbtag logs max: acquires %u releases %u frees %u (of 96)\n", s_max_acq, s_max_rel,
+          s_max_frl);
   if (s_ram)
     fprintf(stderr, "FFNYRB VI real %u at frame %u (fight start: VI %u frame %u)\n", Rd32(s_ram, ADDR_VICOUNT), f,
             s_vi_base, s_start_frame);
@@ -1107,6 +1110,8 @@ void OnVIField(Core::System& system)
     HLE::Patch(system, 0x80274180, "FFNYRollbackCrash");
   s_rng_redirect = Rd32(ram, 0x8049A200) == 0x3C60804A && Rd32(ram, 0x8049A204) == 0x3863A210 &&
                    std::getenv("FFNY_RB_NORNGFIX") == nullptr;
+  if (std::getenv("FFNY_RB_SNDCHECK"))
+    HLE::Patch(system, 0x801F33E4, "FFNYRollbackSndRel");
   if (const char* pa = std::getenv("FFNY_RB_PROBE"))
   {
     s_probe_addr = std::strtoul(pa, nullptr, 16);
@@ -1280,6 +1285,45 @@ void HookViCount(const Core::CPUThreadGuard& guard)
   ppc.npc = ppc.spr[SPR_LR];
 }
 
+// lab: check the sound object's listener list before the inner release 0x801F33E4 walks it
+// (node: +0 next, +8 callback, +0xC argument; list head at object +0xC)
+void HookSndRelease(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  const u32 obj = ppc.gpr[3];
+  static u32 bad_reports = 0;
+  auto ok = [](u32 a) { return (a & 0xFE000000) == 0x80000000 && (a & 0x01FFFFFF) < 0x01800000; };
+  auto code = [](u32 a) { return a >= 0x80003100 && a < 0x80400000; };
+  if (!ok(obj))
+    return;
+  u32 n = Rd32(ram, obj + 0xC), k = 0;
+  while (n && k++ < 64)
+  {
+    const u32 cb = ok(n) ? Rd32(ram, n + 8) : 0;
+    if (!ok(n) || !code(cb))
+    {
+      if (bad_reports++ < 10)
+      {
+        const u32 sp = ppc.gpr[1];
+        const u32 c1 = ok(sp) ? Rd32(ram, sp) : 0, b1 = ok(c1) ? Rd32(ram, c1 + 4) : 0;
+        const u32 c2 = ok(c1) ? Rd32(ram, c1) : 0, b2 = ok(c2) ? Rd32(ram, c2 + 4) : 0;
+        const u32 c3 = ok(c2) ? Rd32(ram, c2) : 0, b3 = ok(c3) ? Rd32(ram, c3 + 4) : 0;
+        const auto ob = HeapBlockOf(ram, obj), nb = HeapBlockOf(ram, n);
+        fprintf(stderr,
+                "SNDREL BAD frame %u%s phase %c thread %08x obj %08x (refs %u, block %08x tag %08x) node %u = %08x "
+                "(block %08x tag %08x) callback %08x | bt %08x %08x %08x %08x | rbtag rb %08x conf %08x frame %08x\n",
+                Rd32(ram, ADDR_COUNTER), s_resim_target ? " resim" : "", s_phase, Rd32(ram, 0x800000E4), obj,
+                Rd32(ram, obj + 4), ob.first, ob.second, k, n, nb.first, nb.second, cb, ppc.spr[SPR_LR], b1, b2,
+                b3, Rd32(ram, W_RB), Rd32(ram, W_CONF), Rd32(ram, W_FRAME));
+      }
+      return;
+    }
+    n = Rd32(ram, n);
+  }
+}
+
 void HookRender(const Core::CPUThreadGuard& guard)
 {
   s_phase = 'R';
@@ -1361,6 +1405,12 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   s_phase = 'U';
   s_ram = ram;
   LoaderFillPost(ram);
+  if (s_active)
+  {
+    s_max_acq = std::max(s_max_acq, Rd32(ram, 0x8049B510));
+    s_max_rel = std::max(s_max_rel, Rd32(ram, 0x8049B514));
+    s_max_frl = std::max(s_max_frl, Rd32(ram, 0x8049B518));
+  }
   if (s_active && s_log)
   {
     // lab: the time step the update gets (f31 -> f1 at 0x80004D20)
