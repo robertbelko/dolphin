@@ -41,12 +41,14 @@
 #include "Core/PowerPC/Gekko.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PowerPC.h"
+#include "Core/CoreTiming.h"
 #include "Core/System.h"
 #include "VideoCommon/OnScreenDisplay.h"
 
 namespace FFNYRollback
 {
 void DumpDraws(u32 from, u32 to);
+bool s_heapcheck = false;  // lab: FFNY_RB_HEAPCHECK
 u32 s_probe_addr = 0;  // lab: FFNY_RB_PROBE=hexaddr -> log r3 and its heap block at that function (once per r3)
 #include "Core/FFNYRollbackRanges.inc"
 
@@ -66,7 +68,9 @@ constexpr u32 REC_OFS = 0x10;
 constexpr u32 REC_SIZE = 0x94;
 constexpr u32 RING = 128;  // frames of input history kept
 constexpr u32 NSLOTS = 12;  // saved states
-constexpr u32 SEND_WINDOW = 8;  // redundant frames per input message
+constexpr u32 SEND_WINDOW = 8;  // redundant frames per input message (old 'I' format)
+// unreliable input messages stay below one ENet packet (MTU 1400 minus headers), so they are never fragmented
+constexpr size_t MAX_UNRELIABLE_BYTES = 1100;
 
 using Record = std::array<u8, REC_SIZE>;
 
@@ -94,6 +98,19 @@ std::function<void(const std::string&)> s_report_cb;
 u32 s_reports = 0;
 std::function<void(Core::System&, u32)> s_fight_end_cb;
 Transport* s_transport = nullptr;
+// s_ack[r][p]: newest frame of our port p's inputs that the player on remote port r has confirmed (it holds every
+// frame up to it); input messages always restart there, so any number of lost packets is repaired by one
+u32 s_ack[4][4] = {};
+u32 s_input_msgs_in = 0, s_input_msgs_stale = 0;  // stats
+// time synchronisation: the newest current frame each remote player reported, and how far ahead of us it
+// believed it was. Our own estimate f - remote frame is too large by the one-way latency, the remote's estimate
+// too; the difference of the two is twice the real lead.
+u32 s_frame_now = 0;
+u32 s_remote_frame[4] = {};
+s32 s_remote_adv[4] = {};
+std::array<s32, 16> s_adv_hist{};
+u32 s_adv_n = 0, s_sync_next = 0, s_sync_delays = 0;
+bool s_sync_enabled = true;  // lab: FFNY_RB_NOSYNC
 bool s_installed = false;
 bool s_install_failed = false;
 bool s_active = false;
@@ -175,6 +192,8 @@ struct Draw
   u32 lr, b1, b2, b3;
 };
 std::unordered_map<u32, std::vector<Draw>> s_draws_first, s_draws_resim;
+u32 s_watch_lo = 0, s_watch_len = 0;  // lab: FFNY_RB_WATCHRANGE=hexaddr:hexlen, recorded at every PRE
+std::unordered_map<u32, std::vector<u8>> s_watch_first, s_watch_resim;
 u32 s_draw_frame = 0;
 bool s_draw_first = true;
 u32 s_draw_dumps = 0;  // lab: FFNY_RB_MOM=N -> every N frames of the fight both momentum bars = 98.5 (deterministic)
@@ -461,23 +480,77 @@ u32 Get32(const u8* p)
   return (u32(p[0]) << 24) | (u32(p[1]) << 16) | (u32(p[2]) << 8) | p[3];
 }
 
-// message 'I': port, first frame, count, count records
-void SendInputs(int port, u32 last)
+s32 LocalAdvantage()
+{
+  s32 adv = 0;
+  bool any = false;
+  for (int r = 0; r < 4; r++)
+    if (IsRemote(r) && s_remote_frame[r] >= s_start_frame)
+    {
+      const s32 a = s32(s_frame_now - s_remote_frame[r]);
+      adv = any ? std::max(adv, a) : a;
+      any = true;
+    }
+  return adv;
+}
+
+// message 'J': port, first frame, count, 4 acks (newest confirmed frame we hold of each port, 0xFFFFFFFF for
+// ports that are not remote here), then count records, each a flag byte (0: same as the previous record in this
+// message, 1: 148 record bytes follow). Starts at the oldest frame a remote player still lacks.
+void SendInputs(int port, u32 last, bool reliable = false)
 {
   if (!s_transport)
     return;
-  const u32 first = std::max(s_start_frame, last >= SEND_WINDOW - 1 ? last - (SEND_WINDOW - 1) : 0);
+  u32 first = last;
+  for (int r = 0; r < 4; r++)
+    if (IsRemote(r))
+      first = std::min(first, s_ack[r][port] + 1);
+  first = std::max({first, s_start_frame, last >= RING - 1 ? last - (RING - 2) : 0u});
   std::vector<u8> m;
-  m.push_back('I');
+  m.reserve(MAX_UNRELIABLE_BYTES);
+  m.push_back('J');
   m.push_back(u8(port));
   Put32(m, first);
-  m.push_back(u8(last - first + 1));
-  for (u32 f = first; f <= last; f++)
+  const size_t count_pos = m.size();
+  m.push_back(0);
+  for (int r = 0; r < 4; r++)
+    Put32(m, IsRemote(r) ? s_confirmed[r] : 0xFFFFFFFF);
+  Put32(m, s_frame_now);
+  Put32(m, u32(LocalAdvantage()));
+  const Record* prev = nullptr;
+  u32 n = 0;
+  for (u32 f = first; f <= last && n < 255; f++)
   {
     const FrameInput& fi = s_input[port][f % RING];
-    m.insert(m.end(), fi.rec.begin(), fi.rec.end());
+    if (!fi.have || fi.frame != f)
+      break;
+    if (prev && *prev == fi.rec)
+    {
+      m.push_back(0);
+    }
+    else
+    {
+      if (!reliable && m.size() + 1 + REC_SIZE > MAX_UNRELIABLE_BYTES)
+        break;  // the rest goes in the next message (the oldest frames first: they unblock the other side)
+      m.push_back(1);
+      m.insert(m.end(), fi.rec.begin(), fi.rec.end());
+    }
+    prev = &fi.rec;
+    n++;
   }
-  s_transport->Send(m);
+  m[count_pos] = u8(n);
+  if (reliable)
+    s_transport->Send(m);
+  else
+    s_transport->SendUnreliable(m);
+}
+
+// all local pads: resend what the other side lacks (while waiting for it, and reliably at fight end)
+void ResendInputs(bool reliable)
+{
+  for (int p = 0; p < 4; p++)
+    if (s_settings.local_ports >> p & 1)
+      SendInputs(p, s_confirmed[p], reliable);
 }
 
 u32 s_mispredict_from = 0xFFFFFFFF;
@@ -485,7 +558,8 @@ u32 s_last_rb_from = 0, s_last_rb_to = 0;  // earliest frame whose used input tu
 
 void OnRemoteInput(int port, u32 f, const u8* rec)
 {
-  if (!IsRemote(port) || f < s_start_frame)
+  // unreliable delivery: late, duplicated and reordered frames arrive; keep only frames we lack that fit the ring
+  if (!IsRemote(port) || f < s_start_frame || f <= s_confirmed[port] || f >= s_confirmed[port] + RING)
     return;
   FrameInput& fi = s_input[port][f % RING];
   if (fi.have && fi.frame == f)
@@ -518,7 +592,51 @@ void Pump()
   std::vector<u8> m;
   while (s_transport->Receive(m))
   {
-    if (m.size() >= 7 && m[0] == 'I')
+    if (m.size() >= 31 && m[0] == 'J')
+    {
+      const int port = m[1] & 3;
+      const u32 first = Get32(&m[2]);
+      const u32 count = m[6];
+      s_input_msgs_in++;
+      if (s_active && first + count <= s_confirmed[port] + 1)
+        s_input_msgs_stale++;  // nothing new in it (duplicate or late)
+      for (int lp = 0; lp < 4; lp++)
+      {
+        const u32 a = Get32(&m[7 + 4 * lp]);
+        if (a != 0xFFFFFFFF && (s_settings.local_ports >> lp & 1) && a > s_ack[port][lp] && a <= s_confirmed[lp])
+          s_ack[port][lp] = a;
+      }
+      {
+        const u32 rf = Get32(&m[23]);
+        if (rf >= s_start_frame && rf >= s_remote_frame[port])
+        {
+          s_remote_frame[port] = rf;
+          s_remote_adv[port] = s32(Get32(&m[27]));
+        }
+      }
+      size_t pos = 31;
+      const u8* prev = nullptr;
+      for (u32 i = 0; i < count && pos < m.size(); i++)
+      {
+        const u8* rec;
+        if (m[pos++] == 0)
+        {
+          if (!prev)
+            break;
+          rec = prev;
+        }
+        else
+        {
+          if (pos + REC_SIZE > m.size())
+            break;
+          rec = &m[pos];
+          pos += REC_SIZE;
+        }
+        OnRemoteInput(port, first + i, rec);
+        prev = rec;
+      }
+    }
+    else if (m.size() >= 7 && m[0] == 'I')
     {
       const int port = m[1] & 3;
       const u32 first = Get32(&m[2]);
@@ -870,6 +988,19 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
            REC_SIZE);
     s_confirmed[p] = f - 1;
   }
+  for (auto& row : s_ack)
+    for (u32& a : row)
+      a = f - 1;
+  for (int r = 0; r < 4; r++)
+  {
+    s_remote_frame[r] = 0;
+    s_remote_adv[r] = 0;
+  }
+  s_frame_now = f;
+  s_adv_n = 0;
+  s_sync_next = f + 60;
+  s_sync_delays = 0;
+  s_input_msgs_in = s_input_msgs_stale = 0;
   for (auto& s : s_states)
     s.frame = 0xFFFFFFFF;
   s_local_hash.clear();
@@ -910,8 +1041,14 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
           s_settings.local_ports, s_settings.active_ports, s_settings.input_delay);
 }
 
+u32 s_max_acq = 0, s_max_rel = 0, s_max_frl = 0;  // lab: highest fill of the rbtag logs (96 entries each)
 void PrintStats(u32 f)
 {
+  fprintf(stderr, "FFNYRB input messages received %u, without anything new %u; time sync: %u one-frame delays, "
+          "lead now %d (2x frames)\n", s_input_msgs_in, s_input_msgs_stale, s_sync_delays,
+          s_adv_n ? s_adv_hist[(s_adv_n - 1) % s_adv_hist.size()] : 0);
+  fprintf(stderr, "FFNYRB rbtag logs max: acquires %u releases %u frees %u (of 96)\n", s_max_acq, s_max_rel,
+          s_max_frl);
   if (s_ram)
     fprintf(stderr, "FFNYRB VI real %u at frame %u (fight start: VI %u frame %u)\n", Rd32(s_ram, ADDR_VICOUNT), f,
             s_vi_base, s_start_frame);
@@ -934,6 +1071,10 @@ void Configure(const Settings& settings, Transport* transport)
   s_stress = std::getenv("FFNY_RB_STRESS") ? std::atoi(std::getenv("FFNY_RB_STRESS")) : 0;
   s_loop = std::getenv("FFNY_RB_LOOP") ? std::atoi(std::getenv("FFNY_RB_LOOP")) : 0;
   s_loader_fix = std::getenv("FFNY_RB_NOLOADFIX") == nullptr;
+  s_heapcheck = std::getenv("FFNY_RB_HEAPCHECK") != nullptr;
+  s_sync_enabled = std::getenv("FFNY_RB_NOSYNC") == nullptr;
+  if (const char* w = std::getenv("FFNY_RB_WATCHRANGE"))
+    sscanf(w, "%x:%x", &s_watch_lo, &s_watch_len);
   s_stress_from = std::getenv("FFNY_RB_STRESS_FROM") ? std::atoi(std::getenv("FFNY_RB_STRESS_FROM")) : 0;
   if (const char* r = std::getenv("FFNY_RB_RNGLOG"))
     sscanf(r, "%u:%u", &s_rng_from, &s_rng_to);
@@ -989,6 +1130,25 @@ public:
     m_out.push_back({now + std::chrono::milliseconds(d), msg});
     Flush();
   }
+  // lab: FFNY_RB_LOSS=percent drops unreliable messages, FFNY_RB_BURST=n makes every drop a run of n
+  void SendUnreliable(const std::vector<u8>& msg) override
+  {
+    if (m_burst_left > 0)
+    {
+      m_burst_left--;
+      m_dropped++;
+      return;
+    }
+    if (m_loss && std::rand() % 100 < m_loss)
+    {
+      m_burst_left = m_burst - 1;
+      m_dropped++;
+      return;
+    }
+    Send(msg);
+  }
+  int m_loss = 0, m_burst = 1, m_burst_left = 0;
+  u32 m_dropped = 0;
   bool Receive(std::vector<u8>& msg) override
   {
     Flush();
@@ -1046,7 +1206,13 @@ void OnVIField(Core::System& system)
       const int lag = std::getenv("FFNY_RB_LAG") ? std::atoi(std::getenv("FFNY_RB_LAG")) : 0;
       const int jit = std::getenv("FFNY_RB_JITTER") ? std::atoi(std::getenv("FFNY_RB_JITTER")) : 0;
       if (u)
+      {
         s_udp = std::make_unique<UdpTransport>((unsigned short)listen, host, (unsigned short)pport, lag, jit);
+        if (const char* l = std::getenv("FFNY_RB_LOSS"))
+          s_udp->m_loss = std::atoi(l);
+        if (const char* b = std::getenv("FFNY_RB_BURST"))
+          s_udp->m_burst = std::max(1, std::atoi(b));
+      }
       Configure(st, s_udp.get());
       fprintf(stderr, "FFNYRB: lab mode local %x active %x delay %u udp %s lag %d jitter %d stress %u\n", lp, ap,
               st.input_delay, u ? u : "-", lag, jit, s_stress);
@@ -1107,6 +1273,8 @@ void OnVIField(Core::System& system)
     HLE::Patch(system, 0x80274180, "FFNYRollbackCrash");
   s_rng_redirect = Rd32(ram, 0x8049A200) == 0x3C60804A && Rd32(ram, 0x8049A204) == 0x3863A210 &&
                    std::getenv("FFNY_RB_NORNGFIX") == nullptr;
+  if (std::getenv("FFNY_RB_SNDCHECK"))
+    HLE::Patch(system, 0x801F33E4, "FFNYRollbackSndRel");
   if (const char* pa = std::getenv("FFNY_RB_PROBE"))
   {
     s_probe_addr = std::strtoul(pa, nullptr, 16);
@@ -1199,6 +1367,19 @@ void DumpDraws(u32 from, u32 to)
 {
   if (s_draw_dumps++ >= 3)
     return;
+  for (u32 f = from; f <= to && s_watch_len; f++)
+  {
+    auto a = s_watch_first.find(f), b = s_watch_resim.find(f);
+    if (a == s_watch_first.end() || b == s_watch_resim.end())
+      continue;
+    int shown = 0;
+    for (u32 k = 0; k + 4 <= s_watch_len; k += 4)
+      if (memcmp(&a->second[k], &b->second[k], 4) && shown++ < 12)
+        fprintf(stderr, "WATCH frame %u (start of update): %08x first %08x resim %08x\n", f, s_watch_lo + k,
+                Get32Fwd(&a->second[k]), Get32Fwd(&b->second[k]));
+    if (!shown)
+      fprintf(stderr, "WATCH frame %u: range identical at the start of the update\n", f);
+  }
   for (u32 f = from; f <= to; f++)
   {
     const auto& a = s_draws_first[f];
@@ -1280,6 +1461,45 @@ void HookViCount(const Core::CPUThreadGuard& guard)
   ppc.npc = ppc.spr[SPR_LR];
 }
 
+// lab: check the sound object's listener list before the inner release 0x801F33E4 walks it
+// (node: +0 next, +8 callback, +0xC argument; list head at object +0xC)
+void HookSndRelease(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  const u32 obj = ppc.gpr[3];
+  static u32 bad_reports = 0;
+  auto ok = [](u32 a) { return (a & 0xFE000000) == 0x80000000 && (a & 0x01FFFFFF) < 0x01800000; };
+  auto code = [](u32 a) { return a >= 0x80003100 && a < 0x80400000; };
+  if (!ok(obj))
+    return;
+  u32 n = Rd32(ram, obj + 0xC), k = 0;
+  while (n && k++ < 64)
+  {
+    const u32 cb = ok(n) ? Rd32(ram, n + 8) : 0;
+    if (!ok(n) || !code(cb))
+    {
+      if (bad_reports++ < 10)
+      {
+        const u32 sp = ppc.gpr[1];
+        const u32 c1 = ok(sp) ? Rd32(ram, sp) : 0, b1 = ok(c1) ? Rd32(ram, c1 + 4) : 0;
+        const u32 c2 = ok(c1) ? Rd32(ram, c1) : 0, b2 = ok(c2) ? Rd32(ram, c2 + 4) : 0;
+        const u32 c3 = ok(c2) ? Rd32(ram, c2) : 0, b3 = ok(c3) ? Rd32(ram, c3 + 4) : 0;
+        const auto ob = HeapBlockOf(ram, obj), nb = HeapBlockOf(ram, n);
+        fprintf(stderr,
+                "SNDREL BAD frame %u%s phase %c thread %08x obj %08x (refs %u, block %08x tag %08x) node %u = %08x "
+                "(block %08x tag %08x) callback %08x | bt %08x %08x %08x %08x | rbtag rb %08x conf %08x frame %08x\n",
+                Rd32(ram, ADDR_COUNTER), s_resim_target ? " resim" : "", s_phase, Rd32(ram, 0x800000E4), obj,
+                Rd32(ram, obj + 4), ob.first, ob.second, k, n, nb.first, nb.second, cb, ppc.spr[SPR_LR], b1, b2,
+                b3, Rd32(ram, W_RB), Rd32(ram, W_CONF), Rd32(ram, W_FRAME));
+      }
+      return;
+    }
+    n = Rd32(ram, n);
+  }
+}
+
 void HookRender(const Core::CPUThreadGuard& guard)
 {
   s_phase = 'R';
@@ -1346,6 +1566,65 @@ void HookTick(const Core::CPUThreadGuard& guard)
   }
 }
 
+// lab: walk every heap's size-sorted free list (descriptor table 0x8040BD70; head [h+0x20], node +0x10 next,
+// +4 size, 'BF' magic) and report the first broken link per heap
+void HeapCheck(const u8* ram, u32 f, const char* where)
+{
+  static u32 reported = 0;  // bit per heap
+  auto ok = [](u32 a) { return (a & 0xFE000000) == 0x80000000 && (a & 0x01FFFFFF) < 0x01800000; };
+  for (u32 i = 0; i < 32; i++)
+  {
+    const u32 h = Rd32(ram, 0x8040BD70 + 4 * i);
+    if (!ok(h) || (reported >> i & 1))
+      continue;
+    const u32 base = Rd32(ram, h + 8), end = Rd32(ram, h + 0xC);
+    u32 prev = h + 0x10, n = Rd32(ram, h + 0x20), k = 0;
+    while (n && n != h + 0x10 && k++ < 20000)  // the list ends at the 'BS' sentinel inside the descriptor
+    {
+      if (!ok(n) || n < base || n >= end || (Rd32(ram, n) >> 16) != 0x4246)
+      {
+        reported |= 1u << i;
+        fprintf(stderr,
+                "HEAPCHECK %s frame %u%s: heap %u (desc %08x, %08x-%08x) free node %u = %08x (word %08x) after %08x "
+                "(header %08x %08x %08x %08x %08x %08x)\n",
+                where, f, s_resim_target ? " resim" : "", i, h, base, end, k, n, ok(n) ? Rd32(ram, n) : 0, prev,
+                Rd32(ram, prev), Rd32(ram, prev + 4), Rd32(ram, prev + 8), Rd32(ram, prev + 12), Rd32(ram, prev + 16),
+                Rd32(ram, prev + 20));
+        break;
+      }
+      prev = n;
+      n = Rd32(ram, n + 0x10);
+    }
+  }
+}
+
+// lab stress: from here on, draws (and the watched range) belong to the update of frame f
+void DrawFrameBegin(const u8* ram, u32 f, bool first)
+{
+  if (s_heapcheck)
+    HeapCheck(ram, f, first ? "before update" : "before re-simulated update");
+  if (!s_stress)
+    return;
+  s_draw_frame = f;
+  s_draw_first = first;
+  (first ? s_draws_first : s_draws_resim)[f].clear();
+  if (f >= 64)
+  {
+    s_draws_first.erase(f - 64);
+    s_draws_resim.erase(f - 64);
+  }
+  if (s_watch_len)
+  {
+    const u8* w = ram + (s_watch_lo & 0x01FFFFFF);
+    (first ? s_watch_first : s_watch_resim)[f].assign(w, w + s_watch_len);
+    if (f >= 64)
+    {
+      s_watch_first.erase(f - 64);
+      s_watch_resim.erase(f - 64);
+    }
+  }
+}
+
 void HookPreUpdate(const Core::CPUThreadGuard& guard)
 {
   auto& system = guard.GetSystem();
@@ -1361,6 +1640,12 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   s_phase = 'U';
   s_ram = ram;
   LoaderFillPost(ram);
+  if (s_active)
+  {
+    s_max_acq = std::max(s_max_acq, Rd32(ram, 0x8049B510));
+    s_max_rel = std::max(s_max_rel, Rd32(ram, 0x8049B514));
+    s_max_frl = std::max(s_max_frl, Rd32(ram, 0x8049B518));
+  }
   if (s_active && s_log)
   {
     // lab: the time step the update gets (f31 -> f1 at 0x80004D20)
@@ -1368,19 +1653,6 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     const double dt = ppc.ps[31].PS0AsDouble();
     if ((dt < 0.0166 || dt > 0.0168) && shown++ < 40)
       fprintf(stderr, "FFNYRB DT frame %u: f31 = %.6f%s\n", Rd32(ram, ADDR_COUNTER), dt, s_resim_target ? " (resim)" : "");
-  }
-  if (s_stress)
-  {
-    // draws from now on belong to the update of this frame (+ the per-update work and render after it)
-    const u32 cf = Rd32(ram, ADDR_COUNTER);
-    s_draw_frame = cf;
-    s_draw_first = !(s_resim_target && cf < s_resim_target) && s_draws_first.find(cf) == s_draws_first.end();
-    (s_draw_first ? s_draws_first : s_draws_resim)[cf].clear();
-    if (cf >= 64)
-    {
-      s_draws_first.erase(cf - 64);
-      s_draws_resim.erase(cf - 64);
-    }
   }
   u32 f = Rd32(ram, ADDR_COUNTER);
   const bool fight = Rd32(ram, ADDR_FIGHT) == 1;
@@ -1396,6 +1668,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   {
     // re-simulated frame: inputs are known better now
     StressCheck(ram, f, false);
+    DrawFrameBegin(ram, f, false);
     Inject(ram, tick_obj, f);
     SaveState(system, f);
     LoaderDropConfirmed(std::min(MinConfirmed(), f - 1), f, ram);
@@ -1419,6 +1692,32 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   {
     // a new real frame: capture the local pads (they become the input of frame f + delay)
     s_frames++;
+    s_frame_now = f;
+    // time synchronisation: if we run ahead of the other side (we would do all the rolling back and hit the
+    // rollback limit, i.e. freeze), let this machine run one frame later, at most every 20 frames
+    {
+      bool known = false;
+      for (int r = 0; r < 4; r++)
+        if (IsRemote(r) && s_remote_frame[r] >= s_start_frame)
+        {
+          s_adv_hist[s_adv_n++ % s_adv_hist.size()] = LocalAdvantage() - s_remote_adv[r];
+          known = true;
+          break;
+        }
+      if (known && f >= s_sync_next && s_adv_n >= s_adv_hist.size() && s_sync_enabled)
+      {
+        s32 sum = 0;
+        for (s32 d : s_adv_hist)
+          sum += d;
+        // sum / n = twice our lead in frames
+        if (sum >= 2 * s32(s_adv_hist.size()) * 1)
+        {
+          system.GetCoreTiming().AddThrottleDelay(std::chrono::microseconds(16683));
+          s_sync_delays++;
+          s_sync_next = f + 20;
+        }
+      }
+    }
     for (int p = 0; p < 4; p++)
     {
       if (!(s_settings.local_ports >> p & 1))
@@ -1479,9 +1778,19 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     waited = true;
     std::this_thread::sleep_for(std::chrono::microseconds(250));
     Pump();
+    // a lost message must not stall us: resend what the other side lacks every 8 ms while waiting
+    static auto last_resend = std::chrono::steady_clock::now();
+    if (std::chrono::steady_clock::now() - last_resend > std::chrono::milliseconds(8))
+    {
+      last_resend = std::chrono::steady_clock::now();
+      ResendInputs(false);
+    }
   }
   if (waited)
   {
+    // we were slowed down by the wait: keep that (no catch-up sprint that would put us ahead again)
+    if (s_sync_enabled)
+      system.GetCoreTiming().AddThrottleDelay(std::chrono::steady_clock::now() - wait_start);
     s_waits++;
     s_wait_us += std::chrono::duration_cast<std::chrono::microseconds>(
                      std::chrono::steady_clock::now() - wait_start)
@@ -1504,6 +1813,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       // we are frame s again (registers restored); do the replaced instruction again
       ppc.gpr[3] = ppc.gpr[26];
       ppc.npc = ADDR_PRE + 4;
+      DrawFrameBegin(ram, s, false);
       Inject(ram, ppc.gpr[28], s);
       SaveState(system, s);
       {
@@ -1526,7 +1836,9 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
 
   if (!fight)
   {
-    // fight over and every input confirmed: back to normal netplay
+    // fight over and every input confirmed: back to normal netplay. The other side may still lack our last
+    // frames (lost packets) and waits for them: send them once more, reliably.
+    ResendInputs(true);
     s_active = false;
     s_loader_undo.clear();
     Wr32(ram, W_ACT, 0);  // rbtag: do the remaining deferred sound releases
@@ -1542,6 +1854,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     return;
   }
 
+  DrawFrameBegin(ram, f, true);  // first run of update f (also right after a re-simulation caught up)
   Inject(ram, tick_obj, f);
   SaveState(system, f);
   LoaderDropConfirmed(std::min(MinConfirmed(), f - 1), f, ram);

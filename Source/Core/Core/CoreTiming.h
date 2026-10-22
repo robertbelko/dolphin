@@ -162,6 +162,11 @@ public:
   // Throttle the CPU to the specified target cycle.
   void Throttle(const s64 target_cycle);
 
+  // FFNY rollback: shift the throttle's real-time reference by d (CPU thread). Positive: the emulation runs that
+  // much later from now on (time synchronisation between netplay sides; after waiting for the other side, so the
+  // emulator does not sprint to catch up and run ahead again).
+  void AddThrottleDelay(DT d) { m_throttle_reference_time += d; }
+
   // May be used from CPU or GPU thread.
   void SleepUntil(TimePoint time_point);
 

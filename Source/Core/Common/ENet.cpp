@@ -37,7 +37,7 @@ int ENET_CALLBACK InterceptCallback(ENetHost* host, ENetEvent* event)
   return 0;
 }
 
-bool SendPacket(ENetPeer* socket, const sf::Packet& packet, u8 channel_id)
+bool SendPacket(ENetPeer* socket, const sf::Packet& packet, u8 channel_id, bool reliable)
 {
   if (!socket)
   {
@@ -46,7 +46,8 @@ bool SendPacket(ENetPeer* socket, const sf::Packet& packet, u8 channel_id)
   }
 
   ENetPacket* epac =
-      enet_packet_create(packet.getData(), packet.getDataSize(), ENET_PACKET_FLAG_RELIABLE);
+      enet_packet_create(packet.getData(), packet.getDataSize(),
+                         reliable ? ENET_PACKET_FLAG_RELIABLE : ENET_PACKET_FLAG_UNSEQUENCED);
   if (!epac)
   {
     ERROR_LOG_FMT(NETPLAY, "Failed to create ENetPacket ({} bytes).", packet.getDataSize());
@@ -61,5 +62,13 @@ bool SendPacket(ENetPeer* socket, const sf::Packet& packet, u8 channel_id)
   }
 
   return true;
+}
+
+void DisableUnreliableThrottle(ENetPeer* peer)
+{
+  // the throttle drops a share of unreliable packets while the round trip time is above its average; with
+  // deceleration 0 it stays at the maximum (nothing dropped). Also sent to the other side for its sends to us.
+  if (peer)
+    enet_peer_throttle_configure(peer, ENET_PEER_PACKET_THROTTLE_INTERVAL, ENET_PEER_PACKET_THROTTLE_SCALE, 0);
 }
 }  // namespace Common::ENet

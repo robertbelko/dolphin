@@ -461,6 +461,7 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
   // Update time in milliseconds of no acknowledgment of
   // sent packets before a connection is deemed disconnected
   enet_peer_timeout(incoming_connection, 0, PEER_TIMEOUT.count(), PEER_TIMEOUT.count());
+  Common::ENet::DisableUnreliableThrottle(incoming_connection);
 
   // force a ping on first netplay loop
   m_update_pings = true;
@@ -816,12 +817,14 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
   break;
 
   case MessageID::FFNYRollback:
+  case MessageID::FFNYInput:
   {
-    // relay as is to everyone else
+    // relay as is to everyone else (inputs again unreliable on their own channel)
     if (player.current_game != m_current_game)
       break;
+    const bool input = mid == MessageID::FFNYInput;
     sf::Packet spac;
-    spac << MessageID::FFNYRollback;
+    spac << (input ? MessageID::FFNYInput : MessageID::FFNYRollback);
     u32 size = 0;
     packet >> size;
     spac << size;
@@ -831,7 +834,7 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
       packet >> b;
       spac << b;
     }
-    SendAsyncToClients(std::move(spac), player.pid);
+    SendAsyncToClients(std::move(spac), player.pid, input ? FFNY_INPUT_CHANNEL : DEFAULT_CHANNEL);
   }
   break;
 
@@ -2322,7 +2325,7 @@ void NetPlayServer::SendToClients(const sf::Packet& packet, const PlayerId skip_
 
 void NetPlayServer::Send(ENetPeer* socket, const sf::Packet& packet, const u8 channel_id)
 {
-  Common::ENet::SendPacket(socket, packet, channel_id);
+  Common::ENet::SendPacket(socket, packet, channel_id, channel_id != FFNY_INPUT_CHANNEL);
 }
 
 void NetPlayServer::KickPlayer(PlayerId player)

@@ -164,6 +164,7 @@ NetPlayClient::NetPlayClient(const std::string& address, const u16 port, NetPlay
     int net = enet_host_service(m_client, &netEvent, 5000);
     if (net > 0 && netEvent.type == ENET_EVENT_TYPE_CONNECT)
     {
+      Common::ENet::DisableUnreliableThrottle(m_server);
       if (Connect())
       {
         m_client->intercept = Common::ENet::InterceptCallback;
@@ -222,6 +223,7 @@ NetPlayClient::NetPlayClient(const std::string& address, const u16 port, NetPlay
           // Update time in milliseconds of no acknowledgment of
           // sent packets before a connection is deemed disconnected
           enet_peer_timeout(m_server, 0, PEER_TIMEOUT.count(), PEER_TIMEOUT.count());
+          Common::ENet::DisableUnreliableThrottle(m_server);
 
           if (Connect())
           {
@@ -387,6 +389,7 @@ void NetPlayClient::OnData(sf::Packet& packet)
     break;
 
   case MessageID::FFNYRollback:
+  case MessageID::FFNYInput:
   {
     u32 size = 0;
     packet >> size;
@@ -1588,7 +1591,7 @@ void NetPlayClient::OnGameDigestAbort()
 
 void NetPlayClient::Send(const sf::Packet& packet, const u8 channel_id)
 {
-  Common::ENet::SendPacket(m_server, packet, channel_id);
+  Common::ENet::SendPacket(m_server, packet, channel_id, channel_id != FFNY_INPUT_CHANNEL);
 }
 
 void NetPlayClient::DisplayPlayersPing()
@@ -2939,6 +2942,16 @@ void NetPlayClient::FFNYTransport::Send(const std::vector<u8>& msg)
   for (u8 b : msg)
     packet << b;
   m_client->SendAsync(std::move(packet));
+}
+
+void NetPlayClient::FFNYTransport::SendUnreliable(const std::vector<u8>& msg)
+{
+  sf::Packet packet;
+  packet << MessageID::FFNYInput;
+  packet << static_cast<u32>(msg.size());
+  for (u8 b : msg)
+    packet << b;
+  m_client->SendAsync(std::move(packet), FFNY_INPUT_CHANNEL);
 }
 
 bool NetPlayClient::FFNYTransport::Receive(std::vector<u8>& msg)

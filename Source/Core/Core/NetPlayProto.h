@@ -180,6 +180,7 @@ enum class MessageID : u8
   FFNYState = 0x6A,        // server -> clients (chunked): host's emulator state, LZ4
   FFNYStateLoaded = 0x6B,  // client -> server
   FFNYResume = 0x6C,       // server -> clients: clear pad buffers, continue
+  FFNYInput = 0x6D,  // FFNY rollback inputs: like FFNYRollback, but unreliable on FFNY_INPUT_CHANNEL
 
   WiimoteData = 0x70,
   WiimoteMapping = 0x71,
@@ -259,6 +260,10 @@ enum : u8
 {
   DEFAULT_CHANNEL,
   CHUNKED_DATA_CHANNEL,
+  // FFNY rollback inputs: unsequenced and unreliable. Every input message repeats all frames the other side has
+  // not acknowledged yet, so a lost packet is repaired by the next one; reliable in-order delivery would instead
+  // hold every later packet until the lost one is resent (a ping spike of at least one round trip).
+  FFNY_INPUT_CHANNEL,
   CHANNEL_COUNT
 };
 
