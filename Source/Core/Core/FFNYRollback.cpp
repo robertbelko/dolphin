@@ -41,6 +41,7 @@
 #include "Core/PowerPC/Gekko.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PowerPC.h"
+#include "Core/CoreTiming.h"
 #include "Core/System.h"
 #include "VideoCommon/OnScreenDisplay.h"
 
@@ -101,6 +102,15 @@ Transport* s_transport = nullptr;
 // frame up to it); input messages always restart there, so any number of lost packets is repaired by one
 u32 s_ack[4][4] = {};
 u32 s_input_msgs_in = 0, s_input_msgs_stale = 0;  // stats
+// time synchronisation: the newest current frame each remote player reported, and how far ahead of us it
+// believed it was. Our own estimate f - remote frame is too large by the one-way latency, the remote's estimate
+// too; the difference of the two is twice the real lead.
+u32 s_frame_now = 0;
+u32 s_remote_frame[4] = {};
+s32 s_remote_adv[4] = {};
+std::array<s32, 16> s_adv_hist{};
+u32 s_adv_n = 0, s_sync_next = 0, s_sync_delays = 0;
+bool s_sync_enabled = true;  // lab: FFNY_RB_NOSYNC
 bool s_installed = false;
 bool s_install_failed = false;
 bool s_active = false;
@@ -470,6 +480,20 @@ u32 Get32(const u8* p)
   return (u32(p[0]) << 24) | (u32(p[1]) << 16) | (u32(p[2]) << 8) | p[3];
 }
 
+s32 LocalAdvantage()
+{
+  s32 adv = 0;
+  bool any = false;
+  for (int r = 0; r < 4; r++)
+    if (IsRemote(r) && s_remote_frame[r] >= s_start_frame)
+    {
+      const s32 a = s32(s_frame_now - s_remote_frame[r]);
+      adv = any ? std::max(adv, a) : a;
+      any = true;
+    }
+  return adv;
+}
+
 // message 'J': port, first frame, count, 4 acks (newest confirmed frame we hold of each port, 0xFFFFFFFF for
 // ports that are not remote here), then count records, each a flag byte (0: same as the previous record in this
 // message, 1: 148 record bytes follow). Starts at the oldest frame a remote player still lacks.
@@ -491,6 +515,8 @@ void SendInputs(int port, u32 last, bool reliable = false)
   m.push_back(0);
   for (int r = 0; r < 4; r++)
     Put32(m, IsRemote(r) ? s_confirmed[r] : 0xFFFFFFFF);
+  Put32(m, s_frame_now);
+  Put32(m, u32(LocalAdvantage()));
   const Record* prev = nullptr;
   u32 n = 0;
   for (u32 f = first; f <= last && n < 255; f++)
@@ -566,7 +592,7 @@ void Pump()
   std::vector<u8> m;
   while (s_transport->Receive(m))
   {
-    if (m.size() >= 23 && m[0] == 'J')
+    if (m.size() >= 31 && m[0] == 'J')
     {
       const int port = m[1] & 3;
       const u32 first = Get32(&m[2]);
@@ -580,7 +606,15 @@ void Pump()
         if (a != 0xFFFFFFFF && (s_settings.local_ports >> lp & 1) && a > s_ack[port][lp] && a <= s_confirmed[lp])
           s_ack[port][lp] = a;
       }
-      size_t pos = 23;
+      {
+        const u32 rf = Get32(&m[23]);
+        if (rf >= s_start_frame && rf >= s_remote_frame[port])
+        {
+          s_remote_frame[port] = rf;
+          s_remote_adv[port] = s32(Get32(&m[27]));
+        }
+      }
+      size_t pos = 31;
       const u8* prev = nullptr;
       for (u32 i = 0; i < count && pos < m.size(); i++)
       {
@@ -957,6 +991,15 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   for (auto& row : s_ack)
     for (u32& a : row)
       a = f - 1;
+  for (int r = 0; r < 4; r++)
+  {
+    s_remote_frame[r] = 0;
+    s_remote_adv[r] = 0;
+  }
+  s_frame_now = f;
+  s_adv_n = 0;
+  s_sync_next = f + 60;
+  s_sync_delays = 0;
   s_input_msgs_in = s_input_msgs_stale = 0;
   for (auto& s : s_states)
     s.frame = 0xFFFFFFFF;
@@ -1001,8 +1044,9 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
 u32 s_max_acq = 0, s_max_rel = 0, s_max_frl = 0;  // lab: highest fill of the rbtag logs (96 entries each)
 void PrintStats(u32 f)
 {
-  fprintf(stderr, "FFNYRB input messages received %u, without anything new %u\n", s_input_msgs_in,
-          s_input_msgs_stale);
+  fprintf(stderr, "FFNYRB input messages received %u, without anything new %u; time sync: %u one-frame delays, "
+          "lead now %d (2x frames)\n", s_input_msgs_in, s_input_msgs_stale, s_sync_delays,
+          s_adv_n ? s_adv_hist[(s_adv_n - 1) % s_adv_hist.size()] : 0);
   fprintf(stderr, "FFNYRB rbtag logs max: acquires %u releases %u frees %u (of 96)\n", s_max_acq, s_max_rel,
           s_max_frl);
   if (s_ram)
@@ -1028,6 +1072,7 @@ void Configure(const Settings& settings, Transport* transport)
   s_loop = std::getenv("FFNY_RB_LOOP") ? std::atoi(std::getenv("FFNY_RB_LOOP")) : 0;
   s_loader_fix = std::getenv("FFNY_RB_NOLOADFIX") == nullptr;
   s_heapcheck = std::getenv("FFNY_RB_HEAPCHECK") != nullptr;
+  s_sync_enabled = std::getenv("FFNY_RB_NOSYNC") == nullptr;
   if (const char* w = std::getenv("FFNY_RB_WATCHRANGE"))
     sscanf(w, "%x:%x", &s_watch_lo, &s_watch_len);
   s_stress_from = std::getenv("FFNY_RB_STRESS_FROM") ? std::atoi(std::getenv("FFNY_RB_STRESS_FROM")) : 0;
@@ -1647,6 +1692,32 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   {
     // a new real frame: capture the local pads (they become the input of frame f + delay)
     s_frames++;
+    s_frame_now = f;
+    // time synchronisation: if we run ahead of the other side (we would do all the rolling back and hit the
+    // rollback limit, i.e. freeze), let this machine run one frame later, at most every 20 frames
+    {
+      bool known = false;
+      for (int r = 0; r < 4; r++)
+        if (IsRemote(r) && s_remote_frame[r] >= s_start_frame)
+        {
+          s_adv_hist[s_adv_n++ % s_adv_hist.size()] = LocalAdvantage() - s_remote_adv[r];
+          known = true;
+          break;
+        }
+      if (known && f >= s_sync_next && s_adv_n >= s_adv_hist.size() && s_sync_enabled)
+      {
+        s32 sum = 0;
+        for (s32 d : s_adv_hist)
+          sum += d;
+        // sum / n = twice our lead in frames
+        if (sum >= 2 * s32(s_adv_hist.size()) * 1)
+        {
+          system.GetCoreTiming().AddThrottleDelay(std::chrono::microseconds(16683));
+          s_sync_delays++;
+          s_sync_next = f + 20;
+        }
+      }
+    }
     for (int p = 0; p < 4; p++)
     {
       if (!(s_settings.local_ports >> p & 1))
@@ -1717,6 +1788,9 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   }
   if (waited)
   {
+    // we were slowed down by the wait: keep that (no catch-up sprint that would put us ahead again)
+    if (s_sync_enabled)
+      system.GetCoreTiming().AddThrottleDelay(std::chrono::steady_clock::now() - wait_start);
     s_waits++;
     s_wait_us += std::chrono::duration_cast<std::chrono::microseconds>(
                      std::chrono::steady_clock::now() - wait_start)
