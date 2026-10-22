@@ -65,6 +65,8 @@ void HookRender(const Core::CPUThreadGuard& guard);
 void HookProbe(const Core::CPUThreadGuard& guard);  // lab
 void HookSndRelease(const Core::CPUThreadGuard& guard);  // lab, 0x801F33E4
 void HookHeapLog(const Core::CPUThreadGuard& guard);     // lab
+// lab: a disc read is about to be written to emulated RAM
+void OnDiscDma(Core::System& system, u32 address, u32 length);
 void HookViCount(const Core::CPUThreadGuard& guard);  // 0x8024E22C, VI retrace count getter
 void HookUnhandledException(const Core::CPUThreadGuard& guard);  // 0x80274180, the SDK's crash screen  // 0x80004D88, render part of the main loop
 

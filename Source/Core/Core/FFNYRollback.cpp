@@ -1580,6 +1580,40 @@ void HookHeapLog(const Core::CPUThreadGuard& guard)
   }
 }
 
+void OnDiscDma(Core::System& system, u32 address, u32 length)
+{
+  if (!s_active || !s_log)
+    return;
+  const u8* ram = system.GetMemory().GetRAM();
+  static u32 shown = 0, total = 0, bad = 0;
+  total++;
+  // does the target overlap a free block of any heap (free list: head [h+0x20], node +4 size, +0x10 next)?
+  const u32 lo = address | 0x80000000, hi = lo + length;
+  for (u32 i = 0; i < 16; i++)
+  {
+    const u32 h = Rd32(ram, 0x8040BD70 + 4 * i);
+    if ((h & 0xFE000000) != 0x80000000)
+      continue;
+    u32 n = Rd32(ram, h + 0x20), k = 0;
+    while (n && n != h + 0x10 && (n & 0xFE000000) == 0x80000000 && k++ < 20000)
+    {
+      const u32 sz = Rd32(ram, n + 4);
+      if (lo < n + sz && n < hi)
+      {
+        bad++;
+        if (shown++ < 20)
+          fprintf(stderr,
+                  "DISCDMA INTO FREE MEMORY frame %u%s: %08x-%08x (%u bytes) overlaps free block %08x-%08x of heap %u "
+                  "(free node %s) [%u of %u disc reads so far]\n",
+                  Rd32(ram, ADDR_COUNTER), s_resim_target ? " resim" : "", lo, hi, length, n, n + sz, i,
+                  (lo <= n + 0x14 && n + 0x10 < hi) ? "OVERWRITTEN" : "untouched", bad, total);
+        return;
+      }
+      n = Rd32(ram, n + 0x10);
+    }
+  }
+}
+
 void HookRender(const Core::CPUThreadGuard& guard)
 {
   s_phase = 'R';
