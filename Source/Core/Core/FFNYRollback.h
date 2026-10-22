@@ -65,6 +65,7 @@ void HookRender(const Core::CPUThreadGuard& guard);
 void HookProbe(const Core::CPUThreadGuard& guard);  // lab
 void HookSndRelease(const Core::CPUThreadGuard& guard);  // lab, 0x801F33E4
 void HookHeapLog(const Core::CPUThreadGuard& guard);     // lab
+void HookSndNullContext(const Core::CPUThreadGuard& guard);  // 0x801D7EE0
 void HookSeedLog(const Core::CPUThreadGuard& guard);     // lab
 // lab: a memory check hit (FFNY_RB_WATCHW=addr); returns true when handled
 bool OnMemCheck(Core::System& system, u32 addr, u64 value, u32 pc, bool write);
