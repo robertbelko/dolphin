@@ -1316,6 +1316,8 @@ void OnVIField(Core::System& system)
   HLE::Patch(system, ADDR_LOADER, "FFNYRollbackLoader");
   if (Rd32(ram, ADDR_VICOUNT_GET) == 0x806D8440 && Rd32(ram, ADDR_VICOUNT_GET + 4) == 0x4E800020)
     HLE::Patch(system, ADDR_VICOUNT_GET, "FFNYRollbackViCount");
+  if (Rd32(ram, 0x801D7EE0) == 0x93EB00B8)  // stw r31, 0xB8(r11)
+    HLE::Patch(system, 0x801D7EE0, "FFNYRollbackSndCtx");
   if (Rd32(ram, 0x80274180) == 0x9421FFC0)  // stwu sp,-0x40(sp): the SDK's unhandled-exception handler
     HLE::Patch(system, 0x80274180, "FFNYRollbackCrash");
   s_rng_redirect = Rd32(ram, 0x8049A200) == 0x3C60804A && Rd32(ram, 0x8049A204) == 0x3863A210 &&
@@ -1671,6 +1673,29 @@ void OnDiscDma(Core::System& system, u32 address, u32 length)
       n = Rd32(ram, n + 0x10);
     }
   }
+}
+
+// Sound library stop function 0x801D7DD0: when nothing of the handle's group is active it clears two fields of
+// the current context object (pointer 0x802FE714) - which is null when the game's (rewound) sound handle no
+// longer matches the sound library's (not rewound) voice tables after rollbacks. Lab: crash ~10 s after a
+// rollback fight on one of two machines (invalid write to 0xB8 at 0x801D7EE0, called via 0x8001108C). Replaces
+// "stw r31, 0xB8(r11)": with a null context both stores are skipped.
+u32 s_snd_null_ctx = 0;
+void HookSndNullContext(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u32 ctx = ppc.gpr[11];
+  if ((ctx & 0xFE000000) != 0x80000000)
+  {
+    if (s_snd_null_ctx++ < 5)
+      fprintf(stderr, "FFNYRB: sound stop with null context (%08x) skipped, frame %u\n", ctx,
+              Rd32(system.GetMemory().GetRAM(), ADDR_COUNTER));
+    ppc.npc = 0x801D7EE8;  // after both stores
+    return;
+  }
+  Wr32(system.GetMemory().GetRAM(), ctx + 0xB8, ppc.gpr[31]);
+  ppc.npc = 0x801D7EE4;
 }
 
 void HookRender(const Core::CPUThreadGuard& guard)
