@@ -47,6 +47,7 @@
 namespace FFNYRollback
 {
 void DumpDraws(u32 from, u32 to);
+bool s_heapcheck = false;  // lab: FFNY_RB_HEAPCHECK
 u32 s_probe_addr = 0;  // lab: FFNY_RB_PROBE=hexaddr -> log r3 and its heap block at that function (once per r3)
 #include "Core/FFNYRollbackRanges.inc"
 
@@ -939,6 +940,7 @@ void Configure(const Settings& settings, Transport* transport)
   s_stress = std::getenv("FFNY_RB_STRESS") ? std::atoi(std::getenv("FFNY_RB_STRESS")) : 0;
   s_loop = std::getenv("FFNY_RB_LOOP") ? std::atoi(std::getenv("FFNY_RB_LOOP")) : 0;
   s_loader_fix = std::getenv("FFNY_RB_NOLOADFIX") == nullptr;
+  s_heapcheck = std::getenv("FFNY_RB_HEAPCHECK") != nullptr;
   if (const char* w = std::getenv("FFNY_RB_WATCHRANGE"))
     sscanf(w, "%x:%x", &s_watch_lo, &s_watch_len);
   s_stress_from = std::getenv("FFNY_RB_STRESS_FROM") ? std::atoi(std::getenv("FFNY_RB_STRESS_FROM")) : 0;
@@ -1407,9 +1409,43 @@ void HookTick(const Core::CPUThreadGuard& guard)
   }
 }
 
+// lab: walk every heap's size-sorted free list (descriptor table 0x8040BD70; head [h+0x20], node +0x10 next,
+// +4 size, 'BF' magic) and report the first broken link per heap
+void HeapCheck(const u8* ram, u32 f, const char* where)
+{
+  static u32 reported = 0;  // bit per heap
+  auto ok = [](u32 a) { return (a & 0xFE000000) == 0x80000000 && (a & 0x01FFFFFF) < 0x01800000; };
+  for (u32 i = 0; i < 32; i++)
+  {
+    const u32 h = Rd32(ram, 0x8040BD70 + 4 * i);
+    if (!ok(h) || (reported >> i & 1))
+      continue;
+    const u32 base = Rd32(ram, h + 8), end = Rd32(ram, h + 0xC);
+    u32 prev = h + 0x10, n = Rd32(ram, h + 0x20), k = 0;
+    while (n && k++ < 20000)
+    {
+      if (!ok(n) || n < base || n >= end || (Rd32(ram, n) >> 16) != 0x4246)
+      {
+        reported |= 1u << i;
+        fprintf(stderr,
+                "HEAPCHECK %s frame %u%s: heap %u (desc %08x, %08x-%08x) free node %u = %08x (word %08x) after %08x "
+                "(header %08x %08x %08x %08x %08x %08x)\n",
+                where, f, s_resim_target ? " resim" : "", i, h, base, end, k, n, ok(n) ? Rd32(ram, n) : 0, prev,
+                Rd32(ram, prev), Rd32(ram, prev + 4), Rd32(ram, prev + 8), Rd32(ram, prev + 12), Rd32(ram, prev + 16),
+                Rd32(ram, prev + 20));
+        break;
+      }
+      prev = n;
+      n = Rd32(ram, n + 0x10);
+    }
+  }
+}
+
 // lab stress: from here on, draws (and the watched range) belong to the update of frame f
 void DrawFrameBegin(const u8* ram, u32 f, bool first)
 {
+  if (s_heapcheck)
+    HeapCheck(ram, f, first ? "before update" : "before re-simulated update");
   if (!s_stress)
     return;
   s_draw_frame = f;
