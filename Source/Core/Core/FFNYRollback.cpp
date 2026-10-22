@@ -1274,6 +1274,11 @@ void OnVIField(Core::System& system)
     HLE::Patch(system, 0x80274180, "FFNYRollbackCrash");
   s_rng_redirect = Rd32(ram, 0x8049A200) == 0x3C60804A && Rd32(ram, 0x8049A204) == 0x3863A210 &&
                    std::getenv("FFNY_RB_NORNGFIX") == nullptr;
+  if (std::getenv("FFNY_RB_THREADHEAP"))
+  {
+    HLE::Patch(system, 0x80249884, "FFNYRollbackHeapLog");
+    HLE::Patch(system, 0x8049A898, "FFNYRollbackHeapLog");
+  }
   if (std::getenv("FFNY_RB_SNDCHECK"))
     HLE::Patch(system, 0x801F33E4, "FFNYRollbackSndRel");
   if (const char* pa = std::getenv("FFNY_RB_PROBE"))
@@ -1499,6 +1504,44 @@ void HookSndRelease(const Core::CPUThreadGuard& guard)
       return;
     }
     n = Rd32(ram, n);
+  }
+}
+
+// lab (FFNY_RB_THREADHEAP): allocations (core 0x80249884: r3 name, r4 size, r7 flags) and frees (rbtag's
+// rb_free 0x8049A898: r3 pointer) made during a fight by any thread other than the game's main thread
+void HookHeapLog(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  const u32 th = Rd32(ram, 0x800000E4);
+  if (!s_active || th == 0x80432D10)
+    return;
+  static u32 n = 0;
+  if (n++ > 3000)
+    return;
+  auto ok = [](u32 a) { return (a & 0xFE000000) == 0x80000000 && (a & 0x01FFFFFF) < 0x01800000; };
+  const u32 f = Rd32(ram, ADDR_COUNTER);
+  if (ppc.pc == 0x80249884)
+  {
+    char name[40] = {};
+    if (ok(ppc.gpr[3]))
+      for (int i = 0; i < 39; i++)
+      {
+        const u8 c = ram[(ppc.gpr[3] + i) & 0x01FFFFFF];
+        if (!c)
+          break;
+        name[i] = (c >= 32 && c < 127) ? char(c) : '?';
+      }
+    fprintf(stderr, "THREADHEAP alloc frame %u%s phase %c thread %08x name '%s' size %x flags %x lr %08x\n", f,
+            s_resim_target ? " resim" : "", s_phase, th, name, ppc.gpr[4], ppc.gpr[7], ppc.spr[SPR_LR]);
+  }
+  else
+  {
+    const u32 p = ppc.gpr[3];
+    const u32 fl = ok(p) ? Rd32(ram, p - 16) : 0;
+    fprintf(stderr, "THREADHEAP free frame %u%s phase %c thread %08x ptr %08x header %08x lr %08x\n", f,
+            s_resim_target ? " resim" : "", s_phase, th, p, fl, ppc.spr[SPR_LR]);
   }
 }
 
