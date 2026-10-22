@@ -1675,6 +1675,11 @@ void HookRender(const Core::CPUThreadGuard& guard)
   s_phase = 'R';
 }
 
+// The generator hooks are Replace hooks: a Start hook's change of r3 is not seen by the JIT code after it when
+// the caller set r3 with constant instructions (lis / subi): the JIT keeps the constant across the call, so the
+// "redirected" draw still used the shared generator (lab: 1,159 redirected render draws all wrote the shared
+// generator-2 state). A Replace hook ends the JIT block, the code after it reads r3 from the PPC state. The hook
+// therefore also does the function's first instruction itself and continues after it.
 void HookRng1(const Core::CPUThreadGuard& guard)
 {
   auto& ppc = guard.GetSystem().GetPPCState();
@@ -1685,9 +1690,24 @@ void HookRng1(const Core::CPUThreadGuard& guard)
   }
   if (ppc.gpr[3] == GEN1_SHARED)
     RecordDraw(guard.GetSystem(), '1');
+  ppc.gpr[7] = ppc.gpr[3];  // 0x8001FC88: mr r7, r3
+  ppc.npc = GEN1_FN + 4;
 }
 
+static void HookRngBody(const Core::CPUThreadGuard& guard);
 void HookRng(const Core::CPUThreadGuard& guard)
+{
+  HookRngBody(guard);
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  // 0x800B7DAC: stwu sp, -0x10(sp)
+  const u32 sp = ppc.gpr[1];
+  Wr32(system.GetMemory().GetRAM(), sp - 0x10, sp);
+  ppc.gpr[1] = sp - 0x10;
+  ppc.npc = GEN2_FN + 4;
+}
+
+static void HookRngBody(const Core::CPUThreadGuard& guard)
 {
   auto& system = guard.GetSystem();
   auto& ppc = system.GetPPCState();
