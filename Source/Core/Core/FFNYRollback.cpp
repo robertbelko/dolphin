@@ -1309,6 +1309,8 @@ void OnVIField(Core::System& system)
     HLE::Patch(system, 0x80274180, "FFNYRollbackCrash");
   s_rng_redirect = Rd32(ram, 0x8049A200) == 0x3C60804A && Rd32(ram, 0x8049A204) == 0x3863A210 &&
                    std::getenv("FFNY_RB_NORNGFIX") == nullptr;
+  if (std::getenv("FFNY_RB_SEEDLOG"))
+    HLE::Patch(system, 0x800B7D38, "FFNYRollbackSeedLog");
   if (std::getenv("FFNY_RB_THREADHEAP"))
   {
     HLE::Patch(system, 0x80249884, "FFNYRollbackHeapLog");
@@ -1578,6 +1580,24 @@ void HookHeapLog(const Core::CPUThreadGuard& guard)
     fprintf(stderr, "THREADHEAP free frame %u%s phase %c thread %08x ptr %08x header %08x lr %08x\n", f,
             s_resim_target ? " resim" : "", s_phase, th, p, fl, ppc.spr[SPR_LR]);
   }
+}
+
+// lab (FFNY_RB_SEEDLOG): generator (re)seeding 0x800B7D38 (r3 generator, r4 / r5 seed)
+void HookSeedLog(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  static u32 n = 0;
+  if (n++ > 2000)
+    return;
+  auto ok = [](u32 a) { return (a & 0xFE000000) == 0x80000000; };
+  const u32 sp = ppc.gpr[1];
+  const u32 c1 = ok(sp) ? Rd32(ram, sp) : 0, b1 = ok(c1) ? Rd32(ram, c1 + 4) : 0;
+  const u32 c2 = ok(c1) ? Rd32(ram, c1) : 0, b2 = ok(c2) ? Rd32(ram, c2 + 4) : 0;
+  fprintf(stderr, "SEED frame %u%s phase %c active %d thread %08x gen %08x seed %08x %08x lr %08x bt %08x %08x\n",
+          Rd32(ram, ADDR_COUNTER), s_resim_target ? " resim" : "", s_phase, s_active, Rd32(ram, 0x800000E4),
+          ppc.gpr[3], ppc.gpr[4], ppc.gpr[5], ppc.spr[SPR_LR], b1, b2);
 }
 
 void OnDiscDma(Core::System& system, u32 address, u32 length)
