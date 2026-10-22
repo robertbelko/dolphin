@@ -46,6 +46,8 @@
 
 namespace FFNYRollback
 {
+void DumpDraws(u32 from, u32 to);
+u32 s_probe_addr = 0;  // lab: FFNY_RB_PROBE=hexaddr -> log r3 and its heap block at that function (once per r3)
 #include "Core/FFNYRollbackRanges.inc"
 
 namespace
@@ -135,6 +137,8 @@ struct LoaderUndo
   u32 frame;
   u32 addr;
   std::vector<u8> orig;
+  u32 post_hash = 0;  // hash of the converted bytes (taken at the next logic update); 0 = not taken yet
+  bool have_post = false;
 };
 std::vector<LoaderUndo> s_loader_undo;
 bool s_loader_fix = true;
@@ -152,7 +156,17 @@ constexpr u32 ADDR_RENDER = 0x80004D88;  // bl 0x8001ED94: start of the render p
 constexpr u32 GEN1_FN = 0x8001FC88, GEN1_SHARED = 0x8035D588, GEN1_PRIVATE = 0x8049A210;
 constexpr u32 GEN2_FN = 0x800B7DAC, GEN2_SHARED = 0x803BE03C, GEN2_PRIVATE = 0x8049A228;
 bool s_rng_redirect = false;  // the DOL has the private states (rbaudrng stub at 0x8049A200)
-u32 s_rng_redirected = 0;  // lab: FFNY_RB_MOM=N -> every N frames of the fight both momentum bars = 98.5 (deterministic)
+u32 s_rng_redirected = 0;
+// lab stress: every shared-generator draw per frame, first visit and newest re-simulation
+struct Draw
+{
+  char gen, phase;
+  u32 lr, b1, b2, b3;
+};
+std::unordered_map<u32, std::vector<Draw>> s_draws_first, s_draws_resim;
+u32 s_draw_frame = 0;
+bool s_draw_first = true;
+u32 s_draw_dumps = 0;  // lab: FFNY_RB_MOM=N -> every N frames of the fight both momentum bars = 98.5 (deterministic)
 
 u32 Rd32(const u8* ram, u32 a)
 {
@@ -752,7 +766,10 @@ void StressCheck(const u8* ram, u32 f, bool first)
     return;
   s_stress_checked++;
   if (it->second != h && s_stress_bad++ < 20)
+  {
     fprintf(stderr, "FFNYRB STRESS MISMATCH at frame %u after re-simulation\n", f);
+    DumpDraws(s_last_rb_to, f);
+  }
 }
 
 // rbtag v4 words (sound reference bookkeeping; see rbtag.c)
@@ -790,11 +807,27 @@ std::pair<u32, u32> HeapBlockOf(const u8* ram, u32 a)
   return {0, 0};
 }
 
-void LoaderDropConfirmed(u32 conf)
+void LoaderDropConfirmed(u32 conf, u32 f, const u8* ram)
 {
+  // keep a copy while a saved state from before its conversion can still be loaded (states of the last NSLOTS
+  // frames exist; a rewind never goes before the newest confirmed frame + 1)
+  const u32 oldest = f > NSLOTS ? f - NSLOTS : 0;
+  const u32 limit = std::min(conf, oldest);
   s_loader_undo.erase(std::remove_if(s_loader_undo.begin(), s_loader_undo.end(),
-                                     [conf](const LoaderUndo& u) { return u.frame <= conf; }),
+                                     [limit](const LoaderUndo& u) { return u.frame < limit; }),
                       s_loader_undo.end());
+}
+
+void LoaderFillPost(const u8* ram)
+{
+  // called at the start of every logic update: conversions of the previous update / render are finished,
+  // remember what the converted bytes look like
+  for (auto& u : s_loader_undo)
+    if (!u.have_post)
+    {
+      u.post_hash = Fnv(ram + (u.addr & 0x01FFFFFF), u.orig.size(), 2166136261u);
+      u.have_post = true;
+    }
 }
 
 void StartFight(u8* ram, u32 tick_obj, u32 f)
@@ -1052,6 +1085,11 @@ void OnVIField(Core::System& system)
     HLE::Patch(system, 0x80274180, "FFNYRollbackCrash");
   s_rng_redirect = Rd32(ram, 0x8049A200) == 0x3C60804A && Rd32(ram, 0x8049A204) == 0x3863A210 &&
                    std::getenv("FFNY_RB_NORNGFIX") == nullptr;
+  if (const char* pa = std::getenv("FFNY_RB_PROBE"))
+  {
+    s_probe_addr = std::strtoul(pa, nullptr, 16);
+    HLE::Patch(system, s_probe_addr, "FFNYRollbackProbe");
+  }
   if (s_rng_redirect || s_rng_to)
   {
     HLE::Patch(system, ADDR_RENDER, "FFNYRollbackRender");
@@ -1094,13 +1132,22 @@ void HookLoader(const Core::CPUThreadGuard& guard)
       sht != 0)
     return;
   u8* d = ram + (data & 0x01FFFFFF);
-  auto it = std::find_if(s_loader_undo.begin(), s_loader_undo.end(),
-                         [&](const LoaderUndo& u) { return u.addr == data && u.orig.size() == size; });
+  // newest copy of this address and size whose converted bytes are exactly what is there now
+  auto it = s_loader_undo.end();
+  const u32 now_hash = Fnv(ram + (data & 0x01FFFFFF), size, 2166136261u);
+  for (auto i = s_loader_undo.begin(); i != s_loader_undo.end(); ++i)
+    if (i->addr == data && i->orig.size() == size && (ElfFresh(ram + (data & 0x01FFFFFF)) || (i->have_post && i->post_hash == now_hash)))
+      it = i;
   if (ElfFresh(d))
   {
     if (it != s_loader_undo.end())
       s_loader_undo.erase(it);
     s_loader_undo.push_back(LoaderUndo{frame, data, std::vector<u8>(d, d + size)});
+  }
+  else if (ElfConverted(d) && it == s_loader_undo.end())
+  {
+    fprintf(stderr, "FFNYRB LOADER second conversion of %08x (%u bytes) at frame %u: NO matching copy\n", data, size,
+            Rd32(ram, ADDR_COUNTER));
   }
   else if (ElfConverted(d) && it != s_loader_undo.end())
   {
@@ -1109,6 +1156,63 @@ void HookLoader(const Core::CPUThreadGuard& guard)
     fprintf(stderr, "FFNYRB LOADER second conversion of %08x (%u bytes, first in frame %u) at frame %u: original bytes restored\n",
             data, size, it->frame, Rd32(ram, ADDR_COUNTER));
   }
+}
+
+static void RecordDraw(Core::System& system, char gen)
+{
+  if (!s_stress || !s_active)
+    return;
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  auto ok = [](u32 a) { return (a & 0xFE000000) == 0x80000000; };
+  const u32 sp = ppc.gpr[1];
+  const u32 c1 = ok(sp) ? Rd32(ram, sp) : 0, b1 = ok(c1) ? Rd32(ram, c1 + 4) : 0;
+  const u32 c2 = ok(c1) ? Rd32(ram, c1) : 0, b2 = ok(c2) ? Rd32(ram, c2 + 4) : 0;
+  const u32 c3 = ok(c2) ? Rd32(ram, c2) : 0, b3 = ok(c3) ? Rd32(ram, c3 + 4) : 0;
+  auto& m = s_draw_first ? s_draws_first : s_draws_resim;
+  m[s_draw_frame].push_back(Draw{gen, s_phase, ppc.spr[SPR_LR], b1, b2, b3});
+}
+
+void DumpDraws(u32 from, u32 to)
+{
+  if (s_draw_dumps++ >= 3)
+    return;
+  for (u32 f = from; f <= to; f++)
+  {
+    const auto& a = s_draws_first[f];
+    const auto& b = s_draws_resim[f];
+    fprintf(stderr, "DRAWS frame %u: first visit %zu, re-simulation %zu%s\n", f, a.size(), b.size(),
+            a.size() == b.size() ? "" : "  <-- different count");
+    for (size_t i = 0; i < std::max(a.size(), b.size()); i++)
+    {
+      auto pr = [](const char* t, const Draw& d) {
+        fprintf(stderr, "  %s gen%c %c lr %08x bt %08x %08x %08x\n", t, d.gen, d.phase, d.lr, d.b1, d.b2, d.b3);
+      };
+      const bool same = i < a.size() && i < b.size() && a[i].lr == b[i].lr && a[i].b1 == b[i].b1 &&
+                        a[i].b2 == b[i].b2 && a[i].gen == b[i].gen;
+      if (same)
+        continue;
+      if (i < a.size())
+        pr("first", a[i]);
+      if (i < b.size())
+        pr("resim", b[i]);
+    }
+  }
+}
+
+void HookProbe(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  static std::vector<u32> seen;
+  if (std::find(seen.begin(), seen.end(), ppc.gpr[3]) != seen.end() || seen.size() > 40)
+    return;
+  seen.push_back(ppc.gpr[3]);
+  const auto blk = HeapBlockOf(ram, ppc.gpr[3]);
+  fprintf(stderr, "PROBE %08x r3 %08x lr %08x block %08x tag %08x size %08x magic %08x frame %u\n", ppc.pc,
+          ppc.gpr[3], ppc.spr[SPR_LR], blk.first, blk.second, blk.first ? Rd32(ram, blk.first + 4) : 0,
+          blk.first ? Rd32(ram, blk.first + 16) : 0, Rd32(ram, ADDR_COUNTER));
 }
 
 void HookRender(const Core::CPUThreadGuard& guard)
@@ -1124,6 +1228,8 @@ void HookRng1(const Core::CPUThreadGuard& guard)
     ppc.gpr[3] = GEN1_PRIVATE;
     s_rng_redirected++;
   }
+  if (ppc.gpr[3] == GEN1_SHARED)
+    RecordDraw(guard.GetSystem(), '1');
 }
 
 void HookRng(const Core::CPUThreadGuard& guard)
@@ -1138,6 +1244,8 @@ void HookRng(const Core::CPUThreadGuard& guard)
     if (!s_rng_to)
       return;
   }
+  if (ppc.gpr[3] == GEN2_SHARED)
+    RecordDraw(system, '2');
   if (ppc.gpr[3] != 0x803BE03C && !(s_phase == 'R' && ppc.gpr[3] == GEN2_PRIVATE))
     return;
   if (!s_rng_to)
@@ -1187,6 +1295,20 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   const u32 tick_obj = ppc.gpr[28];
   s_phase = 'U';
   s_ram = ram;
+  LoaderFillPost(ram);
+  if (s_stress)
+  {
+    // draws from now on belong to the update of this frame (+ the per-update work and render after it)
+    const u32 cf = Rd32(ram, ADDR_COUNTER);
+    s_draw_frame = cf;
+    s_draw_first = !(s_resim_target && cf < s_resim_target) && s_draws_first.find(cf) == s_draws_first.end();
+    (s_draw_first ? s_draws_first : s_draws_resim)[cf].clear();
+    if (cf >= 64)
+    {
+      s_draws_first.erase(cf - 64);
+      s_draws_resim.erase(cf - 64);
+    }
+  }
   u32 f = Rd32(ram, ADDR_COUNTER);
   const bool fight = Rd32(ram, ADDR_FIGHT) == 1;
 
@@ -1203,6 +1325,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     StressCheck(ram, f, false);
     Inject(ram, tick_obj, f);
     SaveState(system, f);
+    LoaderDropConfirmed(std::min(MinConfirmed(), f - 1), f, ram);
     Wr32(ram, W_CONF, std::min(MinConfirmed(), f - 1));
     Wr32(ram, W_FRAME, f);
     s_resim_frames++;
@@ -1348,7 +1471,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
 
   Inject(ram, tick_obj, f);
   SaveState(system, f);
-  LoaderDropConfirmed(std::min(MinConfirmed(), f - 1));
+  LoaderDropConfirmed(std::min(MinConfirmed(), f - 1), f, ram);
   Wr32(ram, W_CONF, std::min(MinConfirmed(), f - 1));
   Wr32(ram, W_FRAME, f);
   if (f > s_hashed_upto && MinConfirmed() >= f)
