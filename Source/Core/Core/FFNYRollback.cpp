@@ -1422,7 +1422,7 @@ void HeapCheck(const u8* ram, u32 f, const char* where)
       continue;
     const u32 base = Rd32(ram, h + 8), end = Rd32(ram, h + 0xC);
     u32 prev = h + 0x10, n = Rd32(ram, h + 0x20), k = 0;
-    while (n && k++ < 20000)
+    while (n && n != h + 0x10 && k++ < 20000)  // the list ends at the 'BS' sentinel inside the descriptor
     {
       if (!ok(n) || n < base || n >= end || (Rd32(ram, n) >> 16) != 0x4246)
       {
