@@ -125,9 +125,9 @@ static constexpr u32 s_static_ranges[][2] = {
   {0x80372E00, 0x80395478},
   {0x8039547C, 0x803955E0},
   {0x80395620, 0x80395630},
-  {0x80395660, 0x803C3284},
-  {0x803C3288, 0x803C3718},
-  {0x803C375C, 0x803D0960},
+  // includes the effect manager singleton 0x803C3230 completely: +0x54 and +0x4E8..+0x52C were left out as
+  // render-written, but the fight logic reads +0x4F4 (0x800ED048: Blazin' effect timer 0x800EE020, generator 2)
+  {0x80395660, 0x803D0960},
   {0x803D09A0, 0x803D09F0},
   {0x803D0B30, 0x803D0B40},
   {0x803D0B80, 0x803D7D98},
