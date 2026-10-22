@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/PowerPC/BreakPoints.h"
+#include "Core/FFNYRollback.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -429,7 +430,10 @@ bool TMemCheck::Action(Core::System& system, u64 value, u32 addr, bool write, si
   if (((write && is_break_on_write) || (!write && is_break_on_read)) &&
       EvaluateCondition(system, this->condition))
   {
-    if (log_on_hit)
+    if (log_on_hit && FFNYRollback::OnMemCheck(system, addr, value, pc, write))
+    {
+    }
+    else if (log_on_hit)
     {
       auto& ppc_symbol_db = system.GetPPCSymbolDB();
       NOTICE_LOG_FMT(MEMMAP, "MBP {:08x} ({}) {}{} {:x} at {:08x} ({})", pc,

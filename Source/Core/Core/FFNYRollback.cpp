@@ -42,6 +42,7 @@
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/CoreTiming.h"
+#include "Core/PowerPC/BreakPoints.h"
 #include "Core/System.h"
 #include "VideoCommon/OnScreenDisplay.h"
 
@@ -1309,6 +1310,18 @@ void OnVIField(Core::System& system)
     HLE::Patch(system, 0x80274180, "FFNYRollbackCrash");
   s_rng_redirect = Rd32(ram, 0x8049A200) == 0x3C60804A && Rd32(ram, 0x8049A204) == 0x3863A210 &&
                    std::getenv("FFNY_RB_NORNGFIX") == nullptr;
+  if (const char* w = std::getenv("FFNY_RB_WATCHW"))
+  {
+    TMemCheck mc;
+    mc.start_address = u32(strtoul(w, nullptr, 16));
+    mc.end_address = mc.start_address + 3;
+    mc.is_ranged = true;
+    mc.is_break_on_write = true;
+    mc.log_on_hit = true;
+    mc.break_on_hit = false;
+    system.GetPowerPC().GetMemChecks().Add(std::move(mc));
+    fprintf(stderr, "FFNYRB: write watch on %08x\n", mc.start_address);
+  }
   if (std::getenv("FFNY_RB_SEEDLOG"))
     HLE::Patch(system, 0x800B7D38, "FFNYRollbackSeedLog");
   if (std::getenv("FFNY_RB_THREADHEAP"))
@@ -1580,6 +1593,22 @@ void HookHeapLog(const Core::CPUThreadGuard& guard)
     fprintf(stderr, "THREADHEAP free frame %u%s phase %c thread %08x ptr %08x header %08x lr %08x\n", f,
             s_resim_target ? " resim" : "", s_phase, th, p, fl, ppc.spr[SPR_LR]);
   }
+}
+
+bool OnMemCheck(Core::System& system, u32 addr, u64 value, u32 pc, bool write)
+{
+  if (!std::getenv("FFNY_RB_WATCHW"))
+    return false;
+  const u8* ram = system.GetMemory().GetRAM();
+  if (!s_active)
+    return true;
+  static u32 n = 0;
+  if (n++ > 200000)
+    return true;
+  auto& ppc = system.GetPPCState();
+  fprintf(stderr, "MEMW frame %u%s phase %c thread %08x pc %08x lr %08x %08x <- %08x\n", Rd32(ram, ADDR_COUNTER),
+          s_resim_target ? " resim" : "", s_phase, Rd32(ram, 0x800000E4), pc, ppc.spr[SPR_LR], addr, u32(value));
+  return true;
 }
 
 // lab (FFNY_RB_SEEDLOG): generator (re)seeding 0x800B7D38 (r3 generator, r4 / r5 seed)

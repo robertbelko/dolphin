@@ -66,6 +66,8 @@ void HookProbe(const Core::CPUThreadGuard& guard);  // lab
 void HookSndRelease(const Core::CPUThreadGuard& guard);  // lab, 0x801F33E4
 void HookHeapLog(const Core::CPUThreadGuard& guard);     // lab
 void HookSeedLog(const Core::CPUThreadGuard& guard);     // lab
+// lab: a memory check hit (FFNY_RB_WATCHW=addr); returns true when handled
+bool OnMemCheck(Core::System& system, u32 addr, u64 value, u32 pc, bool write);
 // lab: a disc read is about to be written to emulated RAM
 void OnDiscDma(Core::System& system, u32 address, u32 length);
 void HookViCount(const Core::CPUThreadGuard& guard);  // 0x8024E22C, VI retrace count getter
