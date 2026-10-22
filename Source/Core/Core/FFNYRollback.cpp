@@ -186,6 +186,7 @@ constexpr u32 GEN1_FN = 0x8001FC88, GEN1_SHARED = 0x8035D588, GEN1_PRIVATE = 0x8
 constexpr u32 GEN2_FN = 0x800B7DAC, GEN2_SHARED = 0x803BE03C, GEN2_PRIVATE = 0x8049A228;
 bool s_rng_redirect = false;  // the DOL has the private states (rbaudrng stub at 0x8049A200)
 u32 s_rng_redirected = 0;
+u32 s_rng2_calls[4][3] = {};  // lab: [phase U/T/R/other][r3 shared/private/other]
 // lab stress: every shared-generator draw per frame, first visit and newest re-simulation
 struct Draw
 {
@@ -1084,6 +1085,12 @@ void PrintStats(u32 f)
       fprintf(stderr, "FFNYRB heap %u free %u bytes in %u blocks (largest %u)\n", i, total, k, largest);
     }
   }
+  {
+    fprintf(stderr, "FFNYRB gen2 hook calls (shared/private/other): U %u/%u/%u T %u/%u/%u R %u/%u/%u ? %u/%u/%u\n",
+            s_rng2_calls[0][0], s_rng2_calls[0][1], s_rng2_calls[0][2], s_rng2_calls[1][0], s_rng2_calls[1][1],
+            s_rng2_calls[1][2], s_rng2_calls[2][0], s_rng2_calls[2][1], s_rng2_calls[2][2], s_rng2_calls[3][0],
+            s_rng2_calls[3][1], s_rng2_calls[3][2]);
+  }
   fprintf(stderr, "FFNYRB rbtag logs max: acquires %u releases %u frees %u (of 96)\n", s_max_acq, s_max_rel,
           s_max_frl);
   if (s_ram)
@@ -1685,6 +1692,9 @@ void HookRng(const Core::CPUThreadGuard& guard)
   auto& system = guard.GetSystem();
   auto& ppc = system.GetPPCState();
   const u8* ram = system.GetMemory().GetRAM();
+  if (s_active)
+    s_rng2_calls[s_phase == 'U' ? 0 : s_phase == 'T' ? 1 : s_phase == 'R' ? 2 : 3]
+                [ppc.gpr[3] == GEN2_SHARED ? 0 : ppc.gpr[3] == GEN2_PRIVATE ? 1 : 2]++;
   if (s_active && s_rng_redirect && s_phase == 'R' && ppc.gpr[3] == GEN2_SHARED)
   {
     ppc.gpr[3] = GEN2_PRIVATE;
