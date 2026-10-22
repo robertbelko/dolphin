@@ -152,6 +152,17 @@ char s_phase = '-';  // 'U' = inside a logic update (after PRE), 'T' = after the
 // of draws per logic frame differs between the two machines -> the fight's random numbers diverge -> desync (the
 // "Blazin' desync"). Fix: while a rollback fight runs, draws made in the render part of the main loop use the
 // private generator states the rbaudrng part of the DOL already has for the audio module.
+// The VI retrace counter (0x8043FC20, incremented by the SDK's VI thread 0x8024D6F0 via 0x8024CD94 on every
+// retrace) is read by game logic through 0x8024E22C (21 call sites, e.g. 0x800E09C8 in the per-update countdown
+// 0x800E0994 that draws from generator 1). Re-simulated frames all run inside one retrace and the two machines see
+// different counts per logic frame -> logic diverges (lab 22 October, the second Blazin'-mode desync). During a
+// rollback fight's logic update the getter returns a value derived from the frame number (the same as the timing
+// object +8 gets in Inject); the counter itself is real-time system state and is not rewound.
+constexpr u32 ADDR_VICOUNT_GET = 0x8024E22C;  // lwz r3,-0x7BC0(r13); blr
+constexpr u32 ADDR_VICOUNT = 0x8043FC20;
+u32 s_vi_fixed = 0;
+u32 s_vi_base = 0;     // real VI count at fight start
+bool s_vi_fix = true;
 constexpr u32 ADDR_RENDER = 0x80004D88;  // bl 0x8001ED94: start of the render part (tick() returned 0)
 constexpr u32 GEN1_FN = 0x8001FC88, GEN1_SHARED = 0x8035D588, GEN1_PRIVATE = 0x8049A210;
 constexpr u32 GEN2_FN = 0x800B7DAC, GEN2_SHARED = 0x803BE03C, GEN2_PRIVATE = 0x8049A228;
@@ -213,7 +224,8 @@ void BuildRanges(const u8* ram, u32 size, std::vector<std::pair<u32, u32>>& out)
       ex.push_back({(h + 0x3C) & 0x01FFFFFF, (h + 0x54) & 0x01FFFFFF});
   }
   ex.push_back({0x0049A400, 0x0049A410});  // rbtag: previous hook, SysHeap index
-  ex.push_back({0x0049B400, 0x0049BF00});  // rbtag: deferred-free queue, sound-ref / free logs and flags (system state)
+  ex.push_back({0x0049B400, 0x0049BF00});
+  ex.push_back({ADDR_VICOUNT & 0x01FFFFFF, (ADDR_VICOUNT + 8) & 0x01FFFFFF});  // VI retrace counters (real time)  // rbtag: deferred-free queue, sound-ref / free logs and flags (system state)
   const u32 pool = rd(0x802E9B00);
   if (pool)
     ex.push_back({(pool + 0x2A4) & 0x01FFFFFF, (pool + 0x2BC) & 0x01FFFFFF});
@@ -622,8 +634,11 @@ static_assert(NPARTS == NPARTS_FWD);
 
 void Report(const std::string& text)
 {
+  // at most 12 reports per fight (a crash can repeat on every instruction that follows it)
+  if (s_reports++ >= 12)
+    return;
   fprintf(stderr, "FFNYRB REPORT: %s\n", text.c_str());
-  if (s_reports++ < 12 && s_report_cb)
+  if (s_report_cb)
     s_report_cb(text);
 }
 
@@ -635,10 +650,10 @@ std::string FightSummary(const u8* ram)
   const u32 F0 = 0x803F1144, F1 = F0 + 0x12F8;
   snprintf(b, sizeof b,
            "P1 state %u blazin %02x momentum %.1f | P2 state %u blazin %02x momentum %.1f | rollbacks %u (max %u, "
-           "last %u->%u) | loads %u fixed %u | render draws %u",
+           "last %u->%u) | loads %u fixed %u | render draws %u | logic VI reads %u",
            Rd32(ram, F0 + 0x30), ram[(F0 + 0x93E) & 0x01FFFFFF], fl(F0 + 0x364), Rd32(ram, F1 + 0x30),
            ram[(F1 + 0x93E) & 0x01FFFFFF], fl(F1 + 0x364), s_rollbacks, s_max_depth, s_last_rb_from, s_last_rb_to,
-           s_loader_calls, s_loader_restores, s_rng_redirected);
+           s_loader_calls, s_loader_restores, s_rng_redirected, s_vi_fixed);
   return b;
 }
 
@@ -842,6 +857,8 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_mispredict_from = 0xFFFFFFFF;
   s_hashed_upto = f;
   s_time_base = Rd32(ram, 0x8035D620);
+  s_vi_base = Rd32(ram, ADDR_VICOUNT);
+  s_vi_fix = std::getenv("FFNY_RB_NOVIFIX") == nullptr;
   s_time_dt = 0x3C888889;  // 1/60 s
   for (int p = 0; p < 4; p++)
   {
@@ -895,13 +912,16 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
 
 void PrintStats(u32 f)
 {
+  if (s_ram)
+    fprintf(stderr, "FFNYRB VI real %u at frame %u (fight start: VI %u frame %u)\n", Rd32(s_ram, ADDR_VICOUNT), f,
+            s_vi_base, s_start_frame);
   fprintf(stderr,
           "FFNYRB frame %u: %u frames, %u rollbacks, %u re-simulated (max depth %u), %u waits "
           "(%.1f ms), save %.2f ms/frame, load %.2f ms/rollback, hashes checked %u, desyncs %u, "
-          "loader calls %u second conversions fixed %u, render random draws redirected %u\n",
+          "loader calls %u second conversions fixed %u, render random draws redirected %u, logic VI reads %u\n",
           f, s_frames, s_rollbacks, s_resim_frames, s_max_depth, s_waits, s_wait_us / 1000.0,
           s_frames ? s_save_us / 1000.0 / s_frames : 0.0,
-          s_rollbacks ? s_load_us / 1000.0 / s_rollbacks : 0.0, s_hash_checked, s_desyncs, s_loader_calls, s_loader_restores, s_rng_redirected);
+          s_rollbacks ? s_load_us / 1000.0 / s_rollbacks : 0.0, s_hash_checked, s_desyncs, s_loader_calls, s_loader_restores, s_rng_redirected, s_vi_fixed);
 }
 }  // namespace
 
@@ -1081,6 +1101,8 @@ void OnVIField(Core::System& system)
   HLE::Patch(system, ADDR_PRE, "FFNYRollbackPre");
   HLE::Patch(system, ADDR_TICK, "FFNYRollbackTick");
   HLE::Patch(system, ADDR_LOADER, "FFNYRollbackLoader");
+  if (Rd32(ram, ADDR_VICOUNT_GET) == 0x806D8440 && Rd32(ram, ADDR_VICOUNT_GET + 4) == 0x4E800020)
+    HLE::Patch(system, ADDR_VICOUNT_GET, "FFNYRollbackViCount");
   if (Rd32(ram, 0x80274180) == 0x9421FFC0)  // stwu sp,-0x40(sp): the SDK's unhandled-exception handler
     HLE::Patch(system, 0x80274180, "FFNYRollbackCrash");
   s_rng_redirect = Rd32(ram, 0x8049A200) == 0x3C60804A && Rd32(ram, 0x8049A204) == 0x3863A210 &&
@@ -1206,13 +1228,56 @@ void HookProbe(const Core::CPUThreadGuard& guard)
   auto& ppc = system.GetPPCState();
   const u8* ram = system.GetMemory().GetRAM();
   static std::vector<u32> seen;
+  if (!s_active || Rd32(ram, ADDR_COUNTER) < s_start_frame + 20)
+    return;
   if (std::find(seen.begin(), seen.end(), ppc.gpr[3]) != seen.end() || seen.size() > 40)
     return;
   seen.push_back(ppc.gpr[3]);
   const auto blk = HeapBlockOf(ram, ppc.gpr[3]);
+  {
+    // is the object inside the newest saved state's ranges?
+    const u32 a = ppc.gpr[3] & 0x01FFFFFF;
+    int covered = -1;
+    for (const auto& st : s_states)
+      if (st.frame != 0xFFFFFFFF)
+      {
+        covered = 0;
+        for (auto [lo, hi] : st.ranges)
+          if (a >= lo && a + 0x20 <= hi)
+            covered = 1;
+        if (!covered)
+          for (auto [lo, hi] : st.ranges)
+            if (a < hi && a + 0x40 > lo)
+              fprintf(stderr, "PROBE   partial range %08x-%08x\n", lo | 0x80000000u, hi | 0x80000000u);
+        break;
+      }
+    fprintf(stderr, "PROBE   %08x in saved state: %s\n", ppc.gpr[3],
+            covered < 0 ? "no state yet" : covered ? "yes" : "NO");
+  }
   fprintf(stderr, "PROBE %08x r3 %08x lr %08x block %08x tag %08x size %08x magic %08x frame %u\n", ppc.pc,
           ppc.gpr[3], ppc.spr[SPR_LR], blk.first, blk.second, blk.first ? Rd32(ram, blk.first + 4) : 0,
           blk.first ? Rd32(ram, blk.first + 16) : 0, Rd32(ram, ADDR_COUNTER));
+}
+
+void HookViCount(const Core::CPUThreadGuard& guard)
+{
+  // replaces lwz r3,-0x7BC0(r13); blr
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  if (s_active && s_vi_fix)
+  {
+    // every reader (logic and render) gets the frame-derived count during the whole fight, so nothing compares a
+    // real count with a derived one; rate 1 per logic frame like the real 60 Hz retrace
+    const u32 f = Rd32(ram, ADDR_COUNTER);
+    ppc.gpr[3] = s_vi_base + (f - s_start_frame);
+    s_vi_fixed++;
+  }
+  else
+  {
+    ppc.gpr[3] = Rd32(ram, ADDR_VICOUNT);
+  }
+  ppc.npc = ppc.spr[SPR_LR];
 }
 
 void HookRender(const Core::CPUThreadGuard& guard)
@@ -1296,6 +1361,14 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   s_phase = 'U';
   s_ram = ram;
   LoaderFillPost(ram);
+  if (s_active && s_log)
+  {
+    // lab: the time step the update gets (f31 -> f1 at 0x80004D20)
+    static u32 shown = 0;
+    const double dt = ppc.ps[31].PS0AsDouble();
+    if ((dt < 0.0166 || dt > 0.0168) && shown++ < 40)
+      fprintf(stderr, "FFNYRB DT frame %u: f31 = %.6f%s\n", Rd32(ram, ADDR_COUNTER), dt, s_resim_target ? " (resim)" : "");
+  }
   if (s_stress)
   {
     // draws from now on belong to the update of this frame (+ the per-update work and render after it)

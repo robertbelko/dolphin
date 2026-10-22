@@ -27,7 +27,7 @@ namespace HLE
 static std::map<u32, u32> s_hooked_addresses;
 
 // clang-format off
-constexpr std::array<Hook, 31> os_patches{{
+constexpr std::array<Hook, 33> os_patches{{
     // Placeholder, os_patches[0] is the "non-existent function" index
     {"FAKE_TO_SKIP_0",               HLE_Misc::UnimplementedFunction,       HookType::Replace, HookFlag::Generic},
 
@@ -66,6 +66,8 @@ constexpr std::array<Hook, 31> os_patches{{
     {"FFNYRollbackRng",              FFNYRollback::HookRng,                 HookType::Start,   HookFlag::Fixed},
     {"FFNYRollbackRng1",             FFNYRollback::HookRng1,                HookType::Start,   HookFlag::Fixed},
     {"FFNYRollbackRender",           FFNYRollback::HookRender,              HookType::Start,   HookFlag::Fixed},
+    {"FFNYRollbackViCount",          FFNYRollback::HookViCount,             HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackProbe",            FFNYRollback::HookProbe,               HookType::Start,   HookFlag::Fixed},
     {"FFNYRollbackCrash",            FFNYRollback::HookUnhandledException,  HookType::Start,   HookFlag::Fixed}
 }};
 // clang-format on
