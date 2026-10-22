@@ -186,6 +186,7 @@ constexpr u32 GEN1_FN = 0x8001FC88, GEN1_SHARED = 0x8035D588, GEN1_PRIVATE = 0x8
 constexpr u32 GEN2_FN = 0x800B7DAC, GEN2_SHARED = 0x803BE03C, GEN2_PRIVATE = 0x8049A228;
 bool s_rng_redirect = false;  // the DOL has the private states (rbaudrng stub at 0x8049A200)
 u32 s_rng_redirected = 0;
+u32 s_rng_effect = 0;  // of those: effect manager draws (any phase)
 u32 s_rng2_calls[4][3] = {};  // lab: [phase U/T/R/other][r3 shared/private/other]
 // lab stress: every shared-generator draw per frame, first visit and newest re-simulation
 struct Draw
@@ -1091,6 +1092,7 @@ void PrintStats(u32 f)
             s_rng2_calls[1][2], s_rng2_calls[2][0], s_rng2_calls[2][1], s_rng2_calls[2][2], s_rng2_calls[3][0],
             s_rng2_calls[3][1], s_rng2_calls[3][2]);
   }
+  fprintf(stderr, "FFNYRB effect manager draws on the private generator: %u\n", s_rng_effect);
   fprintf(stderr, "FFNYRB rbtag logs max: acquires %u releases %u frees %u (of 96)\n", s_max_acq, s_max_rel,
           s_max_frl);
   if (s_ram)
@@ -1715,10 +1717,25 @@ static void HookRngBody(const Core::CPUThreadGuard& guard)
   if (s_active)
     s_rng2_calls[s_phase == 'U' ? 0 : s_phase == 'T' ? 1 : s_phase == 'R' ? 2 : 3]
                 [ppc.gpr[3] == GEN2_SHARED ? 0 : ppc.gpr[3] == GEN2_PRIVATE ? 1 : 2]++;
-  if (s_active && s_rng_redirect && s_phase == 'R' && ppc.gpr[3] == GEN2_SHARED)
+  // The effect manager (singleton 0x803C3230) draws from generator 2 through the wrapper 0x800B7E90 at five
+  // places. Its state is driven by render code (start flag +0x4F4 written only in the render phase by
+  // 0x800ECA00 from 0x800EDA24), i.e. by the frame each machine displays, which can be a predicted one: the two
+  // machines started the Blazin' effect timer 9 frames apart and their fight generator diverged. The effect
+  // draws are visual only: during rollback fights they all use the private generator, in every phase.
+  bool effect = false;
+  if (s_active && s_rng_redirect && ppc.gpr[3] == GEN2_SHARED && ppc.spr[SPR_LR] == 0x800B7EBC)
+  {
+    const u32 back = Rd32(ram, ppc.gpr[1]);
+    const u32 site = (back & 0xFE000000) == 0x80000000 ? Rd32(ram, back + 4) : 0;
+    effect = site == 0x800ECFEC || site == 0x800EDB50 || site == 0x800EE098 || site == 0x800EE0C8 ||
+             site == 0x800EE0F4;
+  }
+  if (s_active && s_rng_redirect && (s_phase == 'R' || effect) && ppc.gpr[3] == GEN2_SHARED)
   {
     ppc.gpr[3] = GEN2_PRIVATE;
     s_rng_redirected++;
+    if (effect)
+      s_rng_effect++;
     if (!s_rng_to)
       return;
   }
