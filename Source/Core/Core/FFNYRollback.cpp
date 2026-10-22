@@ -42,6 +42,7 @@
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/CoreTiming.h"
+#include "Core/PowerPC/BreakPoints.h"
 #include "Core/System.h"
 #include "VideoCommon/OnScreenDisplay.h"
 
@@ -185,11 +186,13 @@ constexpr u32 GEN1_FN = 0x8001FC88, GEN1_SHARED = 0x8035D588, GEN1_PRIVATE = 0x8
 constexpr u32 GEN2_FN = 0x800B7DAC, GEN2_SHARED = 0x803BE03C, GEN2_PRIVATE = 0x8049A228;
 bool s_rng_redirect = false;  // the DOL has the private states (rbaudrng stub at 0x8049A200)
 u32 s_rng_redirected = 0;
+u32 s_rng2_calls[4][3] = {};  // lab: [phase U/T/R/other][r3 shared/private/other]
 // lab stress: every shared-generator draw per frame, first visit and newest re-simulation
 struct Draw
 {
   char gen, phase;
   u32 lr, b1, b2, b3;
+  u32 r29, r31;
 };
 std::unordered_map<u32, std::vector<Draw>> s_draws_first, s_draws_resim;
 u32 s_watch_lo = 0, s_watch_len = 0;  // lab: FFNY_RB_WATCHRANGE=hexaddr:hexlen, recorded at every PRE
@@ -1001,6 +1004,21 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_sync_next = f + 60;
   s_sync_delays = 0;
   s_input_msgs_in = s_input_msgs_stale = 0;
+  if (s_log)
+  {
+    // lab: the heaps at fight start (index, descriptor, range, base block tagged = not rewound)
+    for (u32 i = 0; i < 16; i++)
+    {
+      const u32 h = Rd32(ram, 0x8040BD70 + 4 * i);
+      if ((h & 0xFE000000) != 0x80000000)
+        continue;
+      const u32 base = Rd32(ram, h + 8), end = Rd32(ram, h + 0xC);
+      const bool okb = (base & 0xFE000000) == 0x80000000;
+      const u32 hdr = okb ? Rd32(ram, base - 16) : 0;
+      fprintf(stderr, "FFNYRB heap %u: desc %08x range %08x-%08x base block header %08x%s\n", i, h, base, end, hdr,
+              (hdr >> 16) == 0x424D && (hdr & 0x80) ? " (tagged: NOT rewound)" : "");
+    }
+  }
   for (auto& s : s_states)
     s.frame = 0xFFFFFFFF;
   s_local_hash.clear();
@@ -1047,6 +1065,32 @@ void PrintStats(u32 f)
   fprintf(stderr, "FFNYRB input messages received %u, without anything new %u; time sync: %u one-frame delays, "
           "lead now %d (2x frames)\n", s_input_msgs_in, s_input_msgs_stale, s_sync_delays,
           s_adv_n ? s_adv_hist[(s_adv_n - 1) % s_adv_hist.size()] : 0);
+  if (s_ram)
+  {
+    // lab: free space of the excluded heaps (2 = SndHeap, 3 = SysHeap); a full SysHeap makes rbtag fall back to
+    // the rewound main heap
+    for (u32 i = 2; i <= 3; i++)
+    {
+      const u32 h = Rd32(s_ram, 0x8040BD70 + 4 * i);
+      if ((h & 0xFE000000) != 0x80000000)
+        continue;
+      u32 n = Rd32(s_ram, h + 0x20), k = 0, total = 0, largest = 0;
+      while (n && n != h + 0x10 && (n & 0xFE000000) == 0x80000000 && k++ < 5000)
+      {
+        const u32 sz = Rd32(s_ram, n + 4);
+        total += sz;
+        largest = std::max(largest, sz);
+        n = Rd32(s_ram, n + 0x10);
+      }
+      fprintf(stderr, "FFNYRB heap %u free %u bytes in %u blocks (largest %u)\n", i, total, k, largest);
+    }
+  }
+  {
+    fprintf(stderr, "FFNYRB gen2 hook calls (shared/private/other): U %u/%u/%u T %u/%u/%u R %u/%u/%u ? %u/%u/%u\n",
+            s_rng2_calls[0][0], s_rng2_calls[0][1], s_rng2_calls[0][2], s_rng2_calls[1][0], s_rng2_calls[1][1],
+            s_rng2_calls[1][2], s_rng2_calls[2][0], s_rng2_calls[2][1], s_rng2_calls[2][2], s_rng2_calls[3][0],
+            s_rng2_calls[3][1], s_rng2_calls[3][2]);
+  }
   fprintf(stderr, "FFNYRB rbtag logs max: acquires %u releases %u frees %u (of 96)\n", s_max_acq, s_max_rel,
           s_max_frl);
   if (s_ram)
@@ -1273,6 +1317,25 @@ void OnVIField(Core::System& system)
     HLE::Patch(system, 0x80274180, "FFNYRollbackCrash");
   s_rng_redirect = Rd32(ram, 0x8049A200) == 0x3C60804A && Rd32(ram, 0x8049A204) == 0x3863A210 &&
                    std::getenv("FFNY_RB_NORNGFIX") == nullptr;
+  if (const char* w = std::getenv("FFNY_RB_WATCHW"))
+  {
+    TMemCheck mc;
+    mc.start_address = u32(strtoul(w, nullptr, 16));
+    mc.end_address = mc.start_address + 3;
+    mc.is_ranged = true;
+    mc.is_break_on_write = true;
+    mc.log_on_hit = true;
+    mc.break_on_hit = false;
+    system.GetPowerPC().GetMemChecks().Add(std::move(mc));
+    fprintf(stderr, "FFNYRB: write watch on %08x\n", mc.start_address);
+  }
+  if (std::getenv("FFNY_RB_SEEDLOG"))
+    HLE::Patch(system, 0x800B7D38, "FFNYRollbackSeedLog");
+  if (std::getenv("FFNY_RB_THREADHEAP"))
+  {
+    HLE::Patch(system, 0x80249884, "FFNYRollbackHeapLog");
+    HLE::Patch(system, 0x8049A898, "FFNYRollbackHeapLog");
+  }
   if (std::getenv("FFNY_RB_SNDCHECK"))
     HLE::Patch(system, 0x801F33E4, "FFNYRollbackSndRel");
   if (const char* pa = std::getenv("FFNY_RB_PROBE"))
@@ -1360,7 +1423,7 @@ static void RecordDraw(Core::System& system, char gen)
   const u32 c2 = ok(c1) ? Rd32(ram, c1) : 0, b2 = ok(c2) ? Rd32(ram, c2 + 4) : 0;
   const u32 c3 = ok(c2) ? Rd32(ram, c2) : 0, b3 = ok(c3) ? Rd32(ram, c3 + 4) : 0;
   auto& m = s_draw_first ? s_draws_first : s_draws_resim;
-  m[s_draw_frame].push_back(Draw{gen, s_phase, ppc.spr[SPR_LR], b1, b2, b3});
+  m[s_draw_frame].push_back(Draw{gen, s_phase, ppc.spr[SPR_LR], b1, b2, b3, ppc.gpr[29], ppc.gpr[31]});
 }
 
 void DumpDraws(u32 from, u32 to)
@@ -1389,7 +1452,8 @@ void DumpDraws(u32 from, u32 to)
     for (size_t i = 0; i < std::max(a.size(), b.size()); i++)
     {
       auto pr = [](const char* t, const Draw& d) {
-        fprintf(stderr, "  %s gen%c %c lr %08x bt %08x %08x %08x\n", t, d.gen, d.phase, d.lr, d.b1, d.b2, d.b3);
+        fprintf(stderr, "  %s gen%c %c lr %08x bt %08x %08x %08x r29 %08x r31 %08x\n", t, d.gen, d.phase, d.lr, d.b1,
+                d.b2, d.b3, d.r29, d.r31);
       };
       const bool same = i < a.size() && i < b.size() && a[i].lr == b[i].lr && a[i].b1 == b[i].b1 &&
                         a[i].b2 == b[i].b2 && a[i].gen == b[i].gen;
@@ -1500,11 +1564,122 @@ void HookSndRelease(const Core::CPUThreadGuard& guard)
   }
 }
 
+// lab (FFNY_RB_THREADHEAP): allocations (core 0x80249884: r3 name, r4 size, r7 flags) and frees (rbtag's
+// rb_free 0x8049A898: r3 pointer) made during a fight by any thread other than the game's main thread
+void HookHeapLog(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  const u32 th = Rd32(ram, 0x800000E4);
+  if (!s_active || th == 0x80432D10)
+    return;
+  static u32 n = 0;
+  if (n++ > 3000)
+    return;
+  auto ok = [](u32 a) { return (a & 0xFE000000) == 0x80000000 && (a & 0x01FFFFFF) < 0x01800000; };
+  const u32 f = Rd32(ram, ADDR_COUNTER);
+  if (ppc.pc == 0x80249884)
+  {
+    char name[40] = {};
+    if (ok(ppc.gpr[3]))
+      for (int i = 0; i < 39; i++)
+      {
+        const u8 c = ram[(ppc.gpr[3] + i) & 0x01FFFFFF];
+        if (!c)
+          break;
+        name[i] = (c >= 32 && c < 127) ? char(c) : '?';
+      }
+    fprintf(stderr, "THREADHEAP alloc frame %u%s phase %c thread %08x name '%s' size %x flags %x lr %08x\n", f,
+            s_resim_target ? " resim" : "", s_phase, th, name, ppc.gpr[4], ppc.gpr[7], ppc.spr[SPR_LR]);
+  }
+  else
+  {
+    const u32 p = ppc.gpr[3];
+    const u32 fl = ok(p) ? Rd32(ram, p - 16) : 0;
+    fprintf(stderr, "THREADHEAP free frame %u%s phase %c thread %08x ptr %08x header %08x lr %08x\n", f,
+            s_resim_target ? " resim" : "", s_phase, th, p, fl, ppc.spr[SPR_LR]);
+  }
+}
+
+bool OnMemCheck(Core::System& system, u32 addr, u64 value, u32 pc, bool write)
+{
+  if (!std::getenv("FFNY_RB_WATCHW"))
+    return false;
+  const u8* ram = system.GetMemory().GetRAM();
+  if (!s_active)
+    return true;
+  static u32 n = 0;
+  if (n++ > 200000)
+    return true;
+  auto& ppc = system.GetPPCState();
+  fprintf(stderr, "MEMW frame %u%s phase %c thread %08x pc %08x lr %08x %08x <- %08x\n", Rd32(ram, ADDR_COUNTER),
+          s_resim_target ? " resim" : "", s_phase, Rd32(ram, 0x800000E4), pc, ppc.spr[SPR_LR], addr, u32(value));
+  return true;
+}
+
+// lab (FFNY_RB_SEEDLOG): generator (re)seeding 0x800B7D38 (r3 generator, r4 / r5 seed)
+void HookSeedLog(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  static u32 n = 0;
+  if (n++ > 2000)
+    return;
+  auto ok = [](u32 a) { return (a & 0xFE000000) == 0x80000000; };
+  const u32 sp = ppc.gpr[1];
+  const u32 c1 = ok(sp) ? Rd32(ram, sp) : 0, b1 = ok(c1) ? Rd32(ram, c1 + 4) : 0;
+  const u32 c2 = ok(c1) ? Rd32(ram, c1) : 0, b2 = ok(c2) ? Rd32(ram, c2 + 4) : 0;
+  fprintf(stderr, "SEED frame %u%s phase %c active %d thread %08x gen %08x seed %08x %08x lr %08x bt %08x %08x\n",
+          Rd32(ram, ADDR_COUNTER), s_resim_target ? " resim" : "", s_phase, s_active, Rd32(ram, 0x800000E4),
+          ppc.gpr[3], ppc.gpr[4], ppc.gpr[5], ppc.spr[SPR_LR], b1, b2);
+}
+
+void OnDiscDma(Core::System& system, u32 address, u32 length)
+{
+  if (!s_active || !s_log)
+    return;
+  const u8* ram = system.GetMemory().GetRAM();
+  static u32 shown = 0, total = 0, bad = 0;
+  total++;
+  // does the target overlap a free block of any heap (free list: head [h+0x20], node +4 size, +0x10 next)?
+  const u32 lo = address | 0x80000000, hi = lo + length;
+  for (u32 i = 0; i < 16; i++)
+  {
+    const u32 h = Rd32(ram, 0x8040BD70 + 4 * i);
+    if ((h & 0xFE000000) != 0x80000000)
+      continue;
+    u32 n = Rd32(ram, h + 0x20), k = 0;
+    while (n && n != h + 0x10 && (n & 0xFE000000) == 0x80000000 && k++ < 20000)
+    {
+      const u32 sz = Rd32(ram, n + 4);
+      if (lo < n + sz && n < hi)
+      {
+        bad++;
+        if (shown++ < 20)
+          fprintf(stderr,
+                  "DISCDMA INTO FREE MEMORY frame %u%s: %08x-%08x (%u bytes) overlaps free block %08x-%08x of heap %u "
+                  "(free node %s) [%u of %u disc reads so far]\n",
+                  Rd32(ram, ADDR_COUNTER), s_resim_target ? " resim" : "", lo, hi, length, n, n + sz, i,
+                  (lo <= n + 0x14 && n + 0x10 < hi) ? "OVERWRITTEN" : "untouched", bad, total);
+        return;
+      }
+      n = Rd32(ram, n + 0x10);
+    }
+  }
+}
+
 void HookRender(const Core::CPUThreadGuard& guard)
 {
   s_phase = 'R';
 }
 
+// The generator hooks are Replace hooks: a Start hook's change of r3 is not seen by the JIT code after it when
+// the caller set r3 with constant instructions (lis / subi): the JIT keeps the constant across the call, so the
+// "redirected" draw still used the shared generator (lab: 1,159 redirected render draws all wrote the shared
+// generator-2 state). A Replace hook ends the JIT block, the code after it reads r3 from the PPC state. The hook
+// therefore also does the function's first instruction itself and continues after it.
 void HookRng1(const Core::CPUThreadGuard& guard)
 {
   auto& ppc = guard.GetSystem().GetPPCState();
@@ -1515,13 +1690,31 @@ void HookRng1(const Core::CPUThreadGuard& guard)
   }
   if (ppc.gpr[3] == GEN1_SHARED)
     RecordDraw(guard.GetSystem(), '1');
+  ppc.gpr[7] = ppc.gpr[3];  // 0x8001FC88: mr r7, r3
+  ppc.npc = GEN1_FN + 4;
 }
 
+static void HookRngBody(const Core::CPUThreadGuard& guard);
 void HookRng(const Core::CPUThreadGuard& guard)
+{
+  HookRngBody(guard);
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  // 0x800B7DAC: stwu sp, -0x10(sp)
+  const u32 sp = ppc.gpr[1];
+  Wr32(system.GetMemory().GetRAM(), sp - 0x10, sp);
+  ppc.gpr[1] = sp - 0x10;
+  ppc.npc = GEN2_FN + 4;
+}
+
+static void HookRngBody(const Core::CPUThreadGuard& guard)
 {
   auto& system = guard.GetSystem();
   auto& ppc = system.GetPPCState();
   const u8* ram = system.GetMemory().GetRAM();
+  if (s_active)
+    s_rng2_calls[s_phase == 'U' ? 0 : s_phase == 'T' ? 1 : s_phase == 'R' ? 2 : 3]
+                [ppc.gpr[3] == GEN2_SHARED ? 0 : ppc.gpr[3] == GEN2_PRIVATE ? 1 : 2]++;
   if (s_active && s_rng_redirect && s_phase == 'R' && ppc.gpr[3] == GEN2_SHARED)
   {
     ppc.gpr[3] = GEN2_PRIVATE;
@@ -1874,6 +2067,31 @@ void SetReportCallback(std::function<void(const std::string&)> callback)
 
 void OnInvalidAccess(Core::System& system, u32 address, u32 pc, bool write)
 {
+  if (s_log)
+  {
+    // lab: first invalid access -> state of every heap's free list and the thread / call chain, once
+    static bool dumped = false;
+    if (!dumped)
+    {
+      dumped = true;
+      const u8* r = system.GetMemory().GetRAM();
+      auto& ppc = system.GetPPCState();
+      fprintf(stderr, "CRASHDUMP thread %08x (main %08x) r3 %08x r4 %08x r5 %08x r29 %08x r30 %08x r31 %08x\n",
+              Rd32(r, 0x800000E4), 0x80432D10u, ppc.gpr[3], ppc.gpr[4], ppc.gpr[5], ppc.gpr[29], ppc.gpr[30],
+              ppc.gpr[31]);
+      u32 sp = ppc.gpr[1];
+      for (int k = 0; k < 10 && (sp & 0xFE000000) == 0x80000000; k++)
+      {
+        const u32 up = Rd32(r, sp);
+        if ((up & 0xFE000000) != 0x80000000)
+          break;
+        fprintf(stderr, "CRASHDUMP   caller %08x\n", Rd32(r, up + 4));
+        sp = up;
+      }
+      HeapCheck(r, Rd32(r, ADDR_COUNTER), "at the crash");
+    }
+  }
+
   if (!s_settings.enabled)
     return;
   const u8* ram = system.GetMemory().GetRAM();
