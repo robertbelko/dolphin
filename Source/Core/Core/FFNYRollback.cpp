@@ -1407,6 +1407,31 @@ void HookTick(const Core::CPUThreadGuard& guard)
   }
 }
 
+// lab stress: from here on, draws (and the watched range) belong to the update of frame f
+void DrawFrameBegin(const u8* ram, u32 f, bool first)
+{
+  if (!s_stress)
+    return;
+  s_draw_frame = f;
+  s_draw_first = first;
+  (first ? s_draws_first : s_draws_resim)[f].clear();
+  if (f >= 64)
+  {
+    s_draws_first.erase(f - 64);
+    s_draws_resim.erase(f - 64);
+  }
+  if (s_watch_len)
+  {
+    const u8* w = ram + (s_watch_lo & 0x01FFFFFF);
+    (first ? s_watch_first : s_watch_resim)[f].assign(w, w + s_watch_len);
+    if (f >= 64)
+    {
+      s_watch_first.erase(f - 64);
+      s_watch_resim.erase(f - 64);
+    }
+  }
+}
+
 void HookPreUpdate(const Core::CPUThreadGuard& guard)
 {
   auto& system = guard.GetSystem();
@@ -1436,29 +1461,6 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     if ((dt < 0.0166 || dt > 0.0168) && shown++ < 40)
       fprintf(stderr, "FFNYRB DT frame %u: f31 = %.6f%s\n", Rd32(ram, ADDR_COUNTER), dt, s_resim_target ? " (resim)" : "");
   }
-  if (s_stress)
-  {
-    // draws from now on belong to the update of this frame (+ the per-update work and render after it)
-    const u32 cf = Rd32(ram, ADDR_COUNTER);
-    s_draw_frame = cf;
-    s_draw_first = !(s_resim_target && cf < s_resim_target) && s_draws_first.find(cf) == s_draws_first.end();
-    (s_draw_first ? s_draws_first : s_draws_resim)[cf].clear();
-    if (s_watch_len)
-    {
-      const u8* w = ram + (s_watch_lo & 0x01FFFFFF);
-      (s_draw_first ? s_watch_first : s_watch_resim)[cf].assign(w, w + s_watch_len);
-      if (cf >= 64)
-      {
-        s_watch_first.erase(cf - 64);
-        s_watch_resim.erase(cf - 64);
-      }
-    }
-    if (cf >= 64)
-    {
-      s_draws_first.erase(cf - 64);
-      s_draws_resim.erase(cf - 64);
-    }
-  }
   u32 f = Rd32(ram, ADDR_COUNTER);
   const bool fight = Rd32(ram, ADDR_FIGHT) == 1;
 
@@ -1473,6 +1475,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   {
     // re-simulated frame: inputs are known better now
     StressCheck(ram, f, false);
+    DrawFrameBegin(ram, f, false);
     Inject(ram, tick_obj, f);
     SaveState(system, f);
     LoaderDropConfirmed(std::min(MinConfirmed(), f - 1), f, ram);
@@ -1581,6 +1584,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       // we are frame s again (registers restored); do the replaced instruction again
       ppc.gpr[3] = ppc.gpr[26];
       ppc.npc = ADDR_PRE + 4;
+      DrawFrameBegin(ram, s, false);
       Inject(ram, ppc.gpr[28], s);
       SaveState(system, s);
       {
@@ -1619,6 +1623,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     return;
   }
 
+  DrawFrameBegin(ram, f, true);  // first run of update f (also right after a re-simulation caught up)
   Inject(ram, tick_obj, f);
   SaveState(system, f);
   LoaderDropConfirmed(std::min(MinConfirmed(), f - 1), f, ram);
