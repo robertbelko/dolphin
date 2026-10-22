@@ -1876,6 +1876,31 @@ void SetReportCallback(std::function<void(const std::string&)> callback)
 
 void OnInvalidAccess(Core::System& system, u32 address, u32 pc, bool write)
 {
+  if (s_log)
+  {
+    // lab: first invalid access -> state of every heap's free list and the thread / call chain, once
+    static bool dumped = false;
+    if (!dumped)
+    {
+      dumped = true;
+      const u8* r = system.GetMemory().GetRAM();
+      auto& ppc = system.GetPPCState();
+      fprintf(stderr, "CRASHDUMP thread %08x (main %08x) r3 %08x r4 %08x r5 %08x r29 %08x r30 %08x r31 %08x\n",
+              Rd32(r, 0x800000E4), 0x80432D10u, ppc.gpr[3], ppc.gpr[4], ppc.gpr[5], ppc.gpr[29], ppc.gpr[30],
+              ppc.gpr[31]);
+      u32 sp = ppc.gpr[1];
+      for (int k = 0; k < 10 && (sp & 0xFE000000) == 0x80000000; k++)
+      {
+        const u32 up = Rd32(r, sp);
+        if ((up & 0xFE000000) != 0x80000000)
+          break;
+        fprintf(stderr, "CRASHDUMP   caller %08x\n", Rd32(r, up + 4));
+        sp = up;
+      }
+      HeapCheck(r, Rd32(r, ADDR_COUNTER), "at the crash");
+    }
+  }
+
   if (!s_settings.enabled)
     return;
   const u8* ram = system.GetMemory().GetRAM();
