@@ -175,6 +175,8 @@ struct Draw
   u32 lr, b1, b2, b3;
 };
 std::unordered_map<u32, std::vector<Draw>> s_draws_first, s_draws_resim;
+u32 s_watch_lo = 0, s_watch_len = 0;  // lab: FFNY_RB_WATCHRANGE=hexaddr:hexlen, recorded at every PRE
+std::unordered_map<u32, std::vector<u8>> s_watch_first, s_watch_resim;
 u32 s_draw_frame = 0;
 bool s_draw_first = true;
 u32 s_draw_dumps = 0;  // lab: FFNY_RB_MOM=N -> every N frames of the fight both momentum bars = 98.5 (deterministic)
@@ -937,6 +939,8 @@ void Configure(const Settings& settings, Transport* transport)
   s_stress = std::getenv("FFNY_RB_STRESS") ? std::atoi(std::getenv("FFNY_RB_STRESS")) : 0;
   s_loop = std::getenv("FFNY_RB_LOOP") ? std::atoi(std::getenv("FFNY_RB_LOOP")) : 0;
   s_loader_fix = std::getenv("FFNY_RB_NOLOADFIX") == nullptr;
+  if (const char* w = std::getenv("FFNY_RB_WATCHRANGE"))
+    sscanf(w, "%x:%x", &s_watch_lo, &s_watch_len);
   s_stress_from = std::getenv("FFNY_RB_STRESS_FROM") ? std::atoi(std::getenv("FFNY_RB_STRESS_FROM")) : 0;
   if (const char* r = std::getenv("FFNY_RB_RNGLOG"))
     sscanf(r, "%u:%u", &s_rng_from, &s_rng_to);
@@ -1204,6 +1208,19 @@ void DumpDraws(u32 from, u32 to)
 {
   if (s_draw_dumps++ >= 3)
     return;
+  for (u32 f = from; f <= to && s_watch_len; f++)
+  {
+    auto a = s_watch_first.find(f), b = s_watch_resim.find(f);
+    if (a == s_watch_first.end() || b == s_watch_resim.end())
+      continue;
+    int shown = 0;
+    for (u32 k = 0; k + 4 <= s_watch_len; k += 4)
+      if (memcmp(&a->second[k], &b->second[k], 4) && shown++ < 12)
+        fprintf(stderr, "WATCH frame %u (start of update): %08x first %08x resim %08x\n", f, s_watch_lo + k,
+                Get32Fwd(&a->second[k]), Get32Fwd(&b->second[k]));
+    if (!shown)
+      fprintf(stderr, "WATCH frame %u: range identical at the start of the update\n", f);
+  }
   for (u32 f = from; f <= to; f++)
   {
     const auto& a = s_draws_first[f];
@@ -1426,6 +1443,16 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     s_draw_frame = cf;
     s_draw_first = !(s_resim_target && cf < s_resim_target) && s_draws_first.find(cf) == s_draws_first.end();
     (s_draw_first ? s_draws_first : s_draws_resim)[cf].clear();
+    if (s_watch_len)
+    {
+      const u8* w = ram + (s_watch_lo & 0x01FFFFFF);
+      (s_draw_first ? s_watch_first : s_watch_resim)[cf].assign(w, w + s_watch_len);
+      if (cf >= 64)
+      {
+        s_watch_first.erase(cf - 64);
+        s_watch_resim.erase(cf - 64);
+      }
+    }
     if (cf >= 64)
     {
       s_draws_first.erase(cf - 64);
