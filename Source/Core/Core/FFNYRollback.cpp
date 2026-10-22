@@ -161,6 +161,8 @@ char s_phase = '-';  // 'U' = inside a logic update (after PRE), 'T' = after the
 constexpr u32 ADDR_VICOUNT_GET = 0x8024E22C;  // lwz r3,-0x7BC0(r13); blr
 constexpr u32 ADDR_VICOUNT = 0x8043FC20;
 u32 s_vi_fixed = 0;
+u32 s_vi_base = 0;     // real VI count at fight start
+bool s_vi_fix = true;
 constexpr u32 ADDR_RENDER = 0x80004D88;  // bl 0x8001ED94: start of the render part (tick() returned 0)
 constexpr u32 GEN1_FN = 0x8001FC88, GEN1_SHARED = 0x8035D588, GEN1_PRIVATE = 0x8049A210;
 constexpr u32 GEN2_FN = 0x800B7DAC, GEN2_SHARED = 0x803BE03C, GEN2_PRIVATE = 0x8049A228;
@@ -632,8 +634,11 @@ static_assert(NPARTS == NPARTS_FWD);
 
 void Report(const std::string& text)
 {
+  // at most 12 reports per fight (a crash can repeat on every instruction that follows it)
+  if (s_reports++ >= 12)
+    return;
   fprintf(stderr, "FFNYRB REPORT: %s\n", text.c_str());
-  if (s_reports++ < 12 && s_report_cb)
+  if (s_report_cb)
     s_report_cb(text);
 }
 
@@ -852,6 +857,8 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_mispredict_from = 0xFFFFFFFF;
   s_hashed_upto = f;
   s_time_base = Rd32(ram, 0x8035D620);
+  s_vi_base = Rd32(ram, ADDR_VICOUNT);
+  s_vi_fix = std::getenv("FFNY_RB_NOVIFIX") == nullptr;
   s_time_dt = 0x3C888889;  // 1/60 s
   for (int p = 0; p < 4; p++)
   {
@@ -905,6 +912,9 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
 
 void PrintStats(u32 f)
 {
+  if (s_ram)
+    fprintf(stderr, "FFNYRB VI real %u at frame %u (fight start: VI %u frame %u)\n", Rd32(s_ram, ADDR_VICOUNT), f,
+            s_vi_base, s_start_frame);
   fprintf(stderr,
           "FFNYRB frame %u: %u frames, %u rollbacks, %u re-simulated (max depth %u), %u waits "
           "(%.1f ms), save %.2f ms/frame, load %.2f ms/rollback, hashes checked %u, desyncs %u, "
@@ -1218,10 +1228,32 @@ void HookProbe(const Core::CPUThreadGuard& guard)
   auto& ppc = system.GetPPCState();
   const u8* ram = system.GetMemory().GetRAM();
   static std::vector<u32> seen;
+  if (!s_active || Rd32(ram, ADDR_COUNTER) < s_start_frame + 20)
+    return;
   if (std::find(seen.begin(), seen.end(), ppc.gpr[3]) != seen.end() || seen.size() > 40)
     return;
   seen.push_back(ppc.gpr[3]);
   const auto blk = HeapBlockOf(ram, ppc.gpr[3]);
+  {
+    // is the object inside the newest saved state's ranges?
+    const u32 a = ppc.gpr[3] & 0x01FFFFFF;
+    int covered = -1;
+    for (const auto& st : s_states)
+      if (st.frame != 0xFFFFFFFF)
+      {
+        covered = 0;
+        for (auto [lo, hi] : st.ranges)
+          if (a >= lo && a + 0x20 <= hi)
+            covered = 1;
+        if (!covered)
+          for (auto [lo, hi] : st.ranges)
+            if (a < hi && a + 0x40 > lo)
+              fprintf(stderr, "PROBE   partial range %08x-%08x\n", lo | 0x80000000u, hi | 0x80000000u);
+        break;
+      }
+    fprintf(stderr, "PROBE   %08x in saved state: %s\n", ppc.gpr[3],
+            covered < 0 ? "no state yet" : covered ? "yes" : "NO");
+  }
   fprintf(stderr, "PROBE %08x r3 %08x lr %08x block %08x tag %08x size %08x magic %08x frame %u\n", ppc.pc,
           ppc.gpr[3], ppc.spr[SPR_LR], blk.first, blk.second, blk.first ? Rd32(ram, blk.first + 4) : 0,
           blk.first ? Rd32(ram, blk.first + 16) : 0, Rd32(ram, ADDR_COUNTER));
@@ -1233,10 +1265,12 @@ void HookViCount(const Core::CPUThreadGuard& guard)
   auto& system = guard.GetSystem();
   auto& ppc = system.GetPPCState();
   const u8* ram = system.GetMemory().GetRAM();
-  if (s_active && s_phase == 'U' && std::getenv("FFNY_RB_NOVIFIX") == nullptr)
+  if (s_active && s_vi_fix)
   {
+    // every reader (logic and render) gets the frame-derived count during the whole fight, so nothing compares a
+    // real count with a derived one; rate 1 per logic frame like the real 60 Hz retrace
     const u32 f = Rd32(ram, ADDR_COUNTER);
-    ppc.gpr[3] = s_time_base + 2 * (f - s_start_frame);
+    ppc.gpr[3] = s_vi_base + (f - s_start_frame);
     s_vi_fixed++;
   }
   else
@@ -1327,6 +1361,14 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   s_phase = 'U';
   s_ram = ram;
   LoaderFillPost(ram);
+  if (s_active && s_log)
+  {
+    // lab: the time step the update gets (f31 -> f1 at 0x80004D20)
+    static u32 shown = 0;
+    const double dt = ppc.ps[31].PS0AsDouble();
+    if ((dt < 0.0166 || dt > 0.0168) && shown++ < 40)
+      fprintf(stderr, "FFNYRB DT frame %u: f31 = %.6f%s\n", Rd32(ram, ADDR_COUNTER), dt, s_resim_target ? " (resim)" : "");
+  }
   if (s_stress)
   {
     // draws from now on belong to the update of this frame (+ the per-update work and render after it)
