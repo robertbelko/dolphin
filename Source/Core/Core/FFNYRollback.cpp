@@ -190,6 +190,7 @@ struct Draw
 {
   char gen, phase;
   u32 lr, b1, b2, b3;
+  u32 r29, r31;
 };
 std::unordered_map<u32, std::vector<Draw>> s_draws_first, s_draws_resim;
 u32 s_watch_lo = 0, s_watch_len = 0;  // lab: FFNY_RB_WATCHRANGE=hexaddr:hexlen, recorded at every PRE
@@ -1360,7 +1361,7 @@ static void RecordDraw(Core::System& system, char gen)
   const u32 c2 = ok(c1) ? Rd32(ram, c1) : 0, b2 = ok(c2) ? Rd32(ram, c2 + 4) : 0;
   const u32 c3 = ok(c2) ? Rd32(ram, c2) : 0, b3 = ok(c3) ? Rd32(ram, c3 + 4) : 0;
   auto& m = s_draw_first ? s_draws_first : s_draws_resim;
-  m[s_draw_frame].push_back(Draw{gen, s_phase, ppc.spr[SPR_LR], b1, b2, b3});
+  m[s_draw_frame].push_back(Draw{gen, s_phase, ppc.spr[SPR_LR], b1, b2, b3, ppc.gpr[29], ppc.gpr[31]});
 }
 
 void DumpDraws(u32 from, u32 to)
@@ -1389,7 +1390,8 @@ void DumpDraws(u32 from, u32 to)
     for (size_t i = 0; i < std::max(a.size(), b.size()); i++)
     {
       auto pr = [](const char* t, const Draw& d) {
-        fprintf(stderr, "  %s gen%c %c lr %08x bt %08x %08x %08x\n", t, d.gen, d.phase, d.lr, d.b1, d.b2, d.b3);
+        fprintf(stderr, "  %s gen%c %c lr %08x bt %08x %08x %08x r29 %08x r31 %08x\n", t, d.gen, d.phase, d.lr, d.b1,
+                d.b2, d.b3, d.r29, d.r31);
       };
       const bool same = i < a.size() && i < b.size() && a[i].lr == b[i].lr && a[i].b1 == b[i].b1 &&
                         a[i].b2 == b[i].b2 && a[i].gen == b[i].gen;
