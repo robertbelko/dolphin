@@ -1208,7 +1208,6 @@ public:
     return true;
   }
 
-private:
   void Flush()
   {
     const auto now = std::chrono::steady_clock::now();
@@ -1264,6 +1263,8 @@ void OnVIField(Core::System& system)
               st.input_delay, u ? u : "-", lag, jit, s_stress);
     }
   }
+  if (s_udp)
+    s_udp->Flush();  // lab: delayed messages also go out when nothing else is sent (e.g. after the fight end)
   if (s_installed && s_log)
   {
     // lab watchdog: logic counter stuck while a fight was running
