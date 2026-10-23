@@ -972,6 +972,29 @@ bool s_diag_heap_reported = false;
 u32 s_diag_full_reported = 0;  // bit per log
 u32 s_min_free2 = 0xFFFFFFFF, s_min_free3 = 0xFFFFFFFF;
 
+// file loads vs rollbacks (see DiagLoads): frames with the file system busy, requests finished, rewinds that went back
+// across a finished request / across a loader (ELF) conversion of fresh data
+u32 s_fs_busy_frames = 0, s_fs_done = 0, s_fs_done_frame = 0, s_fs_prev_cur = 0;
+u32 s_rb_across_load = 0, s_rb_across_conv = 0, s_conv_frame = 0;
+u32 s_bank_guard = 0;  // animation lookups in an empty bank answered "not found"
+
+// return addresses on the emulated stack (back chain), for crash reports
+std::string CallChain(const u8* ram, u32 sp, int max)
+{
+  std::string out;
+  for (int k = 0; k < max && (sp & 0xFE000000) == 0x80000000; k++)
+  {
+    const u32 up = Rd32(ram, sp);
+    if ((up & 0xFE000000) != 0x80000000 || up <= sp)
+      break;
+    char b[16];
+    snprintf(b, sizeof b, "%s%08x", out.empty() ? "" : " < ", Rd32(ram, up + 4));
+    out += b;
+    sp = up;
+  }
+  return out.empty() ? "-" : out;
+}
+
 void StartFight(u8* ram, u32 tick_obj, u32 f)
 {
   s_active = true;
@@ -1061,6 +1084,9 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_max_acq = s_max_rel = s_max_frl = 0;
   s_diag_heap_reported = false;
   s_diag_full_reported = 0;
+  s_fs_busy_frames = s_fs_done = s_rb_across_load = s_rb_across_conv = 0;
+  s_fs_done_frame = s_conv_frame = 0;
+  s_fs_prev_cur = Rd32(ram, 0x804018D4);
   s_min_free2 = s_min_free3 = 0xFFFFFFFF;
   OSD::AddMessage("FFNY rollback: fight started (input delay " + std::to_string(s_settings.input_delay) +
                       ")",
@@ -1271,6 +1297,18 @@ void OnVIField(Core::System& system)
               st.input_delay, u ? u : "-", lag, jit, s_stress);
     }
   }
+  if (s_active)
+  {
+    // finished file requests between two updates (the update-start sampling alone misses short ones)
+    const u8* r = system.GetMemory().GetRAM();
+    const u32 cur = Rd32(r, 0x804018D4);
+    if (s_fs_prev_cur && cur != s_fs_prev_cur)
+    {
+      s_fs_done++;
+      s_fs_done_frame = std::max(s_fs_done_frame, Rd32(r, ADDR_COUNTER));
+    }
+    s_fs_prev_cur = cur;
+  }
   if (s_udp)
     s_udp->Flush();  // lab: delayed messages also go out when nothing else is sent (e.g. after the fight end)
   if (s_installed && s_log)
@@ -1326,6 +1364,8 @@ void OnVIField(Core::System& system)
     HLE::Patch(system, ADDR_VICOUNT_GET, "FFNYRollbackViCount");
   if (Rd32(ram, 0x801D7EE0) == 0x93EB00B8)  // stw r31, 0xB8(r11)
     HLE::Patch(system, 0x801D7EE0, "FFNYRollbackSndCtx");
+  if (Rd32(ram, 0x8001841C) == 0x807F0004)  // lwz r3, 4(r31) in the animation-by-name lookup 0x80018408
+    HLE::Patch(system, 0x8001841C, "FFNYRollbackBankGuard");
   if (Rd32(ram, 0x80274180) == 0x9421FFC0)  // stwu sp,-0x40(sp): the SDK's unhandled-exception handler
     HLE::Patch(system, 0x80274180, "FFNYRollbackCrash");
   s_rng_redirect = Rd32(ram, 0x8049A200) == 0x3C60804A && Rd32(ram, 0x8049A204) == 0x3863A210 &&
@@ -1385,6 +1425,8 @@ void HookLoader(const Core::CPUThreadGuard& guard)
   const u32 shoff = le ? (h[0x20] | h[0x21] << 8 | h[0x22] << 16 | u32(h[0x23]) << 24) : 0;
   const u32 shnum = le ? (h[0x30] | h[0x31] << 8) : 0;
   s_loader_calls++;
+  if (s_active && le && thread == 0x80432D10)
+    s_conv_frame = std::max(s_conv_frame, Rd32(ram, ADDR_COUNTER));  // fresh data converted by the game logic
   if (s_log)
   {
     const auto blk = HeapBlockOf(ram, data);
@@ -1706,6 +1748,40 @@ void HookSndNullContext(const Core::CPUThreadGuard& guard)
   ppc.npc = 0x801D7EE4;
 }
 
+// Animation-by-name lookup 0x80018408(bank, name): reads the bank's name table at +4 (binary search 0x800F7294).
+// Robert's netplay test (23 October, ping 100 / jitter 20 / loss 2 % / jumps): crash "invalid read from 4 at
+// 0x800F72AC" at the KO, i.e. a bank whose table pointer is 0 (unloaded / never filled in this timeline; likely a file
+// finished loading in a frame a rollback threw away). Replaces "lwz r3, 4(r31)": an empty bank answers "not found"
+// (the function's own -1 path returns 0) instead of crashing, and the first case per fight is reported with the
+// caller. The original game would crash here too.
+void HookBankGuard(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  const u32 bank = ppc.gpr[31];
+  const u32 table = (bank & 0xFE000000) == 0x80000000 ? Rd32(ram, bank + 4) : 0;
+  if (table != 0)
+  {
+    ppc.gpr[3] = table;
+    ppc.npc = 0x80018420;
+    return;
+  }
+  if (s_bank_guard++ == 0)
+  {
+    char b[300];
+    snprintf(b, sizeof b,
+             "FFNY WARNING: animation lookup in an empty bank %08x (name at %08x) skipped at frame %u%s; called "
+             "from %s; last rollback %u->%u, last finished file request in frame %u, last file conversion in frame "
+             "%u",
+             bank, ppc.gpr[4], Rd32(ram, ADDR_COUNTER), s_resim_target ? " (re-simulating)" : "",
+             CallChain(ram, ppc.gpr[1], 6).c_str(), s_last_rb_from, s_last_rb_to, s_fs_done_frame, s_conv_frame);
+    Report(b);
+  }
+  ppc.gpr[3] = 0;
+  ppc.npc = 0x8001843C;  // epilogue with r3 = 0 ("not found")
+}
+
 void HookRender(const Core::CPUThreadGuard& guard)
 {
   s_phase = 'R';
@@ -1903,10 +1979,25 @@ static std::string RbtagSummary(const u8* ram)
 }
 
 
+static void DiagLoads(const u8* ram, u32 f)
+{
+  // the game's file system (struct 0x804018C0): +0x14 = request being processed, +0x20 = queue head
+  const u32 cur = Rd32(ram, 0x804018D4), head = Rd32(ram, 0x804018E0);
+  if (cur || head)
+    s_fs_busy_frames++;
+  if (s_fs_prev_cur && cur != s_fs_prev_cur)
+  {
+    s_fs_done++;  // the request seen before has finished (sampled at update starts and VI fields)
+    s_fs_done_frame = std::max(s_fs_done_frame, f);
+  }
+  s_fs_prev_cur = cur;
+}
+
 static void DiagCheck(const u8* ram, u32 f, const char* where)
 {
   if (!s_active)
     return;
+  DiagLoads(ram, f);
   if (!s_diag_heap_reported)
   {
     const std::string p = FreeListProblem(ram, true);
@@ -2160,6 +2251,10 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       s_rollbacks++;
       s_last_rb_from = f;
       s_last_rb_to = s;
+      if (s_fs_done_frame >= s)
+        s_rb_across_load++;  // a file request finished in a frame that is now thrown away
+      if (s_conv_frame >= s)
+        s_rb_across_conv++;  // the game converted a loaded file in a frame that is now thrown away
       if (s_log && s_rollbacks % 50 == 0)
         fprintf(stderr, "FFNYRB rollback %u: %u -> %u fight %u scr %08x\n", s_rollbacks, f, s, Rd32(ram, ADDR_FIGHT), Rd32(ram, 0x803EA56C));
       s_max_depth = std::max(s_max_depth, f - s);
@@ -2207,10 +2302,14 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
                "FFNY fight over at frame %u: %u rollbacks (max %u frames, %u frames re-simulated), %u waits "
                "for the other side (%.1f s in total), %u desyncs",
                f, s_rollbacks, s_max_depth, s_resim_frames, s_waits, s_wait_us / 1e6, s_desyncs);
-      char c[160];
-      snprintf(c, sizeof c, "; rbtag logs max %u/%u/%u of 96, lowest free KB heap2 %u heap3 %u", s_max_acq,
-               s_max_rel, s_max_frl, s_min_free2 == 0xFFFFFFFF ? 0 : s_min_free2 / 1024,
-               s_min_free3 == 0xFFFFFFFF ? 0 : s_min_free3 / 1024);
+      char c[400];
+      snprintf(c, sizeof c,
+               "; rbtag logs max %u/%u/%u of 96, lowest free KB heap2 %u heap3 %u; file system busy in %u frames, "
+               "%u requests finished, rollbacks across a finished request %u, across a file conversion %u; empty "
+               "animation bank lookups caught %u",
+               s_max_acq, s_max_rel, s_max_frl, s_min_free2 == 0xFFFFFFFF ? 0 : s_min_free2 / 1024,
+               s_min_free3 == 0xFFFFFFFF ? 0 : s_min_free3 / 1024, s_fs_busy_frames, s_fs_done, s_rb_across_load,
+               s_rb_across_conv, s_bank_guard);
       s_report_cb(std::string(b) + c);
     }
     OSD::AddMessage("FFNY rollback: fight over - " + std::to_string(s_rollbacks) + " rollbacks (max " +
@@ -2272,9 +2371,10 @@ void OnInvalidAccess(Core::System& system, u32 address, u32 pc, bool write)
   const u8* ram = system.GetMemory().GetRAM();
   auto& ppc = system.GetPPCState();
   char b[300];
-  snprintf(b, sizeof b, "FFNY CRASH (Dolphin): invalid %s %08x at PC %08x LR %08x, frame %u, fight %s%s. ",
+  snprintf(b, sizeof b, "FFNY CRASH (Dolphin): invalid %s %08x at PC %08x LR %08x, frame %u, fight %s%s, calls %s. ",
            write ? "write to" : "read from", address, pc, ppc.spr[SPR_LR], ram ? Rd32(ram, ADDR_COUNTER) : 0,
-           s_active ? "running" : "not running", s_resim_target ? ", during a re-simulation" : "");
+           s_active ? "running" : "not running", s_resim_target ? ", during a re-simulation" : "",
+           ram ? CallChain(ram, ppc.gpr[1], 6).c_str() : "-");
   std::string heap;
   if (ram)
   {
@@ -2300,7 +2400,7 @@ void HookUnhandledException(const Core::CPUThreadGuard& guard)
            ppc.gpr[6], Rd32(ram, ADDR_COUNTER), s_active ? "running" : "not running",
            s_resim_target ? ", during a re-simulation" : "");
   const std::string p = FreeListProblem(ram);
-  Report(std::string(b) + FightSummary(ram) + " | " +
-         (p.empty() ? std::string("heap free lists ok") : "BROKEN " + p) + " | " + RbtagSummary(ram));
+  Report(std::string(b) + FightSummary(ram) + " | calls " + (ok ? CallChain(ram, Rd32(ram, ctx + 4), 6) : "-") +
+         " | " + (p.empty() ? std::string("heap free lists ok") : "BROKEN " + p) + " | " + RbtagSummary(ram));
 }
 }  // namespace FFNYRollback
