@@ -1,6 +1,7 @@
 // Copyright 2010 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "VideoCommon/VideoState.h"
 #include "VideoCommon/TextureCacheBase.h"
 
 #include <algorithm>
@@ -600,7 +601,7 @@ void TextureCacheBase::DoSaveState(PointerWrap& p)
   std::vector<std::pair<u32, u32>> textures_by_address_list;
   std::vector<std::pair<u64, u32>> textures_by_hash_list;
   std::vector<std::pair<u32, u32>> bound_textures_list;
-  if (Config::Get(Config::GFX_SAVE_TEXTURE_CACHE_TO_STATE))
+  if (Config::Get(Config::GFX_SAVE_TEXTURE_CACHE_TO_STATE) && !g_state_skip_texture_cache)
   {
     for (const auto& it : m_textures_by_address)
     {

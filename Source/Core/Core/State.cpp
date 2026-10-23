@@ -53,6 +53,7 @@
 #include "VideoCommon/FrameDumpFFMpeg.h"
 #include "VideoCommon/OnScreenDisplay.h"
 #include "VideoCommon/VideoBackendBase.h"
+#include "VideoCommon/VideoState.h"
 
 namespace State
 {
@@ -998,7 +999,11 @@ bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& compressed)
 {
   const std::size_t last = static_cast<std::size_t>(s_last_state_size);
   Common::UniqueBuffer<u8> buffer(last ? last : std::size_t(64) << 20);
+  // no EFB / texture-cache contents: backend- and resolution-dependent (a client with other video settings may fail
+  // to read them, leaving a half-loaded state), and by far the biggest part at high internal resolutions
+  g_state_skip_texture_cache = true;
   const std::size_t size = SaveToBuffer(system, buffer);
+  g_state_skip_texture_cache = false;
   if (size == 0 || size > static_cast<std::size_t>(LZ4_MAX_INPUT_SIZE))
     return false;
   const int bound = LZ4_compressBound(static_cast<int>(size));

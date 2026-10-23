@@ -1,6 +1,7 @@
 // Copyright 2010 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "VideoCommon/VideoState.h"
 #include "VideoCommon/FramebufferManager.h"
 
 #include <fmt/format.h>
@@ -1102,7 +1103,7 @@ void FramebufferManager::DoState(PointerWrap& p)
   FlushEFBPokes();
   p.Do(m_prev_efb_format);
 
-  bool save_efb_state = Config::Get(Config::GFX_SAVE_TEXTURE_CACHE_TO_STATE);
+  bool save_efb_state = Config::Get(Config::GFX_SAVE_TEXTURE_CACHE_TO_STATE) && !g_state_skip_texture_cache;
   p.Do(save_efb_state);
   if (!save_efb_state)
     return;

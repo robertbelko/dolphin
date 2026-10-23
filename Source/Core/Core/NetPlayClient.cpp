@@ -20,6 +20,7 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#include "Common/Hash.h"
 #include "Common/Assert.h"
 #include "Common/CommonPaths.h"
 #include "Common/CommonTypes.h"
@@ -403,23 +404,39 @@ void NetPlayClient::OnData(sf::Packet& packet)
 
   case MessageID::FFNYState:
   {
-    u32 frame = 0;
+    u32 frame = 0, crc = 0;
     packet >> frame;
+    packet >> crc;
     const u8* data = static_cast<const u8*>(packet.getData()) + packet.getReadPosition();
     const std::size_t size = packet.getDataSize() - packet.getReadPosition();
     if (!m_local_player->IsHost())
     {
       auto& system = Core::System::GetInstance();
       bool ok = false;
-      Common::Event done;
-      Core::RunOnCPUThread(system, [&] {
-        ok = State::FFNYLoadCompressed(system, data, size);
-        done.Set();
-      });
-      done.Wait();  // RunOnCPUThread only queues the job
+      const u32 got = size ? Common::ComputeCRC32(data, size) : 0;
+      if (size && got == crc)
+      {
+        Common::Event done;
+        Core::RunOnCPUThread(system, [&] {
+          ok = State::FFNYLoadCompressed(system, data, size);
+          done.Set();
+        });
+        done.Wait();  // RunOnCPUThread only queues the job
+      }
       INFO_LOG_FMT(NETPLAY, "FFNY resync: host state of frame {} ({} bytes) loaded: {}", frame, size, ok);
-      if (!ok)
-        m_dialog->AppendChat(Common::GetStringT("FFNY rollback: loading the host's state failed."));
+      // for both players' chat: whether the state arrived intact and loaded, and this machine's settings that
+      // matter for loading another machine's state
+      const std::string text = fmt::format(
+          "FFNY resync: {} KB received, CRC {:08x} ({}), load {}. My settings: {}, internal res {}x, dual core "
+          "{}, deterministic GPU {}, CPU clock {}",
+          size / 1024, got, got == crc ? "matches the host's" : "DIFFERS from the host's - data damaged",
+          ok ? "ok" : "FAILED", Config::Get(Config::MAIN_GFX_BACKEND), Config::Get(Config::GFX_EFB_SCALE),
+          Config::Get(Config::MAIN_CPU_THREAD) ? "on" : "off", Config::Get(Config::MAIN_GPU_DETERMINISM_MODE),
+          Config::Get(Config::MAIN_OVERCLOCK_ENABLE) ?
+              fmt::format("{:.0f} %", Config::Get(Config::MAIN_OVERCLOCK) * 100) :
+              std::string("100 %"));
+      m_dialog->AppendChat(text);
+      SendChatMessage(text);
     }
     sf::Packet spac;
     spac << MessageID::FFNYStateLoaded;

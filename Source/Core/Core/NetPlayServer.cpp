@@ -24,6 +24,7 @@
 #include "Common/CommonPaths.h"
 #include "Common/ENet.h"
 #include "Common/FileUtil.h"
+#include "Common/Hash.h"
 #include "Common/Logging/Log.h"
 #include "Common/MsgHandler.h"
 #include "Common/SFMLHelper.h"
@@ -850,9 +851,16 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
       });
       done.Wait();  // RunOnCPUThread only queues the job
       INFO_LOG_FMT(NETPLAY, "FFNY resync: host state {} bytes (ok {})", state.size(), ok);
+      const u32 crc = ok ? Common::ComputeCRC32(state.data(), state.size()) : 0;
+      if (m_dialog)
+      {
+        m_dialog->AppendChat(fmt::format("FFNY resync: my state of frame {}: {} KB, CRC {:08x}{}", frame,
+                                         state.size() / 1024, crc, ok ? "" : " - SAVING FAILED"));
+      }
       sf::Packet spac;
       spac << MessageID::FFNYState;
       spac << frame;
+      spac << crc;
       if (ok)
         spac.append(state.data(), state.size());
       if (m_players.size() > 1)
