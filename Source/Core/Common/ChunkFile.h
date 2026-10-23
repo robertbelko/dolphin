@@ -315,10 +315,16 @@ public:
     return true;
   }
 
+  // name of the last marker passed while loading (tells where a failed state load stopped)
+  static inline std::string s_last_read_marker;
+
   void DoMarker(const std::string& prevName, u32 arbitraryNumber = 0x42)
   {
     u32 cookie = arbitraryNumber;
+    const bool was_reading = IsReadMode();
     Do(cookie);
+    if (was_reading && IsReadMode() && cookie == arbitraryNumber)
+      s_last_read_marker = prevName;
 
     if (IsReadMode() && cookie != arbitraryNumber)
     {

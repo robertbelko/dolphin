@@ -413,12 +413,13 @@ void NetPlayClient::OnData(sf::Packet& packet)
     {
       auto& system = Core::System::GetInstance();
       bool ok = false;
+      std::string where;
       const u32 got = size ? Common::ComputeCRC32(data, size) : 0;
       if (size && got == crc)
       {
         Common::Event done;
         Core::RunOnCPUThread(system, [&] {
-          ok = State::FFNYLoadCompressed(system, data, size);
+          ok = State::FFNYLoadCompressed(system, data, size, &where);
           done.Set();
         });
         done.Wait();  // RunOnCPUThread only queues the job
@@ -430,7 +431,9 @@ void NetPlayClient::OnData(sf::Packet& packet)
           "FFNY resync: {} KB received, CRC {:08x} ({}), load {}. My settings: {}, internal res {}x, dual core "
           "{}, deterministic GPU {}, CPU clock {}",
           size / 1024, got, got == crc ? "matches the host's" : "DIFFERS from the host's - data damaged",
-          ok ? "ok" : "FAILED", Config::Get(Config::MAIN_GFX_BACKEND), Config::Get(Config::GFX_EFB_SCALE),
+          ok ? std::string("ok") :
+               "FAILED (stopped after \"" + where + "\"; my own state was put back)",
+          Config::Get(Config::MAIN_GFX_BACKEND), Config::Get(Config::GFX_EFB_SCALE),
           Config::Get(Config::MAIN_CPU_THREAD) ? "on" : "off", Config::Get(Config::MAIN_GPU_DETERMINISM_MODE),
           Config::Get(Config::MAIN_OVERCLOCK_ENABLE) ?
               fmt::format("{:.0f} %", Config::Get(Config::MAIN_OVERCLOCK) * 100) :
