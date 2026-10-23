@@ -159,6 +159,7 @@ private:
   QAction* m_golf_mode_action;
   QAction* m_ffny_rollback_action;
   QAction* m_ffny_netsim_action;
+  QAction* m_ffny_autoplay_action;
   QAction* m_golf_mode_overlay_action;
   QAction* m_fixed_delay_action;
   QAction* m_hide_remote_gbas_action;

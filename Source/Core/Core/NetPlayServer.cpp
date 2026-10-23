@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/NetPlayServer.h"
+#include "Core/FFNYRollback.h"
 
 #include <algorithm>
 #include <chrono>
@@ -852,10 +853,12 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
       done.Wait();  // RunOnCPUThread only queues the job
       INFO_LOG_FMT(NETPLAY, "FFNY resync: host state {} bytes (ok {})", state.size(), ok);
       const u32 crc = ok ? Common::ComputeCRC32(state.data(), state.size()) : 0;
-      if (m_dialog)
       {
-        m_dialog->AppendChat(fmt::format("FFNY resync: my state of frame {}: {} KB, CRC {:08x}{}", frame,
-                                         state.size() / 1024, crc, ok ? "" : " - SAVING FAILED"));
+        const std::string text = fmt::format("FFNY resync: my state of frame {}: {} KB, CRC {:08x}{}", frame,
+                                             state.size() / 1024, crc, ok ? "" : " - SAVING FAILED");
+        if (m_dialog)
+          m_dialog->AppendChat(text);
+        FFNYRollback::LogLine(text);
       }
       sf::Packet spac;
       spac << MessageID::FFNYState;

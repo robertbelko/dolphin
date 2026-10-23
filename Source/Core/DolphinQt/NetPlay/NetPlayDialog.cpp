@@ -44,6 +44,7 @@
 #include "Core/Config/NetplaySettings.h"
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
+#include "Core/FFNYRollback.h"
 #ifdef HAS_LIBMGBA
 #include "Core/HW/GBACore.h"
 #endif
@@ -249,6 +250,19 @@ void NetPlayDialog::CreateMainLayout()
   m_golf_mode_overlay_action->setCheckable(true);
   m_hide_remote_gbas_action = m_other_menu->addAction(tr("Hide Remote GBAs"));
   m_hide_remote_gbas_action->setCheckable(true);
+  m_other_menu->addSeparator();
+  m_ffny_autoplay_action = m_other_menu->addAction(tr("FFNY: Auto-Play My Fighter in Rollback Fights (Test)"));
+  m_ffny_autoplay_action->setCheckable(true);
+  m_ffny_autoplay_action->setToolTip(
+      tr("Test tool: during rollback fights your fighter presses random fighting inputs by itself "
+         "(moves, attacks, blocks, C-stick flicks), so rollbacks happen on both sides without anyone "
+         "playing. Menus are not affected. Reports go to the chat and to Logs/FFNY_rollback.log."));
+  m_ffny_autoplay_action->setChecked(Config::Get(Config::NETPLAY_FFNY_AUTOPLAY));
+  FFNYRollback::SetAutoPlay(m_ffny_autoplay_action->isChecked());
+  connect(m_ffny_autoplay_action, &QAction::toggled, this, [](bool on) {
+    Config::SetBase(Config::NETPLAY_FFNY_AUTOPLAY, on);
+    FFNYRollback::SetAutoPlay(on);
+  });
 
   m_game_button->setDefault(false);
   m_game_button->setAutoDefault(false);

@@ -440,6 +440,7 @@ void NetPlayClient::OnData(sf::Packet& packet)
               std::string("100 %"));
       m_dialog->AppendChat(text);
       SendChatMessage(text);
+      FFNYRollback::LogLine(text);
     }
     sf::Packet spac;
     spac << MessageID::FFNYStateLoaded;
@@ -2100,7 +2101,9 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
     const int local_pad = InGamePadToLocalPad(pad_nb);
     if (local_pad < 4)
     {
-      if (Config::Get(Config::GetInfoForSIDevice(local_pad)) == SerialInterface::SIDEVICE_WIIU_ADAPTER)
+      if (FFNYRollback::AutoPlayEnabled())
+        FFNYRollback::AutoPlayPad(pad_status, local_pad);  // test tool: the fighter plays by itself
+      else if (Config::Get(Config::GetInfoForSIDevice(local_pad)) == SerialInterface::SIDEVICE_WIIU_ADAPTER)
         *pad_status = GCAdapter::Input(local_pad);
       else
         *pad_status = Pad::GetStatus(local_pad);

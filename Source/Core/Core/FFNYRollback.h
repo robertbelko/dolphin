@@ -16,6 +16,8 @@ class CPUThreadGuard;
 class System;
 }  // namespace Core
 
+struct GCPadStatus;
+
 namespace FFNYRollback
 {
 // Transport for rollback messages between the players (netplay connection, or UDP in the lab).
@@ -51,6 +53,14 @@ void Shutdown();
 // Debug reports (desync details, crashes) for the players: netplay shows them in the chat window and sends
 // them to the other players. Also printed to stderr.
 void SetReportCallback(std::function<void(const std::string&)> callback);
+// Every report, fight-start / fight-over line and resync line is also appended to
+// <Dolphin user folder>/Logs/FFNY_rollback.log (with date and time), for unattended test sessions.
+void LogLine(const std::string& text);
+// Test tool: during rollback fights this machine's fighter presses plausible fighting inputs by itself
+// (moving, attacks, blocks, C-stick flicks), so rollbacks happen without anyone playing.
+void SetAutoPlay(bool enabled);
+bool AutoPlayEnabled();
+void AutoPlayPad(GCPadStatus* pad, int local_pad);
 // Called by the MMU right before Dolphin's "Invalid read / write" alert (non-MMU mode).
 void OnInvalidAccess(Core::System& system, u32 address, u32 pc, bool write);
 bool IsActive();  // a fight is currently running in rollback mode

@@ -34,7 +34,13 @@
 #include <SFML/Network/IpAddress.hpp>
 #include <SFML/Network/UdpSocket.hpp>
 
+#include "Common/FileUtil.h"
+#include "Common/IOFile.h"
 #include "Common/Logging/Log.h"
+#include "InputCommon/GCPadStatus.h"
+#include <atomic>
+#include <ctime>
+#include <random>
 #include "Core/Core.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HW/Memmap.h"
@@ -760,6 +766,7 @@ void Report(const std::string& text)
   if (s_reports++ >= 12)
     return;
   fprintf(stderr, "FFNYRB REPORT: %s\n", text.c_str());
+  LogLine(text);
   if (s_report_cb)
     s_report_cb(text);
 }
@@ -972,6 +979,18 @@ bool s_diag_heap_reported = false;
 u32 s_diag_full_reported = 0;  // bit per log
 u32 s_min_free2 = 0xFFFFFFFF, s_min_free3 = 0xFFFFFFFF;
 
+// ---- Auto-play (test tool) ----
+std::atomic<bool> s_autoplay{false};
+struct AutoPlayer
+{
+  std::mt19937 rng{static_cast<u32>(std::time(nullptr)) ^ 0x9E3779B9u};
+  u32 left = 0;    // polls left in the current action
+  u32 kind = 0;
+  u16 buttons = 0;
+  u8 sx = 0x80, sy = 0x80, cx = 0x80, cy = 0x80, trig = 0;
+};
+AutoPlayer s_bots[4];
+
 // file loads vs rollbacks (see DiagLoads): frames with the file system busy, requests finished, rewinds that went back
 // across a finished request / across a loader (ELF) conversion of fresh data
 u32 s_fs_busy_frames = 0, s_fs_done = 0, s_fs_done_frame = 0, s_fs_prev_cur = 0;
@@ -1100,6 +1119,9 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   OSD::AddMessage("FFNY rollback: fight started (input delay " + std::to_string(s_settings.input_delay) +
                       (s_settings.load_lockstep ? ", lockstep while loading" : "") + ")",
                   3000);
+  LogLine("FFNY fight started at frame " + std::to_string(f) + " (input delay " +
+          std::to_string(s_settings.input_delay) + (s_settings.load_lockstep ? ", lockstep while loading" : "") +
+          (s_autoplay ? ", auto-play on" : "") + ")");
   fprintf(stderr, "FFNYRB fight start at frame %u (local %x active %x delay %u)\n", f,
           s_settings.local_ports, s_settings.active_ports, s_settings.input_delay);
 }
@@ -1150,6 +1172,100 @@ void PrintStats(u32 f)
           s_rollbacks ? s_load_us / 1000.0 / s_rollbacks : 0.0, s_hash_checked, s_desyncs, s_loader_calls, s_loader_restores, s_rng_redirected, s_vi_fixed);
 }
 }  // namespace
+
+std::mutex s_logfile_lock;
+void LogLine(const std::string& text)
+{
+  std::lock_guard lk(s_logfile_lock);
+  File::IOFile f(File::GetUserPath(D_LOGS_IDX) + "FFNY_rollback.log", "ab");
+  if (!f)
+    return;
+  char ts[32];
+  const std::time_t now = std::time(nullptr);
+  std::strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+  const std::string line = std::string("[") + ts + "] " + text + "\n";
+  f.WriteBytes(line.data(), line.size());
+}
+
+void SetAutoPlay(bool enabled)
+{
+  s_autoplay = enabled;
+}
+
+bool AutoPlayEnabled()
+{
+  return s_autoplay;
+}
+
+void AutoPlayPad(GCPadStatus* pad, int local_pad)
+{
+  AutoPlayer& b = s_bots[local_pad & 3];
+  auto rnd = [&](u32 n) { return std::uniform_int_distribution<u32>(0, n - 1)(b.rng); };
+  if (b.left == 0)
+  {
+    b.buttons = 0;
+    b.sx = b.sy = b.cx = b.cy = 0x80;
+    b.trig = 0;
+    const u32 r = rnd(100);
+    const u8 dir[3] = {0x10, 0x80, 0xF0};
+    if (r < 30)  // move (mostly left / right)
+    {
+      b.kind = 0;
+      b.sx = dir[rnd(3)];
+      b.sy = rnd(4) == 0 ? dir[rnd(3)] : 0x80;
+      b.left = 10 + rnd(50);
+    }
+    else if (r < 68)  // attacks: one of A / B / X / Y, sometimes with a direction (grapples, specials)
+    {
+      b.kind = 1;
+      static constexpr u16 face[4] = {PAD_BUTTON_A, PAD_BUTTON_B, PAD_BUTTON_X, PAD_BUTTON_Y};
+      b.buttons = face[rnd(4)];
+      if (rnd(3) == 0)
+        b.sx = dir[rnd(3)];
+      b.left = 4 + rnd(10);
+    }
+    else if (r < 82)  // block (R / L) for a while
+    {
+      b.kind = 2;
+      b.buttons = rnd(2) ? PAD_TRIGGER_R : PAD_TRIGGER_L;
+      b.trig = 0xFF;
+      b.left = 15 + rnd(60);
+    }
+    else if (r < 86)  // C-stick flick (Blazin' when the meter is full, taunts otherwise)
+    {
+      b.kind = 3;
+      b.cx = dir[rnd(3)];
+      b.cy = b.cx == 0x80 ? (rnd(2) ? 0x10 : 0xF0) : 0x80;
+      b.left = 5;
+    }
+    else if (r < 90)  // Z
+    {
+      b.kind = 4;
+      b.buttons = PAD_TRIGGER_Z;
+      b.left = 4 + rnd(6);
+    }
+    else  // nothing
+    {
+      b.kind = 5;
+      b.left = 5 + rnd(25);
+    }
+  }
+  b.left--;
+  // attacks: press / release alternately so a held action means repeated presses (combos)
+  u16 buttons = b.buttons;
+  if (b.kind == 1 && b.left % 5 < 2)
+    buttons = 0;  // 3 polls pressed, 2 released
+  *pad = GCPadStatus{};
+  pad->button = buttons;  // never START (pause menu)
+  pad->stickX = b.sx;
+  pad->stickY = b.sy;
+  pad->substickX = b.cx;
+  pad->substickY = b.cy;
+  pad->triggerLeft = (buttons & PAD_TRIGGER_L) ? b.trig : 0;
+  pad->triggerRight = (buttons & PAD_TRIGGER_R) ? b.trig : 0;
+  pad->isConnected = true;
+}
+
 
 void Configure(const Settings& settings, Transport* transport)
 {
@@ -2360,6 +2476,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
                s_min_free3 == 0xFFFFFFFF ? 0 : s_min_free3 / 1024, s_fs_busy_frames, s_fs_done, s_rb_across_load,
                s_rb_across_conv, s_bank_guard, s_lockstep_frames, s_lockstep_us / 1e6);
       s_report_cb(std::string(b) + c);
+      LogLine(std::string(b) + c);
     }
     OSD::AddMessage("FFNY rollback: fight over - " + std::to_string(s_rollbacks) + " rollbacks (max " +
                         std::to_string(s_max_depth) + " frames), " + std::to_string(s_desyncs) +
