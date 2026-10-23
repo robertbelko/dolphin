@@ -87,6 +87,8 @@ void DoState(Core::System& system, PointerWrap& p)
 {
   system.GetMemory().DoState(p);
   p.DoMarker("Memory");
+  if (State::g_lab_fail_after_memory && p.IsReadMode())
+    p.SetMeasureMode();  // lab: a load that stops silently right after the RAM (video + RAM are the other state's)
   system.GetMemoryInterface().DoState(p);
   p.DoMarker("MemoryInterface");
   system.GetVideoInterface().DoState(p);
