@@ -105,6 +105,7 @@ bool LabLoadFromBuffer(Core::System& system, Common::UniqueBuffer<u8>& buffer, s
 // Must run on the CPU thread with the CPU paused (Core::RunOnCPUThread).
 bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& compressed);
 // failure: *where gets the last part of the state that still loaded
+extern bool g_lab_fail_after_memory;  // lab
 bool FFNYLoadCompressed(Core::System& system, const u8* data, std::size_t size, std::string* where = nullptr);
 void LoadAs(Core::System& system, std::string filename);
 

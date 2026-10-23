@@ -1003,6 +1003,8 @@ void UndoSaveState(Core::System& system)
   LoadAs(system, File::GetUserPath(D_STATESAVES_IDX) + "lastState.sav");
 }
 
+bool g_lab_fail_after_memory = false;
+
 bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& compressed)
 {
   const std::size_t last = static_cast<std::size_t>(s_last_state_size);
@@ -1049,8 +1051,13 @@ bool FFNYLoadCompressed(Core::System& system, const u8* data, std::size_t size, 
                                                    std::size_t(64) << 20);
   const std::size_t own_size = SaveToBuffer(system, own);
   PointerWrap::s_last_read_marker = "(start)";
-  if (LoadFromBuffer(system, buffer))
+  g_lab_fail_after_memory = std::getenv("FFNY_RB_LAB_FAILLOAD") != nullptr;
+  const bool loaded = LoadFromBuffer(system, buffer);
+  g_lab_fail_after_memory = false;
+  if (loaded)
     return true;
+  if (std::getenv("FFNY_RB_LAB_NOUNDO"))
+    return false;  // lab: old behaviour (half-loaded state stays)
   if (where)
     *where = PointerWrap::s_last_read_marker;
   if (own_size != 0)

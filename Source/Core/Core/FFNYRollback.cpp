@@ -1356,14 +1356,15 @@ void OnVIField(Core::System& system)
                 fclose(f);
               }
               bool ok = false;
+              std::string where;
               Common::Event done;
               Core::RunOnCPUThread(sys, [&] {
-                ok = !st.empty() && State::FFNYLoadCompressed(sys, st.data(), st.size());
+                ok = !st.empty() && State::FFNYLoadCompressed(sys, st.data(), st.size(), &where);
                 done.Set();
               });
               done.Wait();
-              fprintf(stderr, "FFNYRB LAB RESYNC: loaded %zu bytes ok %d crc %08x\n", st.size(), ok,
-                      Common::ComputeCRC32(st.data(), st.size()));
+              fprintf(stderr, "FFNYRB LAB RESYNC: loaded %zu bytes ok %d crc %08x (stopped after: %s)\n", st.size(),
+                      ok, Common::ComputeCRC32(st.data(), st.size()), ok ? "-" : where.c_str());
             }
             sys.GetCPU().Continue();
             fprintf(stderr, "FFNYRB LAB RESYNC: continuing after frame %u\n", frame);
