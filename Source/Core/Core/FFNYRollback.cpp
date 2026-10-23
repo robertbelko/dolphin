@@ -1439,8 +1439,17 @@ void HookLoader(const Core::CPUThreadGuard& guard)
   s_loader_calls++;
   if (s_active && le && thread == 0x80432D10)
   {
-    s_conv_frame = std::max(s_conv_frame, Rd32(ram, ADDR_COUNTER));  // fresh data converted by the game logic
-    s_fs_last_busy = std::max(s_fs_last_busy, s_conv_frame);
+    // fresh data converted by the game logic. Only data OUTSIDE the rollback state matters: data in a rewound heap
+    // block is unconverted again after a rewind and the game converts it again (seen in the lab, harmless); data in
+    // a block that is not rewound (rbtag-tagged, e.g. SysHeap) stays converted while the objects that got filled
+    // from it are rewound - the game never converts it again (KO-scene crash, 23 October).
+    const auto blk = HeapBlockOf(ram, data);
+    const bool rewound = blk.first != 0 && (blk.second >> 16) == 0x424D && !(blk.second & 0x80);
+    if (!rewound)
+    {
+      s_conv_frame = std::max(s_conv_frame, Rd32(ram, ADDR_COUNTER));
+      s_fs_last_busy = std::max(s_fs_last_busy, s_conv_frame);
+    }
   }
   if (s_log)
   {
