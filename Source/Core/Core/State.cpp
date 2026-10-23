@@ -230,6 +230,13 @@ static bool LoadFromBuffer(Core::System& system, std::span<u8> buffer)
   return p.IsReadMode();
 }
 
+static std::size_t SaveToBuffer(Core::System& system, Common::UniqueBuffer<u8>& buffer);
+std::size_t LabSaveToBuffer(Core::System& system, Common::UniqueBuffer<u8>& buffer) { return SaveToBuffer(system, buffer); }
+bool LabLoadFromBuffer(Core::System& system, Common::UniqueBuffer<u8>& buffer, std::size_t size)
+{
+  return LoadFromBuffer(system, std::span<u8>(buffer.data(), size));
+}
+
 // Returns the required size, or 0 on failure.
 static std::size_t SaveToBuffer(Core::System& system, Common::UniqueBuffer<u8>& buffer)
 {

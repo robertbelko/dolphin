@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "Common/CommonTypes.h"
+#include "Common/Buffer.h"
 
 namespace Core
 {
@@ -97,6 +98,8 @@ void Save(Core::System& system, u32 slot);
 void Load(Core::System& system, u32 slot);
 
 void SaveAs(Core::System& system, std::string filename);
+std::size_t LabSaveToBuffer(Core::System& system, Common::UniqueBuffer<u8>& buffer);
+bool LabLoadFromBuffer(Core::System& system, Common::UniqueBuffer<u8>& buffer, std::size_t size);
 
 // FFNY rollback resync: set while the host saves the state it sends to the other players. The memory card's
 // contents and device state are then saved too (normally only while a movie runs): every machine must have the
