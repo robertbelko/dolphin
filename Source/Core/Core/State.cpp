@@ -1029,7 +1029,7 @@ bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& compressed)
   return true;
 }
 
-bool FFNYLoadCompressed(Core::System& system, const u8* data, std::size_t size)
+bool FFNYLoadCompressed(Core::System& system, const u8* data, std::size_t size, std::string* where)
 {
   if (size < 4)
     return false;
@@ -1048,8 +1048,11 @@ bool FFNYLoadCompressed(Core::System& system, const u8* data, std::size_t size)
   Common::UniqueBuffer<u8> own(s_last_state_size ? static_cast<std::size_t>(s_last_state_size) :
                                                    std::size_t(64) << 20);
   const std::size_t own_size = SaveToBuffer(system, own);
+  PointerWrap::s_last_read_marker = "(start)";
   if (LoadFromBuffer(system, buffer))
     return true;
+  if (where)
+    *where = PointerWrap::s_last_read_marker;
   if (own_size != 0)
     LoadFromBuffer(system, std::span<u8>(own.data(), own_size));
   return false;
