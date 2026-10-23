@@ -37,7 +37,11 @@
 #include "Common/Logging/Log.h"
 #include "Core/Core.h"
 #include "Core/HLE/HLE.h"
+#include "Core/HW/CPU.h"
 #include "Core/HW/Memmap.h"
+#include "Core/State.h"
+#include "Common/Event.h"
+#include "Common/Hash.h"
 #include "Core/PowerPC/Gekko.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PowerPC.h"
@@ -1303,6 +1307,69 @@ void OnVIField(Core::System& system)
           s_udp->m_burst = std::max(1, std::atoi(b));
       }
       Configure(st, s_udp.get());
+      // lab: post-fight resync between two lab Dolphins like netplay does it (CPU stopped at the fight end, the
+      // "host" saves its state with State::FFNYSaveCompressed, the other loads it, both continue).
+      // FFNY_RB_RESYNC=save:FILE or load:FILE
+      if (const char* rs = std::getenv("FFNY_RB_RESYNC"))
+      {
+        const std::string spec = rs;
+        const bool save = spec.rfind("save:", 0) == 0;
+        const std::string file = spec.substr(5);
+        SetFightEndCallback([save, file](Core::System& sys, u32 frame) {
+          sys.GetCPU().Break();
+          fprintf(stderr, "FFNYRB LAB RESYNC: fight end at frame %u, %s %s\n", frame, save ? "saving" : "loading",
+                  file.c_str());
+          std::thread([&sys, save, file, frame] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            if (save)
+            {
+              std::vector<u8> st;
+              bool ok = false;
+              Common::Event done;
+              Core::RunOnCPUThread(sys, [&] {
+                ok = State::FFNYSaveCompressed(sys, st);
+                done.Set();
+              });
+              done.Wait();
+              if (FILE* f = fopen((file + ".tmp").c_str(), "wb"))
+              {
+                fwrite(st.data(), 1, st.size(), f);
+                fclose(f);
+                rename((file + ".tmp").c_str(), file.c_str());
+              }
+              fprintf(stderr, "FFNYRB LAB RESYNC: saved %zu bytes ok %d crc %08x\n", st.size(), ok,
+                      Common::ComputeCRC32(st.data(), st.size()));
+            }
+            else
+            {
+              FILE* f = nullptr;
+              for (int i = 0; i < 6000 && !(f = fopen(file.c_str(), "rb")); i++)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+              std::vector<u8> st;
+              if (f)
+              {
+                fseek(f, 0, SEEK_END);
+                st.resize(static_cast<size_t>(ftell(f)));
+                fseek(f, 0, SEEK_SET);
+                if (fread(st.data(), 1, st.size(), f) != st.size())
+                  st.clear();
+                fclose(f);
+              }
+              bool ok = false;
+              Common::Event done;
+              Core::RunOnCPUThread(sys, [&] {
+                ok = !st.empty() && State::FFNYLoadCompressed(sys, st.data(), st.size());
+                done.Set();
+              });
+              done.Wait();
+              fprintf(stderr, "FFNYRB LAB RESYNC: loaded %zu bytes ok %d crc %08x\n", st.size(), ok,
+                      Common::ComputeCRC32(st.data(), st.size()));
+            }
+            sys.GetCPU().Continue();
+            fprintf(stderr, "FFNYRB LAB RESYNC: continuing after frame %u\n", frame);
+          }).detach();
+        });
+      }
       fprintf(stderr, "FFNYRB: lab mode local %x active %x delay %u udp %s lag %d jitter %d stress %u\n", lp, ap,
               st.input_delay, u ? u : "-", lag, jit, s_stress);
     }

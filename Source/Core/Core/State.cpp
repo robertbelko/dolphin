@@ -4,6 +4,7 @@
 #include "Core/State.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <map>
 #include <mutex>
@@ -1008,7 +1009,7 @@ bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& compressed)
   Common::UniqueBuffer<u8> buffer(last ? last : std::size_t(64) << 20);
   // no EFB / texture-cache contents: backend- and resolution-dependent (a client with other video settings may fail
   // to read them, leaving a half-loaded state), and by far the biggest part at high internal resolutions
-  g_state_skip_texture_cache = true;
+  g_state_skip_texture_cache = std::getenv("FFNY_RB_RESYNC_TEX") == nullptr;  // lab: old behaviour
   const std::size_t size = SaveToBuffer(system, buffer);
   g_state_skip_texture_cache = false;
   if (size == 0 || size > static_cast<std::size_t>(LZ4_MAX_INPUT_SIZE))
