@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/HLE/HLE.h"
+#include "Core/FFNYLab.h"
 #include "Core/FFNYRollback.h"
 
 #include <algorithm>
@@ -27,7 +28,7 @@ namespace HLE
 static std::map<u32, u32> s_hooked_addresses;
 
 // clang-format off
-constexpr std::array<Hook, 36> os_patches{{
+constexpr std::array<Hook, 40> os_patches{{
     // Placeholder, os_patches[0] is the "non-existent function" index
     {"FAKE_TO_SKIP_0",               HLE_Misc::UnimplementedFunction,       HookType::Replace, HookFlag::Generic},
 
@@ -71,7 +72,11 @@ constexpr std::array<Hook, 36> os_patches{{
     {"FFNYRollbackBankGuard",        FFNYRollback::HookBankGuard,           HookType::Replace, HookFlag::Fixed},
     {"FFNYRollbackSndRel",           FFNYRollback::HookSndRelease,          HookType::Start,   HookFlag::Fixed},
     {"FFNYRollbackProbe",            FFNYRollback::HookProbe,               HookType::Start,   HookFlag::Fixed},
-    {"FFNYRollbackCrash",            FFNYRollback::HookUnhandledException,  HookType::Start,   HookFlag::Fixed}
+    {"FFNYRollbackCrash",            FFNYRollback::HookUnhandledException,  HookType::Start,   HookFlag::Fixed},
+    {"FFNYLabLoop",                  FFNYLab::OnLoopTop,                    HookType::Start,   HookFlag::Fixed},
+    {"FFNYLabPre",                   FFNYLab::OnPreUpdate,                  HookType::Start,   HookFlag::Fixed},
+    {"FFNYLabPost",                  FFNYLab::OnPostUpdate,                 HookType::Start,   HookFlag::Fixed},
+    {"FFNYLabTrace",                 FFNYLab::OnTrace,                      HookType::Start,   HookFlag::Fixed}
 }};
 // clang-format on
 

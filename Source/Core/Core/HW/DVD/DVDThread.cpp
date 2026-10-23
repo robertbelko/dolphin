@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/HW/DVD/DVDThread.h"
+#include "Core/FFNYRollback.h"
 
 #include <map>
 #include <memory>
@@ -283,6 +284,7 @@ void DVDThread::FinishRead(u64 id, s64 cycles_late)
     if (request.copy_to_ram)
     {
       auto& memory = m_system.GetMemory();
+      FFNYRollback::OnDiscDma(m_system, request.output_address, request.length);
       memory.CopyToEmu(request.output_address, buffer.data(), request.length);
     }
 
