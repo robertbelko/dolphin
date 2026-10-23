@@ -2409,7 +2409,8 @@ bool NetPlayServer::SimQueue(const PlayerId pid, const bool incoming, const u8 c
     one_way_ms = m_sim.ping_ms / 2.0;
     if (m_sim.jitter_ms)
     {
-      std::uniform_real_distribution<double> jit(-m_sim.jitter_ms / 2.0, m_sim.jitter_ms / 2.0);
+      const double half = m_sim.jitter_ms / 2.0;
+      std::uniform_real_distribution<double> jit(-half, half);
       one_way_ms += jit(m_sim_rng);
     }
     if (m_sim.spike_ms && m_sim.spike_length_ms && m_sim.spike_every_s)
