@@ -1423,6 +1423,28 @@ void OnVIField(Core::System& system)
               st.input_delay, u ? u : "-", lag, jit, s_stress);
     }
   }
+  if (s_settings.enabled)
+  {
+    // log changes of the fight flag (0x803F1000) and the screen counter (0x803EA56C): Robert's environmental KO on
+    // Crow's Office (23 October) kept rollback on through the KO scene, results and rematch screen until the next
+    // match's intro - the flag apparently stays 1 there. This tells which value marks the end of such a fight.
+    static u32 prev_flag = 0xFFFFFFFF, prev_scr = 0xFFFFFFFF, logged = 0;
+    const u8* r = system.GetMemory().GetRAM();
+    if (r && logged < 400)
+    {
+      const u32 fl = Rd32(r, ADDR_FIGHT), scr = Rd32(r, 0x803EA56C);
+      if (fl != prev_flag || scr != prev_scr)
+      {
+        char b[160];
+        snprintf(b, sizeof b, "state: fight flag %u (was %d), screen %x (was %x), frame %u, rollback %s", fl,
+                 static_cast<int>(prev_flag), scr, prev_scr, Rd32(r, ADDR_COUNTER), s_active ? "on" : "off");
+        LogLine(b);
+        logged++;
+        prev_flag = fl;
+        prev_scr = scr;
+      }
+    }
+  }
   if (s_active)
   {
     // finished file requests between two updates (the update-start sampling alone misses short ones)
