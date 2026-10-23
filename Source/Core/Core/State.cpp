@@ -1041,7 +1041,18 @@ bool FFNYLoadCompressed(Core::System& system, const u8* data, std::size_t size)
                                     static_cast<int>(size - 4), static_cast<int>(raw));
   if (d != static_cast<int>(raw))
     return false;
-  return LoadFromBuffer(system, buffer);
+  // A failed load stops part-way (PointerWrap leaves read mode at the first mismatch): the video state and the RAM
+  // may already be the host's while the CPU, the gather pipe etc. are still our own - the next graphics command is
+  // then read from the wrong place ("GFX FIFO: Unknown Opcode"). Like a normal state load, undo it: keep a copy of
+  // our own state and put it back when the host's state does not load completely.
+  Common::UniqueBuffer<u8> own(s_last_state_size ? static_cast<std::size_t>(s_last_state_size) :
+                                                   std::size_t(64) << 20);
+  const std::size_t own_size = SaveToBuffer(system, own);
+  if (LoadFromBuffer(system, buffer))
+    return true;
+  if (own_size != 0)
+    LoadFromBuffer(system, std::span<u8>(own.data(), own_size));
+  return false;
 }
 
 }  // namespace State
