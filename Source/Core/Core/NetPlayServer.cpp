@@ -276,7 +276,8 @@ void NetPlayServer::ThreadFunc()
     int net;
     if (m_traversal_client)
       m_traversal_client->HandleResends();
-    net = enet_host_service(m_server, &netEvent, 1000);
+    SimFlush();
+    net = enet_host_service(m_server, &netEvent, SimServiceTimeoutMs());
     while (!m_async_queue.Empty())
     {
       INFO_LOG_FMT(NETPLAY, "Processing async queue event.");
@@ -297,6 +298,7 @@ void NetPlayServer::ThreadFunc()
       INFO_LOG_FMT(NETPLAY, "Processing async queue event done.");
       m_async_queue.Pop();
     }
+    SimFlush();
     if (net > 0)
     {
       switch (netEvent.type)
@@ -343,22 +345,10 @@ void NetPlayServer::ThreadFunc()
         }
         else
         {
-          auto it = m_players.find(*PeerPlayerId(netEvent.peer));
-          Client& client = it->second;
-          if (OnData(rpac, client) != 0)
-          {
-            INFO_LOG_FMT(NETPLAY, "Invalid packet from client {}, disconnecting.", client.pid);
-
-            // if a bad packet is received, disconnect the client
-            std::lock_guard lkg(m_crit.game);
-            OnDisconnect(client);
-
-            ClearPeerPlayerId(netEvent.peer);
-          }
-          else
-          {
-            INFO_LOG_FMT(NETPLAY, "successfully handled packet from client {}", client.pid);
-          }
+          const PlayerId pid = *PeerPlayerId(netEvent.peer);
+          // network simulation: messages from other players may be held back (or dropped) here
+          if (!SimQueue(pid, true, netEvent.channelID, rpac))
+            HandlePlayerData(pid, rpac);
         }
         enet_packet_destroy(netEvent.packet);
       }
@@ -519,6 +509,7 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
 unsigned int NetPlayServer::OnDisconnect(const Client& player)
 {
   const PlayerId pid = player.pid;
+  SimForgetPlayer(pid);
 
   if (m_is_running)
   {
@@ -2325,7 +2316,192 @@ void NetPlayServer::SendToClients(const sf::Packet& packet, const PlayerId skip_
 
 void NetPlayServer::Send(ENetPeer* socket, const sf::Packet& packet, const u8 channel_id)
 {
+  if (socket && socket->data && SimQueue(*PeerPlayerId(socket), false, channel_id, packet))
+    return;
   Common::ENet::SendPacket(socket, packet, channel_id, channel_id != FFNY_INPUT_CHANNEL);
+}
+
+// called from the ---NETPLAY--- thread: a message from a connected player
+void NetPlayServer::HandlePlayerData(const PlayerId pid, sf::Packet& packet)
+{
+  auto it = m_players.find(pid);
+  if (it == m_players.end())
+    return;  // left while the message was held back by the network simulation
+  Client& client = it->second;
+  if (OnData(packet, client) != 0)
+  {
+    INFO_LOG_FMT(NETPLAY, "Invalid packet from client {}, disconnecting.", client.pid);
+
+    // if a bad packet is received, disconnect the client
+    ENetPeer* const socket = client.socket;
+    std::lock_guard lkg(m_crit.game);
+    OnDisconnect(client);
+
+    ClearPeerPlayerId(socket);
+  }
+  else
+  {
+    INFO_LOG_FMT(NETPLAY, "successfully handled packet from client {}", client.pid);
+  }
+}
+
+// ---- Network simulation (FFNY test tool) ----
+// Every message between the host and another player is held back by half the simulated ping (+- half the
+// jitter, + half a ping jump while one is on) in each direction. Reliable messages keep their order (a late
+// one holds back the ones after it, like a real resend); the unsequenced rollback inputs
+// (FFNY_INPUT_CHANNEL) are timed independently and can overtake each other or be lost.
+
+std::string NetPlayServer::SetNetworkSimulation(const NetworkSimulation& sim)
+{
+  {
+    std::lock_guard lk(m_sim_lock);
+    m_sim = sim;
+    const auto now = SimClock::now();
+    m_sim_spike_end = now;
+    std::uniform_real_distribution<double> first(0.2, 1.0);
+    m_sim_next_spike = now + std::chrono::milliseconds(
+                                 static_cast<s64>(sim.spike_every_s * 1000.0 * first(m_sim_rng)));
+  }
+  Common::ENet::WakeupThread(m_server);
+
+  std::string text;
+  if (!sim.enabled)
+  {
+    text = "Network simulation off.";
+  }
+  else
+  {
+    text = fmt::format("Network simulation on: ping +{} ms", sim.ping_ms);
+    if (sim.jitter_ms)
+      text += fmt::format(" (+-{} ms jitter)", sim.jitter_ms);
+    if (sim.loss_percent)
+      text += fmt::format(", {} % loss", sim.loss_percent);
+    if (sim.spike_ms && sim.spike_length_ms && sim.spike_every_s)
+    {
+      text += fmt::format(", ping jumps of +{} ms for {} ms about every {} s", sim.spike_ms,
+                          sim.spike_length_ms, sim.spike_every_s);
+    }
+    text += " (between the host and the other players).";
+  }
+  return text;
+}
+
+NetPlayServer::NetworkSimulation NetPlayServer::GetNetworkSimulation() const
+{
+  std::lock_guard lk(m_sim_lock);
+  return m_sim;
+}
+
+bool NetPlayServer::SimQueue(const PlayerId pid, const bool incoming, const u8 channel_id,
+                             const sf::Packet& packet)
+{
+  if (pid == 1)
+    return false;  // the host's own client is on this machine
+  std::lock_guard lk(m_sim_lock);
+  if (!m_sim.enabled && m_sim_queue.empty())
+    return false;
+
+  const auto now = SimClock::now();
+  const bool unreliable = channel_id == FFNY_INPUT_CHANNEL;
+  double one_way_ms = 0;
+  if (m_sim.enabled)
+  {
+    one_way_ms = m_sim.ping_ms / 2.0;
+    if (m_sim.jitter_ms)
+    {
+      std::uniform_real_distribution<double> jit(-m_sim.jitter_ms / 2.0, m_sim.jitter_ms / 2.0);
+      one_way_ms += jit(m_sim_rng);
+    }
+    if (m_sim.spike_ms && m_sim.spike_length_ms && m_sim.spike_every_s)
+    {
+      if (now >= m_sim_next_spike)
+      {
+        m_sim_spike_end = now + std::chrono::milliseconds(m_sim.spike_length_ms);
+        std::uniform_real_distribution<double> gap(0.5, 1.5);
+        m_sim_next_spike = m_sim_spike_end + std::chrono::milliseconds(static_cast<s64>(
+                                                 m_sim.spike_every_s * 1000.0 * gap(m_sim_rng)));
+      }
+      if (now < m_sim_spike_end)
+        one_way_ms += m_sim.spike_ms / 2.0;
+    }
+    if (m_sim.loss_percent)
+    {
+      std::uniform_int_distribution<u32> pct(0, 99);
+      if (pct(m_sim_rng) < m_sim.loss_percent)
+      {
+        if (unreliable)
+        {
+          m_sim_dropped++;
+          return true;  // lost
+        }
+        // a lost reliable message is sent again by ENet after about one round trip
+        one_way_ms += std::max<double>(m_sim.ping_ms + m_sim.jitter_ms, 40.0);
+        m_sim_resent++;
+      }
+    }
+  }
+  auto due = now + std::chrono::microseconds(static_cast<s64>(std::max(0.0, one_way_ms) * 1000.0));
+  if (!unreliable)
+  {
+    auto& last = m_sim_last_due[{pid, incoming}];
+    due = std::max(due, last);
+    last = due;
+  }
+  m_sim_queue.emplace(due, SimPacket{pid, incoming, channel_id, packet});
+  m_sim_delayed++;
+  return true;
+}
+
+void NetPlayServer::SimFlush()
+{
+  std::vector<SimPacket> due;
+  {
+    std::lock_guard lk(m_sim_lock);
+    if (m_sim_queue.empty())
+      return;
+    const auto now = SimClock::now();
+    auto end = m_sim_queue.upper_bound(now);
+    for (auto it = m_sim_queue.begin(); it != end; ++it)
+      due.push_back(std::move(it->second));
+    m_sim_queue.erase(m_sim_queue.begin(), end);
+  }
+  for (SimPacket& p : due)
+  {
+    if (p.incoming)
+    {
+      HandlePlayerData(p.pid, p.packet);
+      continue;
+    }
+    std::lock_guard lkp(m_crit.players);
+    if (const auto it = m_players.find(p.pid); it != m_players.end())
+    {
+      Common::ENet::SendPacket(it->second.socket, p.packet, p.channel_id,
+                               p.channel_id != FFNY_INPUT_CHANNEL);
+    }
+  }
+}
+
+int NetPlayServer::SimServiceTimeoutMs()
+{
+  std::lock_guard lk(m_sim_lock);
+  if (!m_sim_queue.empty())
+  {
+    const auto wait = std::chrono::duration_cast<std::chrono::microseconds>(
+        m_sim_queue.begin()->first - SimClock::now());
+    // ceil to whole ms; at least 1 ms so the loop does not spin
+    return static_cast<int>(std::clamp<s64>((wait.count() + 999) / 1000, 1, 1000));
+  }
+  // while it is on, messages queued from other threads must not wait for the 1 s timeout
+  return m_sim.enabled ? 5 : 1000;
+}
+
+void NetPlayServer::SimForgetPlayer(const PlayerId pid)
+{
+  std::lock_guard lk(m_sim_lock);
+  for (auto it = m_sim_queue.begin(); it != m_sim_queue.end();)
+    it = it->second.pid == pid ? m_sim_queue.erase(it) : std::next(it);
+  m_sim_last_due.erase({pid, true});
+  m_sim_last_due.erase({pid, false});
 }
 
 void NetPlayServer::KickPlayer(PlayerId player)

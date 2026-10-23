@@ -57,5 +57,12 @@ const Info<bool> NETPLAY_GOLF_MODE_OVERLAY{{System::Main, "NetPlay", "GolfModeOv
 const Info<bool> NETPLAY_HIDE_REMOTE_GBAS{{System::Main, "NetPlay", "HideRemoteGBAs"}, false};
 const Info<bool> NETPLAY_FFNY_ROLLBACK{{System::Main, "NetPlay", "FFNYRollback"}, false};
 const Info<u32> NETPLAY_FFNY_ROLLBACK_DELAY{{System::Main, "NetPlay", "FFNYRollbackDelay"}, 2};
+// network simulation (host test tool); the values are kept, it always starts switched off
+const Info<u32> NETPLAY_FFNY_SIM_PING{{System::Main, "NetPlay", "FFNYSimPing"}, 120};
+const Info<u32> NETPLAY_FFNY_SIM_JITTER{{System::Main, "NetPlay", "FFNYSimJitter"}, 20};
+const Info<u32> NETPLAY_FFNY_SIM_LOSS{{System::Main, "NetPlay", "FFNYSimLoss"}, 0};
+const Info<u32> NETPLAY_FFNY_SIM_SPIKE{{System::Main, "NetPlay", "FFNYSimSpike"}, 0};
+const Info<u32> NETPLAY_FFNY_SIM_SPIKE_LENGTH{{System::Main, "NetPlay", "FFNYSimSpikeLength"}, 500};
+const Info<u32> NETPLAY_FFNY_SIM_SPIKE_EVERY{{System::Main, "NetPlay", "FFNYSimSpikeEvery"}, 10};
 
 }  // namespace Config

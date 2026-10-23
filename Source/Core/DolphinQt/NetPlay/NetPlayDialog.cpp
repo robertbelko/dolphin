@@ -7,7 +7,11 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QClipboard>
+#include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFormLayout>
 #include <QFileDialog>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -216,6 +220,10 @@ void NetPlayDialog::CreateMainLayout()
          "netcode (no input delay beyond 2 frames; mispredicted frames are replayed), menus stay normal "
          "netplay.\nEveryone must use this Dolphin build and the same start.dol."));
   m_ffny_rollback_action->setCheckable(true);
+  m_ffny_netsim_action = m_network_menu->addAction(tr("FFNY: Simulate Ping / Jitter..."));
+  m_ffny_netsim_action->setToolTip(
+      tr("Test tool: adds an artificial ping, jitter, packet loss and ping jumps between the host and "
+         "every other player, e.g. two Dolphins on one PC."));
 
   m_game_digest_menu = m_menu_bar->addMenu(tr("Checksum"));
   m_game_digest_menu->addAction(tr("Current game"), this, [this] {
@@ -433,6 +441,7 @@ void NetPlayDialog::ConnectWidgets()
   connect(m_fixed_delay_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
   connect(m_hide_remote_gbas_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
   connect(m_ffny_rollback_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
+  connect(m_ffny_netsim_action, &QAction::triggered, this, &NetPlayDialog::ShowNetworkSimulation);
 }
 
 void NetPlayDialog::SendMessage(const std::string& msg)
@@ -1175,6 +1184,103 @@ void NetPlayDialog::LoadSettings()
     WARN_LOG_FMT(NETPLAY, "Unknown network mode '{}', using 'fixeddelay'", network_mode);
     m_fixed_delay_action->setChecked(true);
   }
+}
+
+// FFNY test tool: simulated network conditions (applied by the host's server, see
+// NetPlayServer::NetworkSimulation). Non-modal, so it can stay open and be changed during a fight.
+void NetPlayDialog::ShowNetworkSimulation()
+{
+  const auto server = Settings::Instance().GetNetPlayServer();
+  if (!server)
+    return;
+  const auto current = server->GetNetworkSimulation();
+
+  auto* const dialog = new QDialog(this);
+  dialog->setAttribute(Qt::WA_DeleteOnClose);
+  dialog->setWindowTitle(tr("FFNY: Simulate Ping / Jitter"));
+  auto* const form = new QFormLayout;
+
+  auto* const enabled = new QCheckBox(tr("Simulation on"));
+  enabled->setChecked(current.enabled);
+  auto spin = [dialog](int max, u32 value, const QString& suffix) {
+    auto* const box = new QSpinBox(dialog);
+    box->setRange(0, max);
+    box->setValue(static_cast<int>(value));
+    box->setSuffix(suffix);
+    return box;
+  };
+  const QString ms = tr(" ms");
+  auto* const ping = spin(800, current.enabled ? current.ping_ms : Config::Get(Config::NETPLAY_FFNY_SIM_PING), ms);
+  auto* const jitter =
+      spin(400, current.enabled ? current.jitter_ms : Config::Get(Config::NETPLAY_FFNY_SIM_JITTER), ms);
+  auto* const loss =
+      spin(50, current.enabled ? current.loss_percent : Config::Get(Config::NETPLAY_FFNY_SIM_LOSS), tr(" %"));
+  auto* const spike =
+      spin(1500, current.enabled ? current.spike_ms : Config::Get(Config::NETPLAY_FFNY_SIM_SPIKE), ms);
+  auto* const spike_len = spin(
+      5000, current.enabled ? current.spike_length_ms : Config::Get(Config::NETPLAY_FFNY_SIM_SPIKE_LENGTH),
+      ms);
+  auto* const spike_every = spin(
+      300, current.enabled ? current.spike_every_s : Config::Get(Config::NETPLAY_FFNY_SIM_SPIKE_EVERY),
+      tr(" s"));
+  auto* const delay = spin(6, Config::Get(Config::NETPLAY_FFNY_ROLLBACK_DELAY), tr(" frames"));
+
+  ping->setToolTip(tr("Added round-trip time (half of it in each direction)."));
+  jitter->setToolTip(tr("Each message's round trip varies by up to this much in either direction, "
+                        "so the ping wobbles between ping - jitter and ping + jitter."));
+  loss->setToolTip(tr("Share of messages lost. Lost rollback inputs are simply gone (the next input "
+                      "message repeats them); other messages arrive one round trip later, like a "
+                      "real resend."));
+  spike->setToolTip(tr("Ping jumps: the ping rises by this much for a while. 0 = no jumps."));
+  delay->setToolTip(tr("Input delay of rollback fights (normally 2). Sent when the game starts, so a "
+                       "change applies from the next game start."));
+
+  form->addRow(enabled);
+  form->addRow(tr("Ping:"), ping);
+  form->addRow(tr("Jitter (+-):"), jitter);
+  form->addRow(tr("Packet loss:"), loss);
+  form->addRow(tr("Ping jumps of:"), spike);
+  form->addRow(tr("lasting:"), spike_len);
+  form->addRow(tr("about every:"), spike_every);
+  form->addRow(tr("Rollback input delay:"), delay);
+  auto* const note = new QLabel(
+      tr("Applies between the host and every other player, in both directions, to all netplay "
+         "messages (the ping list shows the result). Changes apply at once with Apply, also "
+         "during a fight. Always off when netplay is opened again."));
+  note->setWordWrap(true);
+  form->addRow(note);
+
+  auto* const buttons = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Close);
+  form->addRow(buttons);
+  dialog->setLayout(form);
+
+  connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+  connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked, dialog, [=, this] {
+    NetPlay::NetPlayServer::NetworkSimulation sim;
+    sim.enabled = enabled->isChecked();
+    sim.ping_ms = ping->value();
+    sim.jitter_ms = jitter->value();
+    sim.loss_percent = loss->value();
+    sim.spike_ms = spike->value();
+    sim.spike_length_ms = spike_len->value();
+    sim.spike_every_s = spike_every->value();
+    {
+      Config::ConfigChangeCallbackGuard config_guard;
+      Config::SetBase(Config::NETPLAY_FFNY_SIM_PING, sim.ping_ms);
+      Config::SetBase(Config::NETPLAY_FFNY_SIM_JITTER, sim.jitter_ms);
+      Config::SetBase(Config::NETPLAY_FFNY_SIM_LOSS, sim.loss_percent);
+      Config::SetBase(Config::NETPLAY_FFNY_SIM_SPIKE, sim.spike_ms);
+      Config::SetBase(Config::NETPLAY_FFNY_SIM_SPIKE_LENGTH, sim.spike_length_ms);
+      Config::SetBase(Config::NETPLAY_FFNY_SIM_SPIKE_EVERY, sim.spike_every_s);
+      Config::SetBase(Config::NETPLAY_FFNY_ROLLBACK_DELAY, static_cast<u32>(delay->value()));
+    }
+    if (const auto srv = Settings::Instance().GetNetPlayServer())
+    {
+      // as a chat line from the host, so the other player knows the pings are artificial
+      SendMessage(srv->SetNetworkSimulation(sim));
+    }
+  });
+  dialog->show();
 }
 
 void NetPlayDialog::SaveSettings()

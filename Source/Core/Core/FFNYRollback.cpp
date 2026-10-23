@@ -967,6 +967,11 @@ void LoaderFillPost(const u8* ram)
     }
 }
 
+u32 s_max_acq = 0, s_max_rel = 0, s_max_frl = 0;  // highest fill of the rbtag logs (96 entries each)
+bool s_diag_heap_reported = false;
+u32 s_diag_full_reported = 0;  // bit per log
+u32 s_min_free2 = 0xFFFFFFFF, s_min_free3 = 0xFFFFFFFF;
+
 void StartFight(u8* ram, u32 tick_obj, u32 f)
 {
   s_active = true;
@@ -1053,6 +1058,10 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_loader_undo.clear();
   s_rollbacks = s_resim_frames = s_max_depth = s_waits = s_frames = 0;
   s_wait_us = s_save_us = s_load_us = 0;
+  s_max_acq = s_max_rel = s_max_frl = 0;
+  s_diag_heap_reported = false;
+  s_diag_full_reported = 0;
+  s_min_free2 = s_min_free3 = 0xFFFFFFFF;
   OSD::AddMessage("FFNY rollback: fight started (input delay " + std::to_string(s_settings.input_delay) +
                       ")",
                   3000);
@@ -1060,7 +1069,6 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
           s_settings.local_ports, s_settings.active_ports, s_settings.input_delay);
 }
 
-u32 s_max_acq = 0, s_max_rel = 0, s_max_frl = 0;  // lab: highest fill of the rbtag logs (96 entries each)
 void PrintStats(u32 f)
 {
   fprintf(stderr, "FFNYRB input messages received %u, without anything new %u; time sync: %u one-frame delays, "
@@ -1834,9 +1842,108 @@ void HeapCheck(const u8* ram, u32 f, const char* where)
   }
 }
 
+// ---- Diagnostics for the two open problems, always on during rollback fights (reported in the netplay chat) ----
+// (1) the rare allocator crash = a heap's free list holds a garbage link; this finds the broken list early,
+//     tells which heap, and whether it was found right after a rewind (restore problem) or after a normal update
+//     (double free / use after free by the game or the sound library).
+// (2) rbtag's logs (0x8049B510.. counts, 96 entries each; deferred main-heap frees 0x8049B400, 63): when a log is
+//     full, rbtag does the release / free AT ONCE instead of delaying it - a later rewind then makes the
+//     re-simulation release / free it a second time (sound-library use after free, SndHeap double free).
+static std::string FreeListProblem(const u8* ram, bool skip_locked = false)
+{
+  auto ok = [](u32 a) { return (a & 0xFE000000) == 0x80000000 && (a & 0x01FFFFFF) < 0x01800000; };
+  for (u32 i = 0; i < 32; i++)
+  {
+    const u32 h = Rd32(ram, 0x8040BD70 + 4 * i);
+    if (!ok(h))
+      continue;
+    if (skip_locked && Rd32(ram, h + 0x44) != 0)
+      continue;  // another thread is inside this heap's allocator (its mutex at +0x3C has an owner): may be mid-update
+    const u32 base = Rd32(ram, h + 8), end = Rd32(ram, h + 0xC);
+    u32 prev = h + 0x10, n = Rd32(ram, h + 0x20), k = 0;
+    while (n != h + 0x10 && k++ < 20000)  // ends at the 'BS' sentinel inside the descriptor
+    {
+      if (!ok(n) || n < base || n >= end || (Rd32(ram, n) >> 16) != 0x4246 || Rd32(ram, n + 0x14) != prev)
+      {
+        char b[200];
+        snprintf(b, sizeof b, "heap %u (%08x-%08x): free node %u = %08x (word %08x, back link %08x) after %08x", i,
+                 base, end, k, n, ok(n) ? Rd32(ram, n) : 0, ok(n) ? Rd32(ram, n + 0x14) : 0, prev);
+        return b;
+      }
+      prev = n;
+      n = Rd32(ram, n + 0x10);
+    }
+  }
+  return {};
+}
+
+static u32 HeapFree(const u8* ram, u32 i)
+{
+  const u32 h = Rd32(ram, 0x8040BD70 + 4 * i);
+  if ((h & 0xFE000000) != 0x80000000)
+    return 0;
+  u32 n = Rd32(ram, h + 0x20), k = 0, total = 0;
+  while (n != h + 0x10 && (n & 0xFE000000) == 0x80000000 && k++ < 20000)
+  {
+    total += Rd32(ram, n + 4);
+    n = Rd32(ram, n + 0x10);
+  }
+  return total;
+}
+
+static std::string RbtagSummary(const u8* ram)
+{
+  char b[200];
+  snprintf(b, sizeof b,
+           "rbtag logs now acq %u rel %u free %u (max %u/%u/%u of 96), deferred frees %u of 63; free KB heap2 %u "
+           "heap3 %u",
+           Rd32(ram, 0x8049B510), Rd32(ram, 0x8049B514), Rd32(ram, 0x8049B518), s_max_acq, s_max_rel, s_max_frl,
+           Rd32(ram, 0x8049B400), HeapFree(ram, 2) / 1024, HeapFree(ram, 3) / 1024);
+  return b;
+}
+
+
+static void DiagCheck(const u8* ram, u32 f, const char* where)
+{
+  if (!s_active)
+    return;
+  if (!s_diag_heap_reported)
+  {
+    const std::string p = FreeListProblem(ram, true);
+    if (!p.empty())
+    {
+      s_diag_heap_reported = true;
+      char b[200];
+      snprintf(b, sizeof b, "FFNY WARNING: broken heap free list found %s, frame %u (last rollback %u->%u%s): ",
+               where, f, s_last_rb_from, s_last_rb_to, s_resim_target ? ", re-simulating" : "");
+      Report(b + p + ". " + RbtagSummary(ram));
+    }
+  }
+  static const char* const names[4] = {"acquire", "release", "free", "deferred main-heap free"};
+  const u32 fill[4] = {Rd32(ram, 0x8049B510), Rd32(ram, 0x8049B514), Rd32(ram, 0x8049B518),
+                       Rd32(ram, 0x8049B400)};
+  const u32 cap[4] = {96, 96, 96, 63};
+  for (u32 i = 0; i < 4; i++)
+  {
+    if (fill[i] >= cap[i] && !(s_diag_full_reported >> i & 1))
+    {
+      s_diag_full_reported |= 1u << i;
+      Report("FFNY WARNING: rbtag " + std::string(names[i]) + " log full at frame " + std::to_string(f) +
+             " - from now on such calls are done at once instead of being delayed, so a later rollback can "
+             "repeat them (possible cause of a later sound or heap crash). " + RbtagSummary(ram));
+    }
+  }
+  if (f % 60 == 0)
+  {
+    s_min_free2 = std::min(s_min_free2, HeapFree(ram, 2));
+    s_min_free3 = std::min(s_min_free3, HeapFree(ram, 3));
+  }
+}
+
 // lab stress: from here on, draws (and the watched range) belong to the update of frame f
 void DrawFrameBegin(const u8* ram, u32 f, bool first)
 {
+  DiagCheck(ram, f, first ? "before the update" : "before a re-simulated update");
   if (s_heapcheck)
     HeapCheck(ram, f, first ? "before update" : "before re-simulated update");
   if (!s_stress)
@@ -2039,6 +2146,17 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     s_mispredict_from = 0xFFFFFFFF;
     if (s < f && LoadState(system, s))
     {
+      if (!s_diag_heap_reported)
+      {
+        // a list broken right here was broken by the restore itself (or was broken in the saved state)
+        const std::string p = FreeListProblem(ram, true);
+        if (!p.empty())
+        {
+          s_diag_heap_reported = true;
+          Report("FFNY WARNING: broken heap free list right after the rewind " + std::to_string(f) + "->" +
+                 std::to_string(s) + " (restored state): " + p + ". " + RbtagSummary(ram));
+        }
+      }
       s_rollbacks++;
       s_last_rb_from = f;
       s_last_rb_to = s;
@@ -2081,6 +2199,20 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     if (s_log)
       PrintStats(f);
     fprintf(stderr, "FFNYRB fight end at frame %u\n", f);
+    if (s_report_cb)
+    {
+      // always (not counted against the report cap): how the connection treated this fight
+      char b[300];
+      snprintf(b, sizeof b,
+               "FFNY fight over at frame %u: %u rollbacks (max %u frames, %u frames re-simulated), %u waits "
+               "for the other side (%.1f s in total), %u desyncs",
+               f, s_rollbacks, s_max_depth, s_resim_frames, s_waits, s_wait_us / 1e6, s_desyncs);
+      char c[160];
+      snprintf(c, sizeof c, "; rbtag logs max %u/%u/%u of 96, lowest free KB heap2 %u heap3 %u", s_max_acq,
+               s_max_rel, s_max_frl, s_min_free2 == 0xFFFFFFFF ? 0 : s_min_free2 / 1024,
+               s_min_free3 == 0xFFFFFFFF ? 0 : s_min_free3 / 1024);
+      s_report_cb(std::string(b) + c);
+    }
     OSD::AddMessage("FFNY rollback: fight over - " + std::to_string(s_rollbacks) + " rollbacks (max " +
                         std::to_string(s_max_depth) + " frames), " + std::to_string(s_desyncs) +
                         " desyncs; synchronising...",
@@ -2143,7 +2275,13 @@ void OnInvalidAccess(Core::System& system, u32 address, u32 pc, bool write)
   snprintf(b, sizeof b, "FFNY CRASH (Dolphin): invalid %s %08x at PC %08x LR %08x, frame %u, fight %s%s. ",
            write ? "write to" : "read from", address, pc, ppc.spr[SPR_LR], ram ? Rd32(ram, ADDR_COUNTER) : 0,
            s_active ? "running" : "not running", s_resim_target ? ", during a re-simulation" : "");
-  Report(std::string(b) + (ram ? FightSummary(ram) : std::string()));
+  std::string heap;
+  if (ram)
+  {
+    const std::string p = FreeListProblem(ram);
+    heap = " | " + (p.empty() ? std::string("heap free lists ok") : "BROKEN " + p) + " | " + RbtagSummary(ram);
+  }
+  Report(std::string(b) + (ram ? FightSummary(ram) : std::string()) + heap);
 }
 
 void HookUnhandledException(const Core::CPUThreadGuard& guard)
@@ -2161,6 +2299,8 @@ void HookUnhandledException(const Core::CPUThreadGuard& guard)
            ppc.gpr[3] & 0xFF, ok ? Rd32(ram, ctx + 0x198) : 0, ok ? Rd32(ram, ctx + 0x84) : 0, ppc.gpr[5],
            ppc.gpr[6], Rd32(ram, ADDR_COUNTER), s_active ? "running" : "not running",
            s_resim_target ? ", during a re-simulation" : "");
-  Report(std::string(b) + FightSummary(ram));
+  const std::string p = FreeListProblem(ram);
+  Report(std::string(b) + FightSummary(ram) + " | " +
+         (p.empty() ? std::string("heap free lists ok") : "BROKEN " + p) + " | " + RbtagSummary(ram));
 }
 }  // namespace FFNYRollback

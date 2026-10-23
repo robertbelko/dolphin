@@ -109,6 +109,7 @@ private:
   void ConnectWidgets();
   void OnChat();
   void OnStart();
+  void ShowNetworkSimulation();
   void DisplayMessage(const QString& msg, const std::string& color,
                       int duration = OSD::Duration::NORMAL);
   void ResetExternalIP();
@@ -157,6 +158,7 @@ private:
   QAction* m_host_input_authority_action;
   QAction* m_golf_mode_action;
   QAction* m_ffny_rollback_action;
+  QAction* m_ffny_netsim_action;
   QAction* m_golf_mode_overlay_action;
   QAction* m_fixed_delay_action;
   QAction* m_hide_remote_gbas_action;

@@ -5,7 +5,9 @@
 
 #include <SFML/Network/Packet.hpp>
 
+#include <chrono>
 #include <map>
+#include <random>
 #include <set>
 #include <mutex>
 #include <optional>
@@ -67,6 +69,23 @@ public:
   void SetHostInputAuthority(bool enable);
 
   void KickPlayer(PlayerId player);
+
+  // FFNY test tool: simulated network conditions between the host and every other player (both
+  // directions; the host's own client is not affected). Applied to every netplay message: rollback
+  // inputs, menu pad data, pings (so the ping list shows the result), chat, resync.
+  struct NetworkSimulation
+  {
+    bool enabled = false;
+    u32 ping_ms = 0;        // added round-trip time (half in each direction)
+    u32 jitter_ms = 0;      // round trip varies by up to +- this much (each message independently)
+    u32 loss_percent = 0;   // rollback inputs: dropped; other messages: arrive one round trip later
+    u32 spike_ms = 0;       // ping jumps: extra round-trip time ...
+    u32 spike_length_ms = 0;  // ... for this long ...
+    u32 spike_every_s = 0;    // ... about this often (randomised 50-150 %)
+  };
+  // returns a one-line description for the chat
+  std::string SetNetworkSimulation(const NetworkSimulation& sim);
+  NetworkSimulation GetNetworkSimulation() const;
 
   u16 GetPort() const;
 
@@ -137,6 +156,22 @@ private:
   ConnectionError OnConnect(ENetPeer* socket, sf::Packet& received_packet);
   unsigned int OnDisconnect(const Client& player);
   unsigned int OnData(sf::Packet& packet, Client& player);
+  void HandlePlayerData(PlayerId pid, sf::Packet& packet);
+
+  // network simulation (see NetworkSimulation)
+  using SimClock = std::chrono::steady_clock;
+  struct SimPacket
+  {
+    PlayerId pid{};
+    bool incoming = false;
+    u8 channel_id = 0;
+    sf::Packet packet;
+  };
+  // true: the packet was queued (or dropped) by the simulation; false: handle it normally now
+  bool SimQueue(PlayerId pid, bool incoming, u8 channel_id, const sf::Packet& packet);
+  void SimFlush();
+  int SimServiceTimeoutMs();
+  void SimForgetPlayer(PlayerId pid);
 
   void OnTraversalStateChanged() override;
   void OnConnectReady(ENetAddress) override {}
@@ -209,6 +244,15 @@ private:
   u32 m_next_chunked_data_id = 0;
   std::unordered_map<u32, unsigned int> m_chunked_data_complete_count;
   bool m_abort_chunked_data = false;
+
+  mutable std::mutex m_sim_lock;
+  NetworkSimulation m_sim;
+  std::multimap<SimClock::time_point, SimPacket> m_sim_queue;
+  std::map<std::pair<PlayerId, bool>, SimClock::time_point> m_sim_last_due;  // reliable order
+  std::mt19937 m_sim_rng{std::random_device{}()};
+  SimClock::time_point m_sim_spike_end{};
+  SimClock::time_point m_sim_next_spike{};
+  u64 m_sim_delayed = 0, m_sim_dropped = 0, m_sim_resent = 0;
 
   ENetHost* m_server = nullptr;
   Common::TraversalClient* m_traversal_client = nullptr;
