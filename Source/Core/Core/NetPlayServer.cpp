@@ -1554,6 +1554,7 @@ bool NetPlayServer::SetupNetSettings()
   settings.hide_remote_gbas = Config::Get(Config::NETPLAY_HIDE_REMOTE_GBAS);
   settings.ffny_rollback = Config::Get(Config::NETPLAY_FFNY_ROLLBACK);
   settings.ffny_rollback_delay = Config::Get(Config::NETPLAY_FFNY_ROLLBACK_DELAY);
+  settings.ffny_load_lockstep = Config::Get(Config::NETPLAY_FFNY_LOAD_LOCKSTEP);
 
   // Unload GameINI to restore things to normal
   Config::RemoveLayer(Config::LayerType::GlobalGame);
@@ -1764,6 +1765,7 @@ bool NetPlayServer::StartGame()
   spac << m_settings.hide_remote_gbas;
   spac << m_settings.ffny_rollback;
   spac << m_settings.ffny_rollback_delay;
+  spac << m_settings.ffny_load_lockstep;
 
   for (size_t i = 0; i < sizeof(m_settings.sram); ++i)
     spac << m_settings.sram[i];

@@ -37,6 +37,9 @@ struct Settings
   u32 active_ports = 0;  // bit mask of in-game pads played by anyone
   u32 input_delay = 1;   // local input delay in frames
   u32 max_rollback = 7;  // frames
+  // while the game loads files (and a little after), run a frame only when every input up to it is confirmed,
+  // so no rollback goes back across a finished load / file conversion (that state is not rewound)
+  bool load_lockstep = true;
 };
 
 // Called by netplay (or the lab environment variables) before / when the game starts.

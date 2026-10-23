@@ -124,6 +124,7 @@ struct NetSettings
   bool hide_remote_gbas = false;
   bool ffny_rollback = false;      // Def Jam: Fight for NY rollback netcode in fights
   u32 ffny_rollback_delay = 2;     // its local input delay (frames)
+  bool ffny_load_lockstep = true;  // no rollback across file loads (lockstep while the game loads files)
 
   Sram sram;
 

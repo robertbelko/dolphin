@@ -58,6 +58,7 @@ const Info<bool> NETPLAY_HIDE_REMOTE_GBAS{{System::Main, "NetPlay", "HideRemoteG
 const Info<bool> NETPLAY_FFNY_ROLLBACK{{System::Main, "NetPlay", "FFNYRollback"}, false};
 const Info<u32> NETPLAY_FFNY_ROLLBACK_DELAY{{System::Main, "NetPlay", "FFNYRollbackDelay"}, 2};
 // network simulation (host test tool); the values are kept, it always starts switched off
+const Info<bool> NETPLAY_FFNY_LOAD_LOCKSTEP{{System::Main, "NetPlay", "FFNYLoadLockstep"}, true};
 const Info<u32> NETPLAY_FFNY_SIM_PING{{System::Main, "NetPlay", "FFNYSimPing"}, 120};
 const Info<u32> NETPLAY_FFNY_SIM_JITTER{{System::Main, "NetPlay", "FFNYSimJitter"}, 20};
 const Info<u32> NETPLAY_FFNY_SIM_LOSS{{System::Main, "NetPlay", "FFNYSimLoss"}, 0};

@@ -977,6 +977,11 @@ u32 s_min_free2 = 0xFFFFFFFF, s_min_free3 = 0xFFFFFFFF;
 u32 s_fs_busy_frames = 0, s_fs_done = 0, s_fs_done_frame = 0, s_fs_prev_cur = 0;
 u32 s_rb_across_load = 0, s_rb_across_conv = 0, s_conv_frame = 0;
 u32 s_bank_guard = 0;  // animation lookups in an empty bank answered "not found"
+u32 s_fs_last_busy = 0;      // newest frame at which the file system was seen busy
+u32 s_lockstep_frames = 0;   // frames run in lockstep because of file loads
+u64 s_lockstep_us = 0;       // time spent waiting for that
+bool s_conv_warned = false;
+constexpr u32 LOAD_TAIL = 20;  // frames of lockstep after the file system went idle (the game converts after that)
 
 // return addresses on the emulated stack (back chain), for crash reports
 std::string CallChain(const u8* ram, u32 sp, int max)
@@ -1087,9 +1092,13 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_fs_busy_frames = s_fs_done = s_rb_across_load = s_rb_across_conv = 0;
   s_fs_done_frame = s_conv_frame = 0;
   s_fs_prev_cur = Rd32(ram, 0x804018D4);
+  s_fs_last_busy = f;  // files are usually still being loaded when a fight starts
+  s_lockstep_frames = 0;
+  s_lockstep_us = 0;
+  s_conv_warned = false;
   s_min_free2 = s_min_free3 = 0xFFFFFFFF;
   OSD::AddMessage("FFNY rollback: fight started (input delay " + std::to_string(s_settings.input_delay) +
-                      ")",
+                      (s_settings.load_lockstep ? ", lockstep while loading" : "") + ")",
                   3000);
   fprintf(stderr, "FFNYRB fight start at frame %u (local %x active %x delay %u)\n", f,
           s_settings.local_ports, s_settings.active_ports, s_settings.input_delay);
@@ -1278,6 +1287,7 @@ void OnVIField(Core::System& system)
       st.active_ports = ap;
       if (const char* d = std::getenv("FFNY_RB_DELAY"))
         st.input_delay = std::atoi(d);
+      st.load_lockstep = std::getenv("FFNY_RB_NOLOCKSTEP") == nullptr;
       unsigned listen = 0, pport = 0;
       char host[128] = {};
       if (u)
@@ -1302,6 +1312,8 @@ void OnVIField(Core::System& system)
     // finished file requests between two updates (the update-start sampling alone misses short ones)
     const u8* r = system.GetMemory().GetRAM();
     const u32 cur = Rd32(r, 0x804018D4);
+    if (cur || Rd32(r, 0x804018E0))
+      s_fs_last_busy = std::max(s_fs_last_busy, Rd32(r, ADDR_COUNTER));
     if (s_fs_prev_cur && cur != s_fs_prev_cur)
     {
       s_fs_done++;
@@ -1426,7 +1438,10 @@ void HookLoader(const Core::CPUThreadGuard& guard)
   const u32 shnum = le ? (h[0x30] | h[0x31] << 8) : 0;
   s_loader_calls++;
   if (s_active && le && thread == 0x80432D10)
+  {
     s_conv_frame = std::max(s_conv_frame, Rd32(ram, ADDR_COUNTER));  // fresh data converted by the game logic
+    s_fs_last_busy = std::max(s_fs_last_busy, s_conv_frame);
+  }
   if (s_log)
   {
     const auto blk = HeapBlockOf(ram, data);
@@ -1984,7 +1999,10 @@ static void DiagLoads(const u8* ram, u32 f)
   // the game's file system (struct 0x804018C0): +0x14 = request being processed, +0x20 = queue head
   const u32 cur = Rd32(ram, 0x804018D4), head = Rd32(ram, 0x804018E0);
   if (cur || head)
+  {
     s_fs_busy_frames++;
+    s_fs_last_busy = std::max(s_fs_last_busy, f);
+  }
   if (s_fs_prev_cur && cur != s_fs_prev_cur)
   {
     s_fs_done++;  // the request seen before has finished (sampled at update starts and VI fields)
@@ -2192,12 +2210,22 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   // unconfirmed): wait for its inputs
   const auto wait_start = std::chrono::steady_clock::now();
   bool waited = false;
+  // file loads: the loading code and its bookkeeping are not rewound, the objects that receive the data are. A
+  // rollback back across a finished load / conversion leaves those objects empty for good (crash at the KO scene,
+  // 23 October). So while files load (and LOAD_TAIL frames after), frame f runs only once every input up to f is
+  // known: the frames of a load are never rolled back. Costs a wait per frame of about ping - input delay.
+  if (Rd32(ram, 0x804018D4) != 0 || Rd32(ram, 0x804018E0) != 0)
+    s_fs_last_busy = std::max(s_fs_last_busy, f);
+  const bool lockstep = s_settings.load_lockstep && fight && f <= s_fs_last_busy + LOAD_TAIL;
+  if (lockstep)
+    s_lockstep_frames++;
   while (true)
   {
     const u32 mc = MinConfirmed();
     const bool ahead = f > mc + s_settings.max_rollback;
     const bool ending = !fight && mc + 1 < f;
-    if (s_mispredict_from != 0xFFFFFFFF || (!ahead && !ending))
+    const bool need = lockstep && mc < f;  // in lockstep: also roll back only with all inputs known
+    if (!need && (s_mispredict_from != 0xFFFFFFFF || (!ahead && !ending)))
       break;
     if (std::chrono::steady_clock::now() - wait_start > std::chrono::seconds(10))
     {
@@ -2226,9 +2254,12 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     if (s_sync_enabled)
       system.GetCoreTiming().AddThrottleDelay(std::chrono::steady_clock::now() - wait_start);
     s_waits++;
-    s_wait_us += std::chrono::duration_cast<std::chrono::microseconds>(
-                     std::chrono::steady_clock::now() - wait_start)
-                     .count();
+    const u64 us = std::chrono::duration_cast<std::chrono::microseconds>(
+                       std::chrono::steady_clock::now() - wait_start)
+                       .count();
+    s_wait_us += us;
+    if (lockstep)
+      s_lockstep_us += us;
   }
 
   if (s_mispredict_from != 0xFFFFFFFF)
@@ -2254,7 +2285,16 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       if (s_fs_done_frame >= s)
         s_rb_across_load++;  // a file request finished in a frame that is now thrown away
       if (s_conv_frame >= s)
+      {
         s_rb_across_conv++;  // the game converted a loaded file in a frame that is now thrown away
+        if (!s_conv_warned)
+        {
+          s_conv_warned = true;
+          Report("FFNY WARNING: rollback " + std::to_string(f) + "->" + std::to_string(s) +
+                 " goes back across a file conversion in frame " + std::to_string(s_conv_frame) +
+                 " (its data may now be missing in this fight)");
+        }
+      }
       if (s_log && s_rollbacks % 50 == 0)
         fprintf(stderr, "FFNYRB rollback %u: %u -> %u fight %u scr %08x\n", s_rollbacks, f, s, Rd32(ram, ADDR_FIGHT), Rd32(ram, 0x803EA56C));
       s_max_depth = std::max(s_max_depth, f - s);
@@ -2302,14 +2342,14 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
                "FFNY fight over at frame %u: %u rollbacks (max %u frames, %u frames re-simulated), %u waits "
                "for the other side (%.1f s in total), %u desyncs",
                f, s_rollbacks, s_max_depth, s_resim_frames, s_waits, s_wait_us / 1e6, s_desyncs);
-      char c[400];
+      char c[600];
       snprintf(c, sizeof c,
                "; rbtag logs max %u/%u/%u of 96, lowest free KB heap2 %u heap3 %u; file system busy in %u frames, "
                "%u requests finished, rollbacks across a finished request %u, across a file conversion %u; empty "
-               "animation bank lookups caught %u",
+               "animation bank lookups caught %u; lockstep for file loads %u frames (%.1f s waiting)",
                s_max_acq, s_max_rel, s_max_frl, s_min_free2 == 0xFFFFFFFF ? 0 : s_min_free2 / 1024,
                s_min_free3 == 0xFFFFFFFF ? 0 : s_min_free3 / 1024, s_fs_busy_frames, s_fs_done, s_rb_across_load,
-               s_rb_across_conv, s_bank_guard);
+               s_rb_across_conv, s_bank_guard, s_lockstep_frames, s_lockstep_us / 1e6);
       s_report_cb(std::string(b) + c);
     }
     OSD::AddMessage("FFNY rollback: fight over - " + std::to_string(s_rollbacks) + " rollbacks (max " +

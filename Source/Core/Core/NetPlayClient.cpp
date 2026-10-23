@@ -991,6 +991,7 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
     packet >> m_net_settings.hide_remote_gbas;
     packet >> m_net_settings.ffny_rollback;
     packet >> m_net_settings.ffny_rollback_delay;
+    packet >> m_net_settings.ffny_load_lockstep;
 
     for (size_t i = 0; i < sizeof(m_net_settings.sram); ++i)
       packet >> m_net_settings.sram[i];
@@ -1834,6 +1835,7 @@ bool NetPlayClient::StartGame(const std::string& path)
     FFNYRollback::Settings rb;
     rb.enabled = m_net_settings.ffny_rollback;
     rb.input_delay = std::clamp<u32>(m_net_settings.ffny_rollback_delay, 0, 6);
+    rb.load_lockstep = m_net_settings.ffny_load_lockstep;
     for (int i = 0; i < 4; i++)
     {
       if (m_net_settings.pad_map[i] > 0 && !m_net_settings.gba_config[i].enabled)

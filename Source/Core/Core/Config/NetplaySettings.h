@@ -53,6 +53,7 @@ extern const Info<bool> NETPLAY_GOLF_MODE_OVERLAY;
 extern const Info<bool> NETPLAY_HIDE_REMOTE_GBAS;
 extern const Info<bool> NETPLAY_FFNY_ROLLBACK;
 extern const Info<u32> NETPLAY_FFNY_ROLLBACK_DELAY;
+extern const Info<bool> NETPLAY_FFNY_LOAD_LOCKSTEP;
 extern const Info<u32> NETPLAY_FFNY_SIM_PING;
 extern const Info<u32> NETPLAY_FFNY_SIM_JITTER;
 extern const Info<u32> NETPLAY_FFNY_SIM_LOSS;

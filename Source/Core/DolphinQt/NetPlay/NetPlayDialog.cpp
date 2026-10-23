@@ -1224,6 +1224,13 @@ void NetPlayDialog::ShowNetworkSimulation()
       300, current.enabled ? current.spike_every_s : Config::Get(Config::NETPLAY_FFNY_SIM_SPIKE_EVERY),
       tr(" s"));
   auto* const delay = spin(6, Config::Get(Config::NETPLAY_FFNY_ROLLBACK_DELAY), tr(" frames"));
+  auto* const load_lockstep = new QCheckBox(tr("Rollback fights: lockstep while files load"));
+  load_lockstep->setChecked(Config::Get(Config::NETPLAY_FFNY_LOAD_LOCKSTEP));
+  load_lockstep->setToolTip(
+      tr("While the game loads files during a fight (and shortly after), each frame waits until the "
+         "other player's input for it has arrived, so no rollback can undo a finished load (that "
+         "caused the KO-scene crash). Costs short slowdowns while loading. Applies from the next "
+         "game start."));
 
   ping->setToolTip(tr("Added round-trip time (half of it in each direction)."));
   jitter->setToolTip(tr("Each message's round trip varies by up to this much in either direction, "
@@ -1243,6 +1250,7 @@ void NetPlayDialog::ShowNetworkSimulation()
   form->addRow(tr("lasting:"), spike_len);
   form->addRow(tr("about every:"), spike_every);
   form->addRow(tr("Rollback input delay:"), delay);
+  form->addRow(load_lockstep);
   auto* const note = new QLabel(
       tr("Applies between the host and every other player, in both directions, to all netplay "
          "messages (the ping list shows the result). Changes apply at once with Apply, also "
@@ -1273,6 +1281,7 @@ void NetPlayDialog::ShowNetworkSimulation()
       Config::SetBase(Config::NETPLAY_FFNY_SIM_SPIKE_LENGTH, sim.spike_length_ms);
       Config::SetBase(Config::NETPLAY_FFNY_SIM_SPIKE_EVERY, sim.spike_every_s);
       Config::SetBase(Config::NETPLAY_FFNY_ROLLBACK_DELAY, static_cast<u32>(delay->value()));
+      Config::SetBase(Config::NETPLAY_FFNY_LOAD_LOCKSTEP, load_lockstep->isChecked());
     }
     if (const auto srv = Settings::Instance().GetNetPlayServer())
     {
