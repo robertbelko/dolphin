@@ -79,6 +79,7 @@ void HookLoader(const Core::CPUThreadGuard& guard);  // 0x80121B4C (EAGL ELF .o 
 void HookRng(const Core::CPUThreadGuard& guard);     // generator 2 entry 0x800B7DAC
 void HookRng1(const Core::CPUThreadGuard& guard);    // generator 1 entry 0x8001FC88
 void HookRender(const Core::CPUThreadGuard& guard);
+void HookMatchUpdate(const Core::CPUThreadGuard& guard);  // 0x80096C04, the match update (fight mode only)
 void HookProbe(const Core::CPUThreadGuard& guard);  // lab
 void HookSndRelease(const Core::CPUThreadGuard& guard);  // lab, 0x801F33E4
 void HookHeapLog(const Core::CPUThreadGuard& guard);     // lab

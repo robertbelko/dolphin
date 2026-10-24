@@ -928,6 +928,13 @@ void StressCheck(const u8* ram, u32 f, bool first)
 
 // rbtag v4 words (sound reference bookkeeping; see rbtag.c)
 constexpr u32 W_CONF = 0x8049A40C, W_ACT = 0x8049B500, W_FRAME = 0x8049B504, W_RB = 0x8049B508;
+// set to 1 by HookMatchUpdate, read and cleared at every update start: "the match update ran in the previous update".
+// In emulated RAM (free word of rbtag's area, which rollback never rewinds), so a resync carries it: both machines then
+// agree on it at the next update even if the host paused a little later inside that update than the client.
+constexpr u32 W_MATCH = 0x8049B5F0;
+constexpr u32 ADDR_MATCH_UPDATE = 0x80096C04;  // match update (state machine at match +0x302A0; fight step 0x80098014)
+bool s_match_hook = false;
+bool s_left_match = false;  // for the fight-over line
 void Wr32(u8* ram, u32 a, u32 v)
 {
   u8* p = ram + (a & 0x01FFFFFF);
@@ -1015,7 +1022,13 @@ bool s_fs_was_busy = false;
 u32 s_lockstep_frames = 0;   // frames run in lockstep because of file loads
 u64 s_lockstep_us = 0;       // time spent waiting for that
 bool s_conv_warned = false;
-constexpr u32 LOAD_TAIL = 20;  // frames of lockstep after the file system went idle (the game converts after that)
+// frames of lockstep after the file system went idle (the game converts loaded data after that). Was 20; Robert's
+// measurement (24 October, window KO fight, both machines): 92 % of the lockstep frames came only from this tail
+// (739 / 758 of 803 / 827) and all 159 conversions of data outside the rollback state came at most 1 frame after the
+// file system was busy. A later conversion still gets lockstep from its own frame on and the chat warning if a
+// rollback crosses it.
+constexpr u32 LOAD_TAIL = 4;
+constexpr u32 START_LOCKSTEP = 20;  // lockstep frames at the start of a fight (its files are still loading)
 
 // return addresses on the emulated stack (back chain), for crash reports
 std::string CallChain(const u8* ram, u32 sp, int max)
@@ -1126,7 +1139,7 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_fs_busy_frames = s_fs_done = s_rb_across_load = s_rb_across_conv = 0;
   s_fs_done_frame = s_conv_frame = 0;
   s_fs_prev_cur = Rd32(ram, 0x804018D4);
-  s_fs_last_busy = f;  // files are usually still being loaded when a fight starts
+  s_fs_last_busy = f + START_LOCKSTEP - LOAD_TAIL;  // files are usually still being loaded when a fight starts
   s_fs_real_busy = f;
   s_fs_episodes = s_lockstep_tail = s_conv_out = s_conv_gap_max = 0;
   s_fs_was_busy = true;
@@ -1562,6 +1575,12 @@ void OnVIField(Core::System& system)
     HLE::Patch(system, 0x8001841C, "FFNYRollbackBankGuard");
   if (Rd32(ram, 0x80274180) == 0x9421FFC0)  // stwu sp,-0x40(sp): the SDK's unhandled-exception handler
     HLE::Patch(system, 0x80274180, "FFNYRollbackCrash");
+  s_match_hook = Rd32(ram, ADDR_MATCH_UPDATE) == 0x9421FFD0;  // stwu sp,-0x30(sp)
+  if (s_match_hook)
+  {
+    Wr32(memory.GetRAM(), W_MATCH, 0);
+    HLE::Patch(system, ADDR_MATCH_UPDATE, "FFNYRollbackMatch");
+  }
   s_rng_redirect = Rd32(ram, 0x8049A200) == 0x3C60804A && Rd32(ram, 0x8049A204) == 0x3863A210 &&
                    std::getenv("FFNY_RB_NORNGFIX") == nullptr;
   if (const char* w = std::getenv("FFNY_RB_WATCHW"))
@@ -1999,6 +2018,15 @@ void HookRender(const Core::CPUThreadGuard& guard)
   s_phase = 'R';
 }
 
+// The match update 0x80096C04 runs once per logic update while the game is in fight mode (every match state: fight,
+// pause, KO scenes, results). After "quit" in the pause menu the game goes to the menus without touching 0x803F1000 /
+// 0x803F1124 (Robert, 24 October: rollback stayed on in the main menu, both Dolphins crashed in the heap code at
+// 0x80249818 from 0x801A315C when going back from SELECT USER ID).
+void HookMatchUpdate(const Core::CPUThreadGuard& guard)
+{
+  Wr32(guard.GetSystem().GetMemory().GetRAM(), W_MATCH, 1);
+}
+
 // The generator hooks are Replace hooks: a Start hook's change of r3 is not seen by the JIT code after it when
 // the caller set r3 with constant instructions (lis / subi): the JIT keeps the constant across the call, so the
 // "redirected" draw still used the shared generator (lab: 1,159 redirected render draws all wrote the shared
@@ -2319,8 +2347,8 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
     if (!forced.empty())
       line += ". THIS MACHINE DID NOT REACH THE END ITSELF: " + forced + " - the host's state replaces mine";
     char d[160];
-    snprintf(d, sizeof d, "; end marker: fight loop %u, fight flags %08x", Rd32(ram, ADDR_FIGHT),
-             Rd32(ram, ADDR_FIGHT_FLAGS));
+    snprintf(d, sizeof d, "; end marker: fight loop %u, fight flags %08x, %s", Rd32(ram, ADDR_FIGHT),
+             Rd32(ram, ADDR_FIGHT_FLAGS), s_left_match ? "match left (quit)" : "in the match");
     line += d;
     s_report_cb(line);
     LogLine(line);
@@ -2363,10 +2391,14 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       fprintf(stderr, "FFNYRB DT frame %u: f31 = %.6f%s\n", Rd32(ram, ADDR_COUNTER), dt, s_resim_target ? " (resim)" : "");
   }
   u32 f = Rd32(ram, ADDR_COUNTER);
+  // the game is still in fight mode (the match update ran in the previous update; see HookMatchUpdate)
+  const bool in_match = !s_match_hook || Rd32(ram, W_MATCH) != 0;
+  Wr32(ram, W_MATCH, 0);
   // the fight loop runs and the fight is not decided yet. After an environmental KO (thrown out of a window) the
   // loop state stays 1 through the KO scene, results and rematch screen (Robert, 23 / 24 October); those must run in
   // lockstep after the resync, not in rollback (the rematch choice went different ways on the two machines).
-  const bool fight = Rd32(ram, ADDR_FIGHT) == 1 && !(Rd32(ram, ADDR_FIGHT_FLAGS) & FIGHT_DECIDED);
+  s_left_match = !in_match;
+  const bool fight = in_match && Rd32(ram, ADDR_FIGHT) == 1 && !(Rd32(ram, ADDR_FIGHT_FLAGS) & FIGHT_DECIDED);
 
   if (!s_active)
   {
@@ -2492,7 +2524,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   if (lockstep)
   {
     s_lockstep_frames++;
-    if (f > s_fs_last_busy && f > s_start_frame + LOAD_TAIL)
+    if (f > s_fs_last_busy && f > s_start_frame + START_LOCKSTEP)
       s_lockstep_tail++;  // only because of the tail: the file system is idle and no conversion is this recent
   }
   while (true)
