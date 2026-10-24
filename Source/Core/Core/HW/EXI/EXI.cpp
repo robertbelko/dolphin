@@ -14,6 +14,7 @@
 #include "Core/ConfigManager.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/EXI/EXI_Channel.h"
+#include "Core/HW/EXI/EXI_DeviceIPL.h"
 #include "Core/HW/EXI/EXI_DeviceMemoryCard.h"
 #include "Core/HW/GCMemcard/GCMemcard.h"
 #include "Core/HW/MMIO.h"
@@ -21,6 +22,7 @@
 #include "Core/HW/Sram.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/Movie.h"
+#include "Core/NetPlayProto.h"
 #include "Core/System.h"
 
 #include "DiscIO/Enums.h"
@@ -129,8 +131,18 @@ void ExpansionInterfaceManager::Init(const Sram* override_sram)
     const CardFlashId& flash_id = sram.settings_ex.flash_id[Memcard::SLOT_A];
     const u32 rtc_bias = sram.settings.rtc_bias;
     const u32 sram_language = static_cast<u32>(sram.settings.language);
-    const u64 format_time =
+    u64 format_time =
         Common::Timer::GetLocalTimeSinceJan1970() - ExpansionInterface::CEXIIPL::GC_EPOCH;
+    // Netplay: the memory card header (serial, format time) must be the same on every machine - it is made from
+    // this time when the card folder has no header file, which is the case for netplay's synced GCI folders (only
+    // the game's .gci files are sent). The wall-clock time differs between the machines; the host's initial RTC
+    // value is the same everywhere.
+    if (NetPlay::IsNetPlayRunning())
+    {
+      const u64 rtc = ExpansionInterface::CEXIIPL::NetPlay_GetEmulatedTime();
+      if (rtc > ExpansionInterface::CEXIIPL::GC_EPOCH)
+        format_time = rtc - ExpansionInterface::CEXIIPL::GC_EPOCH;
+    }
 
     for (u32 i = 0; i < MAX_EXI_CHANNELS; i++)
     {
