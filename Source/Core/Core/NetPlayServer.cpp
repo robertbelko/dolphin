@@ -1575,6 +1575,7 @@ bool NetPlayServer::SetupNetSettings()
   settings.ffny_rollback = Config::Get(Config::NETPLAY_FFNY_ROLLBACK);
   settings.ffny_rollback_delay = Config::Get(Config::NETPLAY_FFNY_ROLLBACK_DELAY);
   settings.ffny_load_lockstep = Config::Get(Config::NETPLAY_FFNY_LOAD_LOCKSTEP);
+  settings.gpu_determinism_mode = Config::Get(Config::MAIN_GPU_DETERMINISM_MODE);
 
   // Unload GameINI to restore things to normal
   Config::RemoveLayer(Config::LayerType::GlobalGame);
@@ -1786,6 +1787,7 @@ bool NetPlayServer::StartGame()
   spac << m_settings.ffny_rollback;
   spac << m_settings.ffny_rollback_delay;
   spac << m_settings.ffny_load_lockstep;
+  spac << m_settings.gpu_determinism_mode;
 
   for (size_t i = 0; i < sizeof(m_settings.sram); ++i)
     spac << m_settings.sram[i];

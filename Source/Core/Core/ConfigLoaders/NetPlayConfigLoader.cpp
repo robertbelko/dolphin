@@ -38,6 +38,7 @@ public:
   void Load(Config::Layer* layer) override
   {
     layer->Set(Config::MAIN_CPU_THREAD, m_settings.cpu_thread);
+    layer->Set(Config::MAIN_GPU_DETERMINISM_MODE, m_settings.gpu_determinism_mode);
     layer->Set(Config::MAIN_CPU_CORE, m_settings.cpu_core);
     layer->Set(Config::MAIN_ENABLE_CHEATS, m_settings.enable_cheats);
 #ifdef USE_RETRO_ACHIEVEMENTS

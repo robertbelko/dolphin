@@ -125,6 +125,9 @@ struct NetSettings
   bool ffny_rollback = false;      // Def Jam: Fight for NY rollback netcode in fights
   u32 ffny_rollback_delay = 2;     // its local input delay (frames)
   bool ffny_load_lockstep = true;  // no rollback across file loads (lockstep while the game loads files)
+  // the host's "Deterministic dual core" mode for everyone (stock Dolphin leaves it per machine; one machine with
+  // "none" runs its GPU thread non-deterministically and drifts away in lockstep netplay)
+  std::string gpu_determinism_mode = "auto";
 
   Sram sram;
 

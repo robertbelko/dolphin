@@ -1034,6 +1034,7 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
     packet >> m_net_settings.ffny_rollback;
     packet >> m_net_settings.ffny_rollback_delay;
     packet >> m_net_settings.ffny_load_lockstep;
+    packet >> m_net_settings.gpu_determinism_mode;
 
     for (size_t i = 0; i < sizeof(m_net_settings.sram); ++i)
       packet >> m_net_settings.sram[i];
