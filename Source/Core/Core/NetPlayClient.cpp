@@ -448,8 +448,29 @@ void NetPlayClient::OnData(sf::Packet& packet)
   }
   break;
 
+  case MessageID::FFNYForceEnd:
+  {
+    // another machine ended the rollback fight and this one did not follow within 3 s (the games went different
+    // ways after the KO): end it here too and take the host's state
+    u32 frame = 0;
+    packet >> frame;
+    if (!m_ffny_resync_pending)
+    {
+      const std::string text =
+          fmt::format("FFNY: this machine had not reached the end of the fight (it ended at frame {} on another "
+                      "machine) - ending it here, the host's state follows",
+                      frame);
+      m_dialog->AppendChat(text);
+      SendChatMessage(text);
+      FFNYRollback::LogLine(text);
+      FFNYRollback::RequestForceEnd(fmt::format("the fight ended at frame {} on another machine", frame));
+    }
+  }
+  break;
+
   case MessageID::FFNYResume:
   {
+    FFNYRollback::ClearForceEnd();
     ClearBuffers();
     m_timebase_frame = 0;
     m_ffny_resync_pending = false;

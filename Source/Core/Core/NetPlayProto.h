@@ -182,6 +182,7 @@ enum class MessageID : u8
   FFNYStateLoaded = 0x6B,  // client -> server
   FFNYResume = 0x6C,       // server -> clients: clear pad buffers, continue
   FFNYInput = 0x6D,  // FFNY rollback inputs: like FFNYRollback, but unreliable on FFNY_INPUT_CHANNEL
+  FFNYForceEnd = 0x6E,  // server -> clients: end the rollback fight now (not every machine reached its end), u32 frame
 
   WiimoteData = 0x70,
   WiimoteMapping = 0x71,

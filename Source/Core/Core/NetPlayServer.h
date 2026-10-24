@@ -222,6 +222,12 @@ private:
   // FFNY rollback: resync of the whole emulator state after a fight
   std::set<PlayerId> m_ffny_fight_ended;
   std::set<PlayerId> m_ffny_state_loaded;
+  // when the first machine reported the end of a rollback fight; if the others do not follow within a few seconds
+  // (their game went another way after the KO), the host ends the fight for everyone (FFNYForceEnd)
+  std::optional<std::chrono::steady_clock::time_point> m_ffny_end_since;
+  u32 m_ffny_end_frame = 0;
+  bool m_ffny_force_sent = false;
+  void FFNYCheckFightEndTimeout();
 
   struct
   {

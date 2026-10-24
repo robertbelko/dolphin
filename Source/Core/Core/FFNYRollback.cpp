@@ -69,6 +69,12 @@ constexpr u32 INSN_TICK = 0x480E7449;
 constexpr u32 ADDR_LOADER = 0x80121B4C;  // EAGL ELF .o loader: converts the file data in place
 constexpr u32 ADDR_COUNTER = 0x80440C24;  // logic update counter (rewound with the state)
 constexpr u32 ADDR_FIGHT = 0x803F1000;    // fight loop state, 1 = fight running
+// fight state flags (fight state 0x803F0FF8 + 0x12C). Bit 0x8 = the fight is decided: set by every match-end path
+// (match end 0x80203E38, environmental KO 0x80238720, 0x80206BF4, 0x80228FAC, 0x801FBD54, the end of the slow-motion
+// phase 0x801FA0B8) and kept until the next fight's init (0x801F99E0 writes 1). Bits 0x20 / 0x40 (without 0x80) stop
+// the fight loop's state machine (0x801FA0D8), so 0x803F1000 can stay 1 after an environmental KO.
+constexpr u32 ADDR_FIGHT_FLAGS = 0x803F1124;
+constexpr u32 FIGHT_DECIDED = 0x8;
 constexpr u32 ADDR_HEAP_HOOK = 0x8040BD64;  // allocator post-alloc hook word (rbtag installs 0x8049A454)
 constexpr u32 SNAP_OFS = 0x17CC;  // pad snapshot in the input-thread object (r28)
 constexpr u32 REC_OFS = 0x10;
@@ -101,6 +107,10 @@ struct SavedState
 };
 
 Settings s_settings;
+// set by the netplay thread when the host ends the fight for everyone (the machines' fights did not end at the same
+// frame, e.g. post-KO screens that went different ways); picked up by the CPU thread in HookPreUpdate
+std::atomic<bool> s_force_end{false};
+std::string s_force_reason;  // written before s_force_end is set
 std::function<void(const std::string&)> s_report_cb;
 u32 s_reports = 0;
 std::function<void(Core::System&, u32)> s_fight_end_cb;
@@ -1288,6 +1298,7 @@ void Configure(const Settings& settings, Transport* transport)
 
 void SetFightEndCallback(std::function<void(Core::System&, u32 frame)> callback)
 {
+  s_force_end = false;
   s_fight_end_cb = std::move(callback);
 }
 
@@ -1305,6 +1316,17 @@ void Shutdown()
 bool IsActive()
 {
   return s_active;
+}
+
+void RequestForceEnd(const std::string& reason)
+{
+  s_force_reason = reason;
+  s_force_end = true;
+}
+
+void ClearForceEnd()
+{
+  s_force_end = false;
 }
 
 std::string GetStatus()
@@ -1425,23 +1447,30 @@ void OnVIField(Core::System& system)
   }
   if (s_settings.enabled)
   {
-    // log changes of the fight flag (0x803F1000) and the screen counter (0x803EA56C): Robert's environmental KO on
-    // Crow's Office (23 October) kept rollback on through the KO scene, results and rematch screen until the next
-    // match's intro - the flag apparently stays 1 there. This tells which value marks the end of such a fight.
-    static u32 prev_flag = 0xFFFFFFFF, prev_scr = 0xFFFFFFFF, logged = 0;
+    // log changes of the fight-end markers (24 October): the fight loop state 0x803F1000, the fight flags 0x803F1124
+    // (bits kept from frame to frame: 0x8 = decided, 0x20 / 0x40 = fight loop's state machine stopped), the
+    // "lost" bits +0x932 of fighters 1 / 2 and the match rule 0x803F0DA0. The screen counter 0x803EA56C logged by
+    // fbf9fca turned out to be a timer (+0x100 about every 2.5 s) - not logged any more.
+    static u32 prev = 0xFFFFFFFF, prev_flags = 0xFFFFFFFF, prev_lost = 0xFFFFFFFF, prev_rule = 0xFFFFFFFF, logged = 0;
     const u8* r = system.GetMemory().GetRAM();
     if (r && logged < 400)
     {
-      const u32 fl = Rd32(r, ADDR_FIGHT), scr = Rd32(r, 0x803EA56C);
-      if (fl != prev_flag || scr != prev_scr)
+      const u32 fl = Rd32(r, ADDR_FIGHT), flags = Rd32(r, ADDR_FIGHT_FLAGS) & 0x17F, rule = Rd32(r, 0x803F0DA0);
+      const u32 lost = Rd32(r, 0x803F1144 + 0x930) << 16 | (Rd32(r, 0x803F1144 + 0x12F8 + 0x930) & 0xFFFF);
+      if (fl != prev || flags != prev_flags || lost != prev_lost || rule != prev_rule)
       {
-        char b[160];
-        snprintf(b, sizeof b, "state: fight flag %u (was %d), screen %x (was %x), frame %u, rollback %s", fl,
-                 static_cast<int>(prev_flag), scr, prev_scr, Rd32(r, ADDR_COUNTER), s_active ? "on" : "off");
+        char b[200];
+        snprintf(b, sizeof b,
+                 "state: fight loop %u (was %d), fight flags %03x (was %x), lost bits P1 %04x P2 %04x, match rule %u, "
+                 "frame %u, rollback %s",
+                 fl, static_cast<int>(prev), flags, prev_flags, lost >> 16, lost & 0xFFFF, rule, Rd32(r, ADDR_COUNTER),
+                 s_active ? "on" : "off");
         LogLine(b);
         logged++;
-        prev_flag = fl;
-        prev_scr = scr;
+        prev = fl;
+        prev_flags = flags;
+        prev_lost = lost;
+        prev_rule = rule;
       }
     }
   }
@@ -2224,6 +2253,53 @@ void DrawFrameBegin(const u8* ram, u32 f, bool first)
   }
 }
 
+// Leave rollback mode: back to normal (lockstep) netplay. The fight-end callback pauses this machine until the host's
+// state arrives. forced = the reason when this machine did not reach the end of the fight itself (the host ended
+// it for everyone, or no inputs came for 10 s); its state is then replaced by the host's anyway.
+static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& forced)
+{
+  // The other side may still lack our last frames (lost packets) and waits for them: send them once more, reliably.
+  ResendInputs(true);
+  s_active = false;
+  s_loader_undo.clear();
+  Wr32(ram, W_ACT, 0);  // rbtag: do the remaining deferred sound releases
+  if (s_log)
+    PrintStats(f);
+  fprintf(stderr, "FFNYRB fight end at frame %u%s\n", f, forced.empty() ? "" : " (forced)");
+  if (s_report_cb)
+  {
+    // always (not counted against the report cap): how the connection treated this fight
+    char b[300];
+    snprintf(b, sizeof b,
+             "FFNY fight over at frame %u: %u rollbacks (max %u frames, %u frames re-simulated), %u waits "
+             "for the other side (%.1f s in total), %u desyncs",
+             f, s_rollbacks, s_max_depth, s_resim_frames, s_waits, s_wait_us / 1e6, s_desyncs);
+    char c[600];
+    snprintf(c, sizeof c,
+             "; rbtag logs max %u/%u/%u of 96, lowest free KB heap2 %u heap3 %u; file system busy in %u frames, "
+             "%u requests finished, rollbacks across a finished request %u, across a file conversion %u; empty "
+             "animation bank lookups caught %u; lockstep for file loads %u frames (%.1f s waiting)",
+             s_max_acq, s_max_rel, s_max_frl, s_min_free2 == 0xFFFFFFFF ? 0 : s_min_free2 / 1024,
+             s_min_free3 == 0xFFFFFFFF ? 0 : s_min_free3 / 1024, s_fs_busy_frames, s_fs_done, s_rb_across_load,
+             s_rb_across_conv, s_bank_guard, s_lockstep_frames, s_lockstep_us / 1e6);
+    std::string line = std::string(b) + c;
+    if (!forced.empty())
+      line += ". THIS MACHINE DID NOT REACH THE END ITSELF: " + forced + " - the host's state replaces mine";
+    char d[160];
+    snprintf(d, sizeof d, "; end marker: fight loop %u, fight flags %08x", Rd32(ram, ADDR_FIGHT),
+             Rd32(ram, ADDR_FIGHT_FLAGS));
+    line += d;
+    s_report_cb(line);
+    LogLine(line);
+  }
+  OSD::AddMessage("FFNY rollback: fight over - " + std::to_string(s_rollbacks) + " rollbacks (max " +
+                      std::to_string(s_max_depth) + " frames), " + std::to_string(s_desyncs) +
+                      " desyncs; synchronising...",
+                  6000, forced.empty() ? OSD::Color::YELLOW : OSD::Color::RED);
+  if (s_fight_end_cb)
+    s_fight_end_cb(system, f);
+}
+
 void HookPreUpdate(const Core::CPUThreadGuard& guard)
 {
   auto& system = guard.GetSystem();
@@ -2254,10 +2330,23 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       fprintf(stderr, "FFNYRB DT frame %u: f31 = %.6f%s\n", Rd32(ram, ADDR_COUNTER), dt, s_resim_target ? " (resim)" : "");
   }
   u32 f = Rd32(ram, ADDR_COUNTER);
-  const bool fight = Rd32(ram, ADDR_FIGHT) == 1;
+  // the fight loop runs and the fight is not decided yet. After an environmental KO (thrown out of a window) the
+  // loop state stays 1 through the KO scene, results and rematch screen (Robert, 23 / 24 October); those must run in
+  // lockstep after the resync, not in rollback (the rematch choice went different ways on the two machines).
+  const bool fight = Rd32(ram, ADDR_FIGHT) == 1 && !(Rd32(ram, ADDR_FIGHT_FLAGS) & FIGHT_DECIDED);
 
   if (!s_active)
   {
+    if (s_force_end.exchange(false))
+    {
+      // the host ends the fight for everyone, but this machine is not in rollback mode (its fight already ended
+      // without the resync, or never started): pause here and take the host's state like everyone else
+      Report("FFNY: the host ended the fight for everyone (" + s_force_reason +
+             "); this machine was not in a rollback fight - taking the host's state");
+      if (s_fight_end_cb)
+        s_fight_end_cb(system, f);
+      return;
+    }
     if (!fight)
       return;
     StartFight(ram, tick_obj, f);
@@ -2374,14 +2463,15 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     const bool need = lockstep && mc < f;  // in lockstep: also roll back only with all inputs known
     if (!need && (s_mispredict_from != 0xFFFFFFFF || (!ahead && !ending)))
       break;
+    if (s_force_end)
+      break;  // the host ends the fight for everyone (below)
     if (std::chrono::steady_clock::now() - wait_start > std::chrono::seconds(10))
     {
-      fprintf(stderr, "FFNYRB: no inputs from the other side for 10 s - rollback stopped\n");
-      OSD::AddMessage("FFNY rollback: no inputs from the other player for 10 s - rollback stopped",
-                      8000, OSD::Color::RED);
-      s_settings.enabled = false;
-      s_active = false;
-      Wr32(ram, W_ACT, 0);
+      // the other side stopped (its fight ended at another frame, it paused, or the connection is gone). Before 24
+      // October rollback was switched off here for the rest of the session and both machines went on unsynchronised;
+      // now this machine ends the fight and waits for the host's state like after a normal fight.
+      fprintf(stderr, "FFNYRB: no inputs from the other side for 10 s - fight ended here\n");
+      EndFight(system, ram, f, "no inputs from the other side for 10 s");
       return;
     }
     waited = true;
@@ -2407,6 +2497,14 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     s_wait_us += us;
     if (lockstep)
       s_lockstep_us += us;
+  }
+
+  if (s_force_end.exchange(false))
+  {
+    // the host ends the fight for everyone: the machines did not reach the end of the fight at the same frame (e.g.
+    // the post-KO screens went different ways). This machine's state does not matter: the host's replaces it.
+    EndFight(system, ram, f, s_force_reason);
+    return;
   }
 
   if (s_mispredict_from != 0xFFFFFFFF)
@@ -2472,40 +2570,8 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
 
   if (!fight)
   {
-    // fight over and every input confirmed: back to normal netplay. The other side may still lack our last
-    // frames (lost packets) and waits for them: send them once more, reliably.
-    ResendInputs(true);
-    s_active = false;
-    s_loader_undo.clear();
-    Wr32(ram, W_ACT, 0);  // rbtag: do the remaining deferred sound releases
-    if (s_log)
-      PrintStats(f);
-    fprintf(stderr, "FFNYRB fight end at frame %u\n", f);
-    if (s_report_cb)
-    {
-      // always (not counted against the report cap): how the connection treated this fight
-      char b[300];
-      snprintf(b, sizeof b,
-               "FFNY fight over at frame %u: %u rollbacks (max %u frames, %u frames re-simulated), %u waits "
-               "for the other side (%.1f s in total), %u desyncs",
-               f, s_rollbacks, s_max_depth, s_resim_frames, s_waits, s_wait_us / 1e6, s_desyncs);
-      char c[600];
-      snprintf(c, sizeof c,
-               "; rbtag logs max %u/%u/%u of 96, lowest free KB heap2 %u heap3 %u; file system busy in %u frames, "
-               "%u requests finished, rollbacks across a finished request %u, across a file conversion %u; empty "
-               "animation bank lookups caught %u; lockstep for file loads %u frames (%.1f s waiting)",
-               s_max_acq, s_max_rel, s_max_frl, s_min_free2 == 0xFFFFFFFF ? 0 : s_min_free2 / 1024,
-               s_min_free3 == 0xFFFFFFFF ? 0 : s_min_free3 / 1024, s_fs_busy_frames, s_fs_done, s_rb_across_load,
-               s_rb_across_conv, s_bank_guard, s_lockstep_frames, s_lockstep_us / 1e6);
-      s_report_cb(std::string(b) + c);
-      LogLine(std::string(b) + c);
-    }
-    OSD::AddMessage("FFNY rollback: fight over - " + std::to_string(s_rollbacks) + " rollbacks (max " +
-                        std::to_string(s_max_depth) + " frames), " + std::to_string(s_desyncs) +
-                        " desyncs; synchronising...",
-                    6000);
-    if (s_fight_end_cb)
-      s_fight_end_cb(system, f);
+    // fight over and every input confirmed: back to normal netplay
+    EndFight(system, ram, f, "");
     return;
   }
 

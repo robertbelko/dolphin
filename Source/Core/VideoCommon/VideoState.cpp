@@ -28,6 +28,7 @@
 #include "VideoCommon/XFStateManager.h"
 
 bool g_state_skip_texture_cache = false;
+bool g_state_foreign_load = false;
 
 void VideoCommon_DoState(PointerWrap& p)
 {

@@ -1041,7 +1041,10 @@ bool FFNYLoadCompressed(Core::System& system, const u8* data, std::size_t size, 
                                                    std::size_t(64) << 20);
   const std::size_t own_size = SaveToBuffer(system, own);
   PointerWrap::s_last_read_marker = "(start)";
-  if (LoadFromBuffer(system, buffer))
+  g_state_foreign_load = true;
+  const bool loaded = LoadFromBuffer(system, buffer);
+  g_state_foreign_load = false;
+  if (loaded)
     return true;
   if (where)
     *where = PointerWrap::s_last_read_marker;

@@ -64,6 +64,10 @@ void AutoPlayPad(GCPadStatus* pad, int local_pad);
 // Called by the MMU right before Dolphin's "Invalid read / write" alert (non-MMU mode).
 void OnInvalidAccess(Core::System& system, u32 address, u32 pc, bool write);
 bool IsActive();  // a fight is currently running in rollback mode
+// netplay thread: the host ends the current fight for everyone (a machine did not reach the fight's end by itself);
+// the CPU thread ends it at its next update (or right away when it waits for inputs) and calls the fight-end callback
+void RequestForceEnd(const std::string& reason);
+void ClearForceEnd();
 
 // Called once per VI field on the CPU thread: installs the hooks once the game code is in memory.
 void OnVIField(Core::System& system);

@@ -10,6 +10,7 @@
 #include "Common/ChunkFile.h"
 #include "Common/Config/Config.h"
 #include "Core/Core.h"
+#include "VideoCommon/VideoState.h"
 
 FreeLookCamera g_freelook_camera;
 
@@ -309,6 +310,22 @@ void FreeLookCamera::DoState(PointerWrap& p)
     if (old_type == m_current_type)
     {
       m_camera_controller->DoState(p);
+    }
+    else if (p.IsReadMode() && g_state_foreign_load)
+    {
+      // another player's state (FFNY resync): its camera type is that player's setting. Read its camera data with
+      // a controller of its type, drop it, keep our own type and camera.
+      const auto loaded_type = m_current_type;
+      m_current_type = old_type;
+      std::unique_ptr<CameraController> scratch;
+      if (loaded_type == FreeLook::ControlType::Orbital)
+        scratch = std::make_unique<OrbitalController>();
+      else if (loaded_type == FreeLook::ControlType::FPS)
+        scratch = std::make_unique<FPSController>();
+      else if (loaded_type)
+        scratch = std::make_unique<SixAxisController>();
+      if (scratch)
+        scratch->DoState(p);
     }
     else if (p.IsReadMode())
     {

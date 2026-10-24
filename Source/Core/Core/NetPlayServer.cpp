@@ -274,6 +274,8 @@ void NetPlayServer::ThreadFunc()
       m_update_pings = false;
     }
 
+    FFNYCheckFightEndTimeout();
+
     ENetEvent netEvent;
     int net;
     if (m_traversal_client)
@@ -837,10 +839,17 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
     packet >> frame;
     m_ffny_fight_ended.insert(player.pid);
     INFO_LOG_FMT(NETPLAY, "FFNY: player {} finished the rollback fight at frame {}", player.pid, frame);
+    if (!m_ffny_end_since)
+    {
+      m_ffny_end_since = std::chrono::steady_clock::now();
+      m_ffny_end_frame = frame;
+      m_ffny_force_sent = false;
+    }
     if (m_ffny_fight_ended.size() >= m_players.size())
     {
       // every machine is paused right after the fight: send the host's emulator state to the others
       m_ffny_fight_ended.clear();
+      m_ffny_end_since.reset();
       m_ffny_state_loaded.clear();
       auto& system = Core::System::GetInstance();
       std::vector<u8> state;
@@ -2493,6 +2502,37 @@ void NetPlayServer::SimFlush()
                                p.channel_id != FFNY_INPUT_CHANNEL);
     }
   }
+}
+
+// FFNY rollback: a machine that reported the end of a rollback fight is paused until every machine has reported it
+// and the host's state has been loaded. If another machine does not report it (its game went another way after the
+// KO, e.g. the rematch screen; Robert, 24 October: the host froze for good on REMATCH?), end the fight there too:
+// it then takes the host's state like after a normal fight.
+void NetPlayServer::FFNYCheckFightEndTimeout()
+{
+  if (!m_ffny_end_since || m_ffny_force_sent)
+    return;
+  if (std::chrono::steady_clock::now() - *m_ffny_end_since < std::chrono::seconds(3))
+    return;
+  m_ffny_force_sent = true;
+  std::string missing;
+  {
+    std::lock_guard lkp(m_crit.players);
+    for (const auto& [pid, client] : m_players)
+      if (!m_ffny_fight_ended.contains(pid))
+        missing += (missing.empty() ? "" : ", ") + client.name;
+  }
+  const std::string text =
+      fmt::format("FFNY: the fight ended at frame {} on {} machine(s), but not on {} after 3 s (the games went "
+                  "different ways) - ending it for everyone; the host's state replaces the others'",
+                  m_ffny_end_frame, m_ffny_fight_ended.size(), missing.empty() ? "?" : missing);
+  if (m_dialog)
+    m_dialog->AppendChat(text);
+  FFNYRollback::LogLine(text);
+  sf::Packet spac;
+  spac << MessageID::FFNYForceEnd;
+  spac << m_ffny_end_frame;
+  SendAsyncToClients(std::move(spac));
 }
 
 int NetPlayServer::SimServiceTimeoutMs()
