@@ -995,6 +995,8 @@ void UndoSaveState(Core::System& system)
   LoadAs(system, File::GetUserPath(D_STATESAVES_IDX) + "lastState.sav");
 }
 
+bool g_ffny_resync_save = false;
+
 bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& compressed)
 {
   const std::size_t last = static_cast<std::size_t>(s_last_state_size);
@@ -1002,7 +1004,9 @@ bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& compressed)
   // no EFB / texture-cache contents: backend- and resolution-dependent (a client with other video settings may fail
   // to read them, leaving a half-loaded state), and by far the biggest part at high internal resolutions
   g_state_skip_texture_cache = true;
+  g_ffny_resync_save = true;
   const std::size_t size = SaveToBuffer(system, buffer);
+  g_ffny_resync_save = false;
   g_state_skip_texture_cache = false;
   if (size == 0 || size > static_cast<std::size_t>(LZ4_MAX_INPUT_SIZE))
     return false;

@@ -36,6 +36,7 @@
 #include "Core/HW/GCMemcard/GCMemcardUtils.h"
 #include "Core/HW/Sram.h"
 #include "Core/NetPlayProto.h"
+#include "VideoCommon/VideoState.h"
 
 static const char* MC_HDR = "MC_SYSTEM_AREA";
 
@@ -727,13 +728,29 @@ void GCMemcardDirectory::DoState(PointerWrap& p)
   std::unique_lock l(m_write_mutex);
   m_last_block = -1;
   m_last_block_address = nullptr;
+  const std::string own_directory = m_save_directory;
   p.Do(m_save_directory);
+  // another player's state (FFNY resync): keep writing the card to this machine's own folder
+  if (p.IsReadMode() && g_state_foreign_load)
+    m_save_directory = own_directory;
   p.Do(m_hdr);
   p.Do(m_dir1);
   p.Do(m_dir2);
   p.Do(m_bat1);
   p.Do(m_bat2);
   p.DoEachElement(m_saves, [](PointerWrap& p_, Memcard::GCIFile& save) { save.DoState(p_); });
+  if (p.IsReadMode() && g_state_foreign_load)
+  {
+    // the save files' paths are the other player's: same file names, in this machine's folder
+    for (Memcard::GCIFile& save : m_saves)
+    {
+      if (save.m_filename.empty())
+        continue;
+      const std::size_t sep = save.m_filename.find_last_of("/\\");
+      save.m_filename =
+          m_save_directory + (sep == std::string::npos ? save.m_filename : save.m_filename.substr(sep + 1));
+    }
+  }
 }
 
 void MigrateFromMemcardFile(const std::string& directory_name, ExpansionInterface::Slot card_slot,

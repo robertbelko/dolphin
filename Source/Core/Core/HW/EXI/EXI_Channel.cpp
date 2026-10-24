@@ -16,6 +16,7 @@
 #include "Core/HW/MMIO.h"
 #include "Core/Movie.h"
 #include "Core/System.h"
+#include "VideoCommon/VideoState.h"
 
 namespace ExpansionInterface
 {
@@ -263,8 +264,12 @@ void CEXIChannel::DoState(PointerWrap& p)
       AddDevice(std::move(save_device), device_index, false);
     }
 
+    // FFNY rollback resync (another player's state, g_state_foreign_load): the card header data comes from the
+    // wall-clock time at that player's boot, so it always differs; the host's state carries the whole card (contents
+    // and device state, State::g_ffny_resync_save), loaded above - re-inserting the card here would make this
+    // machine's game see a card change that the host's game does not see (desync warning ~3 s after each resync).
     if (type == EXIDeviceType::MemoryCardFolder && old_header_data != m_memcard_header_data &&
-        !m_system.GetMovie().IsMovieActive())
+        !m_system.GetMovie().IsMovieActive() && !g_state_foreign_load)
     {
       // We have loaded a savestate that has a GCI folder memcard that is different to the virtual
       // card that is currently active. In order to prevent the game from recognizing this card as a

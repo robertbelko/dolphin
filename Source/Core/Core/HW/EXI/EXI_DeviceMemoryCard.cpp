@@ -32,6 +32,7 @@
 #include "Core/HW/Sram.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/Movie.h"
+#include "Core/State.h"
 #include "Core/System.h"
 #include "DiscIO/Enums.h"
 
@@ -501,7 +502,8 @@ void CEXIMemoryCard::DoState(PointerWrap& p)
   // otherwise, we'll assume the user wants to keep their memcards and saves separate,
   // unless we're loading (in which case we let the savestate contents decide, in order to stay
   // aligned with them).
-  bool storeContents = m_system.GetMovie().IsMovieActive();
+  // FFNY rollback resync: also for the host's state sent to the other players (see State::g_ffny_resync_save)
+  bool storeContents = m_system.GetMovie().IsMovieActive() || State::g_ffny_resync_save;
   p.Do(storeContents);
 
   if (storeContents)

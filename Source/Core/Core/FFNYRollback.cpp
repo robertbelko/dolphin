@@ -1007,6 +1007,11 @@ u32 s_fs_busy_frames = 0, s_fs_done = 0, s_fs_done_frame = 0, s_fs_prev_cur = 0;
 u32 s_rb_across_load = 0, s_rb_across_conv = 0, s_conv_frame = 0;
 u32 s_bank_guard = 0;  // animation lookups in an empty bank answered "not found"
 u32 s_fs_last_busy = 0;      // newest frame at which the file system was seen busy
+// measurements for shortening LOAD_TAIL (24 October): newest frame the file system itself was busy (not counting
+// conversions), busy episodes, lockstep frames run only because of the tail, conversions of data outside the
+// rollback state and how many frames after the file system was last busy they came
+u32 s_fs_real_busy = 0, s_fs_episodes = 0, s_lockstep_tail = 0, s_conv_out = 0, s_conv_gap_max = 0;
+bool s_fs_was_busy = false;
 u32 s_lockstep_frames = 0;   // frames run in lockstep because of file loads
 u64 s_lockstep_us = 0;       // time spent waiting for that
 bool s_conv_warned = false;
@@ -1122,6 +1127,9 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_fs_done_frame = s_conv_frame = 0;
   s_fs_prev_cur = Rd32(ram, 0x804018D4);
   s_fs_last_busy = f;  // files are usually still being loaded when a fight starts
+  s_fs_real_busy = f;
+  s_fs_episodes = s_lockstep_tail = s_conv_out = s_conv_gap_max = 0;
+  s_fs_was_busy = true;
   s_lockstep_frames = 0;
   s_lockstep_us = 0;
   s_conv_warned = false;
@@ -1479,8 +1487,15 @@ void OnVIField(Core::System& system)
     // finished file requests between two updates (the update-start sampling alone misses short ones)
     const u8* r = system.GetMemory().GetRAM();
     const u32 cur = Rd32(r, 0x804018D4);
-    if (cur || Rd32(r, 0x804018E0))
+    const bool busy = cur || Rd32(r, 0x804018E0);
+    if (busy)
+    {
       s_fs_last_busy = std::max(s_fs_last_busy, Rd32(r, ADDR_COUNTER));
+      s_fs_real_busy = std::max(s_fs_real_busy, Rd32(r, ADDR_COUNTER));
+    }
+    if (busy && !s_fs_was_busy)
+      s_fs_episodes++;
+    s_fs_was_busy = busy;
     if (s_fs_prev_cur && cur != s_fs_prev_cur)
     {
       s_fs_done++;
@@ -1614,7 +1629,13 @@ void HookLoader(const Core::CPUThreadGuard& guard)
     const bool rewound = blk.first != 0 && (blk.second >> 16) == 0x424D && !(blk.second & 0x80);
     if (!rewound)
     {
-      s_conv_frame = std::max(s_conv_frame, Rd32(ram, ADDR_COUNTER));
+      const u32 cf = Rd32(ram, ADDR_COUNTER);
+      if (s_resim_target == 0)
+      {
+        s_conv_out++;
+        s_conv_gap_max = std::max(s_conv_gap_max, cf > s_fs_real_busy ? cf - s_fs_real_busy : 0);
+      }
+      s_conv_frame = std::max(s_conv_frame, cf);
       s_fs_last_busy = std::max(s_fs_last_busy, s_conv_frame);
     }
   }
@@ -2178,7 +2199,11 @@ static void DiagLoads(const u8* ram, u32 f)
   {
     s_fs_busy_frames++;
     s_fs_last_busy = std::max(s_fs_last_busy, f);
+    s_fs_real_busy = std::max(s_fs_real_busy, f);
   }
+  if ((cur || head) && !s_fs_was_busy)
+    s_fs_episodes++;
+  s_fs_was_busy = cur || head;
   if (s_fs_prev_cur && cur != s_fs_prev_cur)
   {
     s_fs_done++;  // the request seen before has finished (sampled at update starts and VI fields)
@@ -2283,6 +2308,14 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
              s_min_free3 == 0xFFFFFFFF ? 0 : s_min_free3 / 1024, s_fs_busy_frames, s_fs_done, s_rb_across_load,
              s_rb_across_conv, s_bank_guard, s_lockstep_frames, s_lockstep_us / 1e6);
     std::string line = std::string(b) + c;
+    {
+      char e[200];
+      snprintf(e, sizeof e,
+               "; load episodes %u, lockstep frames only for the %u-frame tail %u, conversions of data outside the "
+               "rollback state %u (at most %u frames after the file system was busy)",
+               s_fs_episodes, LOAD_TAIL, s_lockstep_tail, s_conv_out, s_conv_gap_max);
+      line += e;
+    }
     if (!forced.empty())
       line += ". THIS MACHINE DID NOT REACH THE END ITSELF: " + forced + " - the host's state replaces mine";
     char d[160];
@@ -2451,10 +2484,17 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   // 23 October). So while files load (and LOAD_TAIL frames after), frame f runs only once every input up to f is
   // known: the frames of a load are never rolled back. Costs a wait per frame of about ping - input delay.
   if (Rd32(ram, 0x804018D4) != 0 || Rd32(ram, 0x804018E0) != 0)
+  {
     s_fs_last_busy = std::max(s_fs_last_busy, f);
+    s_fs_real_busy = std::max(s_fs_real_busy, f);
+  }
   const bool lockstep = s_settings.load_lockstep && fight && f <= s_fs_last_busy + LOAD_TAIL;
   if (lockstep)
+  {
     s_lockstep_frames++;
+    if (f > s_fs_last_busy && f > s_start_frame + LOAD_TAIL)
+      s_lockstep_tail++;  // only because of the tail: the file system is idle and no conversion is this recent
+  }
   while (true)
   {
     const u32 mc = MinConfirmed();

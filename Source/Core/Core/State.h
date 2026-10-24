@@ -98,6 +98,11 @@ void Load(Core::System& system, u32 slot);
 
 void SaveAs(Core::System& system, std::string filename);
 
+// FFNY rollback resync: set while the host saves the state it sends to the other players. The memory card's
+// contents and device state are then saved too (normally only while a movie runs): every machine must have the
+// same card afterwards, or the game sees a different card (24 October: desync warning ~3 s after every resync).
+extern bool g_ffny_resync_save;
+
 // FFNY rollback netplay: the whole emulator state, LZ4-compressed, for the resync after a fight.
 // Must run on the CPU thread with the CPU paused (Core::RunOnCPUThread).
 bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& compressed);
