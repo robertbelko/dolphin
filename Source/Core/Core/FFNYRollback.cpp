@@ -1709,6 +1709,13 @@ void OnVIField(Core::System& system)
   }
   if (Rd32(ram, OS_RECV_SLEEP) == 0x48002839)  // bl 0x802776E8
     HLE::Patch(system, OS_RECV_SLEEP, "FFNYRollbackFsWait");
+  if (const char* c = std::getenv("FFNY_RB_COUNT"))
+  {
+    std::stringstream ss(c);
+    std::string t;
+    while (std::getline(ss, t, ','))
+      HLE::Patch(system, u32(std::stoul(t, nullptr, 16)), "FFNYRollbackCount");
+  }
   if (std::getenv("FFNY_RB_NOSYSFREE") == nullptr)
   {
     s_sys_alloc_hook = hook;
@@ -2571,6 +2578,20 @@ void DrawFrameBegin(const u8* ram, u32 f, bool first)
 // Leave rollback mode: back to normal (lockstep) netplay. The fight-end callback pauses this machine until the host's
 // state arrives. forced = the reason when this machine did not reach the end of the fight itself (the host ended
 // it for everyone, or no inputs came for 10 s); its state is then replaced by the host's anyway.
+// lab: FFNY_RB_COUNT=addr,addr,... -> calls of those functions by the main thread during the fight, first runs and
+// re-simulations separately (printed at the fight end)
+std::map<u32, std::array<u64, 2>> s_call_counts;
+void HookCount(const Core::CPUThreadGuard& guard)
+{
+  if (!s_active)
+    return;
+  auto& system = guard.GetSystem();
+  const u8* ram = system.GetMemory().GetRAM();
+  if (Rd32(ram, 0x800000E4) != 0x80432D10)
+    return;
+  s_call_counts[system.GetPPCState().pc][s_resim_target != 0 ? 1 : 0]++;
+}
+
 // rbtag's post-allocation hook (called by the heap allocator for every allocation, r3 = info: +0x18 pointer)
 void HookSysAlloc(const Core::CPUThreadGuard& guard)
 {
@@ -2718,6 +2739,10 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
   }
   else if (s_log)
   {
+    for (const auto& [a, c] : s_call_counts)
+      fprintf(stderr, "FFNYRB LAB calls %08x: first runs %llu, re-simulations %llu\n", a, (unsigned long long)c[0],
+              (unsigned long long)c[1]);
+    s_call_counts.clear();
     fprintf(stderr, "FFNYRB heap: lowest free KB heap2 %u heap3 %u%s; samples skipped (heap held by another thread) %u; SysHeap blocks of thrown-away frames freed %u, left %u\n",
             s_min_free2 / 1024, s_min_free3 / 1024, Low3Where().c_str(), s_heap_samples_skipped, s_sys_freed, s_sys_free_overflow);
     fprintf(stderr, "FFNYRB fight-over: rollbacks %u max %u resim %u waits %u lockstep %u frames, fs busy %u frames, "
