@@ -2509,6 +2509,40 @@ static void DiagCheck(const u8* ram, u32 f, const char* where)
 // lab stress: from here on, draws (and the watched range) belong to the update of frame f
 void DrawFrameBegin(const u8* ram, u32 f, bool first)
 {
+  // lab: FFNY_RB_DUMPAT=off1,off2,...:prefix -> MEM1 at the first run of fight-start + off (prefix_off.raw)
+  if (first && s_active)
+  {
+    static std::vector<u32> offs;
+    static std::string prefix;
+    static bool parsed = false;
+    if (!parsed)
+    {
+      parsed = true;
+      if (const char* e = std::getenv("FFNY_RB_DUMPAT"))
+      {
+        std::string v = e;
+        const auto c = v.find(':');
+        prefix = v.substr(c + 1);
+        std::stringstream ss(v.substr(0, c));
+        std::string t;
+        while (std::getline(ss, t, ','))
+          offs.push_back(u32(std::stoul(t)));
+      }
+    }
+    for (const u32 o : offs)
+    {
+      if (f == s_start_frame + o)
+      {
+        const std::string path = prefix + "_" + std::to_string(o) + ".raw";
+        if (FILE* fp = fopen(path.c_str(), "wb"))
+        {
+          fwrite(ram, 1, 0x01800000, fp);
+          fclose(fp);
+          fprintf(stderr, "FFNYRB LAB dumped MEM1 at frame %u (start + %u) to %s\n", f, o, path.c_str());
+        }
+      }
+    }
+  }
   DiagCheck(ram, f, first ? "before the update" : "before a re-simulated update");
   if (s_heapcheck)
     HeapCheck(ram, f, first ? "before update" : "before re-simulated update");
