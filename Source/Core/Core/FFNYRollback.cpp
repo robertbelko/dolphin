@@ -1016,6 +1016,13 @@ u32 s_min_free2 = 0xFFFFFFFF, s_min_free3 = 0xFFFFFFFF;
 u32 s_min_free3_frame = 0, s_min_free3_largest = 0, s_min_free3_nodes = 0;
 bool s_min_free3_resim = false, s_min_free3_predicted = false, s_low3_reported = false;
 u32 s_heap_samples_skipped = 0;
+// SysHeap blocks the main thread allocated during the fight, with rbtag's frame (W_FRAME) at that time. SysHeap is not
+// rewound: a rewind to frame S leaves blocks allocated in frames >= S allocated, and the re-simulation allocates
+// them again (e.g. the ELF modules loaded at the fight start / KO scenes: ~127 KB per rewind across that frame;
+// laptop 25 October: heap 3 down to 0 KB after 4 rollbacks across file conversions). They are handed to rbtag's
+// free log after the rewind, so the game frees them itself at its next sound call.
+std::vector<std::pair<u32, u32>> s_sys_allocs;
+u32 s_sys_freed = 0, s_sys_free_overflow = 0, s_sys_alloc_hook = 0;
 
 // ---- Auto-play (test tool) ----
 std::atomic<bool> s_autoplay{false};
@@ -1174,6 +1181,8 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_min_free3_frame = s_min_free3_largest = s_min_free3_nodes = 0;
   s_min_free3_resim = s_min_free3_predicted = s_low3_reported = false;
   s_heap_samples_skipped = 0;
+  s_sys_allocs.clear();
+  s_sys_freed = s_sys_free_overflow = 0;
   OSD::AddMessage("FFNY rollback: fight started (input delay " + std::to_string(s_settings.input_delay) +
                       (s_settings.load_lockstep ? ", lockstep while loading" : "") + ")",
                   3000);
@@ -1698,6 +1707,11 @@ void OnVIField(Core::System& system)
   }
   if (Rd32(ram, OS_RECV_SLEEP) == 0x48002839)  // bl 0x802776E8
     HLE::Patch(system, OS_RECV_SLEEP, "FFNYRollbackFsWait");
+  if (std::getenv("FFNY_RB_NOSYSFREE") == nullptr)
+  {
+    s_sys_alloc_hook = hook;
+    HLE::Patch(system, hook, "FFNYRollbackSysAlloc");
+  }
   fprintf(stderr, "FFNYRB: rbtag fight flag %s, instant disc reads in rollback fights %s\n",
           s_rbtag_redirected ? "redirected" : "NOT redirected",
           std::getenv("FFNY_RB_NOINSTANTDISC") ? "off" : "on");
@@ -2401,6 +2415,12 @@ static void DiagCheck(const u8* ram, u32 f, const char* where)
 {
   if (!s_active)
     return;
+  if (!s_sys_allocs.empty())
+  {
+    // frames up to the confirmed one are never thrown away
+    const u32 mc = MinConfirmed();
+    std::erase_if(s_sys_allocs, [mc](const auto& a) { return a.second <= mc; });
+  }
   DiagLoads(ram, f);
   if (!s_diag_heap_reported)
   {
@@ -2514,6 +2534,57 @@ void DrawFrameBegin(const u8* ram, u32 f, bool first)
 // Leave rollback mode: back to normal (lockstep) netplay. The fight-end callback pauses this machine until the host's
 // state arrives. forced = the reason when this machine did not reach the end of the fight itself (the host ended
 // it for everyone, or no inputs came for 10 s); its state is then replaced by the host's anyway.
+// rbtag's post-allocation hook (called by the heap allocator for every allocation, r3 = info: +0x18 pointer)
+void HookSysAlloc(const Core::CPUThreadGuard& guard)
+{
+  if (!s_active)
+    return;
+  auto& system = guard.GetSystem();
+  const u8* ram = system.GetMemory().GetRAM();
+  if (Rd32(ram, 0x800000E4) != 0x80432D10 || Rd32(ram, W_ACT) != 1)
+    return;  // only the main thread's allocations belong to the rewound logic
+  const u32 info = system.GetPPCState().gpr[3];
+  if ((info & 0xFE000000) != 0x80000000)
+    return;
+  const u32 p = Rd32(ram, info + 0x18);
+  const u32 sysidx = Rd32(ram, 0x8049A404);
+  if ((p & 0xFE000000) != 0x80000000 || sysidx == 0 || (Rd32(ram, p - 16) >> 16) != 0x424D ||
+      ((Rd32(ram, p - 16) & 0xFFFF) & 0x3F) != sysidx)
+    return;
+  s_sys_allocs.emplace_back(p, Rd32(ram, W_FRAME));
+}
+
+// after a rewind to frame s: SysHeap blocks the main thread allocated in frames >= s go to rbtag's free log with
+// frame 0 (freed at its next settle; rbtag drops its own log entries of frames >= s, so a free the thrown-away
+// frames did of the same block is not done twice)
+static void FreeThrownSysAllocs(u8* ram, u32 s)
+{
+  const u32 sysidx = Rd32(ram, 0x8049A404);
+  size_t k = 0;
+  for (const auto& [p, fr] : s_sys_allocs)
+  {
+    if (fr < s)
+    {
+      s_sys_allocs[k++] = {p, fr};
+      continue;
+    }
+    const u32 hw = Rd32(ram, p - 16);
+    if ((hw >> 16) != 0x424D || (hw & 0x3F) != sysidx || (hw & 0xC000) == 0x4000)
+      continue;  // already freed
+    const u32 n = Rd32(ram, 0x8049B518);  // FRL_N
+    if (n >= 96)
+    {
+      s_sys_free_overflow++;
+      continue;
+    }
+    Wr32(ram, 0x8049BC00 + 8 * n, p);
+    Wr32(ram, 0x8049BC00 + 8 * n + 4, 0);
+    Wr32(ram, 0x8049B518, n + 1);
+    s_sys_freed++;
+  }
+  s_sys_allocs.resize(k);
+}
+
 static std::string Low3Where()
 {
   if (s_min_free3 == 0xFFFFFFFF)
@@ -2561,7 +2632,8 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
                "rollback state %u (at most %u frames after the file system was busy)",
                s_fs_episodes, LOAD_TAIL, s_lockstep_tail, s_conv_out, s_conv_gap_max);
       line += e;
-      snprintf(e, sizeof e, "; reads finished at once %u", s_fs_instant);
+      snprintf(e, sizeof e, "; reads finished at once %u; SysHeap blocks of thrown-away frames freed %u%s", s_fs_instant,
+               s_sys_freed, s_sys_free_overflow ? (" (" + std::to_string(s_sys_free_overflow) + " left: free log full)").c_str() : "");
       line += e;
 
     }
@@ -2576,8 +2648,8 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
   }
   else if (s_log)
   {
-    fprintf(stderr, "FFNYRB heap: lowest free KB heap2 %u heap3 %u%s; samples skipped (heap held by another thread) %u\n",
-            s_min_free2 / 1024, s_min_free3 / 1024, Low3Where().c_str(), s_heap_samples_skipped);
+    fprintf(stderr, "FFNYRB heap: lowest free KB heap2 %u heap3 %u%s; samples skipped (heap held by another thread) %u; SysHeap blocks of thrown-away frames freed %u, left %u\n",
+            s_min_free2 / 1024, s_min_free3 / 1024, Low3Where().c_str(), s_heap_samples_skipped, s_sys_freed, s_sys_free_overflow);
     fprintf(stderr, "FFNYRB fight-over: rollbacks %u max %u resim %u waits %u lockstep %u frames, fs busy %u frames, "
                     "requests finished %u, across finished %u, across conversion %u, outside conversions %u, "
                     "reads finished at once %u, empty-bank lookups %u, desyncs %u\n",
@@ -2856,6 +2928,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       {
         const u32 old = Rd32(ram, W_RB);
         Wr32(ram, W_RB, old ? std::min(old, s + 1) : s + 1);
+        FreeThrownSysAllocs(ram, s);
         Wr32(ram, W_CONF, std::min(MinConfirmed(), s - 1));
         Wr32(ram, W_FRAME, s);
       }
