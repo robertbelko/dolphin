@@ -1008,6 +1008,10 @@ u32 s_max_acq = 0, s_max_rel = 0, s_max_frl = 0;  // highest fill of the rbtag l
 bool s_diag_heap_reported = false;
 u32 s_diag_full_reported = 0;  // bit per log
 u32 s_min_free2 = 0xFFFFFFFF, s_min_free3 = 0xFFFFFFFF;
+// where heap 3's lowest free space was seen (frame, whether re-simulating, whether the frame's inputs were all known)
+u32 s_min_free3_frame = 0, s_min_free3_largest = 0, s_min_free3_nodes = 0;
+bool s_min_free3_resim = false, s_min_free3_predicted = false, s_low3_reported = false;
+u32 s_heap_samples_skipped = 0;
 
 // ---- Auto-play (test tool) ----
 std::atomic<bool> s_autoplay{false};
@@ -1163,6 +1167,9 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_lockstep_us = 0;
   s_conv_warned = false;
   s_min_free2 = s_min_free3 = 0xFFFFFFFF;
+  s_min_free3_frame = s_min_free3_largest = s_min_free3_nodes = 0;
+  s_min_free3_resim = s_min_free3_predicted = s_low3_reported = false;
+  s_heap_samples_skipped = 0;
   OSD::AddMessage("FFNY rollback: fight started (input delay " + std::to_string(s_settings.input_delay) +
                       (s_settings.load_lockstep ? ", lockstep while loading" : "") + ")",
                   3000);
@@ -2265,18 +2272,31 @@ static std::string FreeListProblem(const u8* ram, bool skip_locked = false)
   return {};
 }
 
-static u32 HeapFree(const u8* ram, u32 i)
+static u32 HeapFree(const u8* ram, u32 i, u32* largest = nullptr, u32* nodes = nullptr)
 {
   const u32 h = Rd32(ram, 0x8040BD70 + 4 * i);
   if ((h & 0xFE000000) != 0x80000000)
     return 0;
-  u32 n = Rd32(ram, h + 0x20), k = 0, total = 0;
+  u32 n = Rd32(ram, h + 0x20), k = 0, total = 0, big = 0;
   while (n != h + 0x10 && (n & 0xFE000000) == 0x80000000 && k++ < 20000)
   {
-    total += Rd32(ram, n + 4);
+    const u32 sz = Rd32(ram, n + 4);
+    total += sz;
+    big = std::max(big, sz);
     n = Rd32(ram, n + 0x10);
   }
+  if (largest)
+    *largest = big;
+  if (nodes)
+    *nodes = k;
   return total;
+}
+
+// another thread is inside heap i's allocator (its mutex has an owner): its free list may be half updated
+static bool HeapLocked(const u8* ram, u32 i)
+{
+  const u32 h = Rd32(ram, 0x8040BD70 + 4 * i);
+  return (h & 0xFE000000) == 0x80000000 && Rd32(ram, h + 0x44) != 0;
 }
 
 static std::string RbtagSummary(const u8* ram)
@@ -2343,10 +2363,37 @@ static void DiagCheck(const u8* ram, u32 f, const char* where)
              "repeat them (possible cause of a later sound or heap crash). " + RbtagSummary(ram));
     }
   }
-  if (f % 60 == 0)
+  // free space of heaps 2 and 3 at every update start (24 October version: once a second, and also while another
+  // thread was inside the heap - a half-updated free list can read as 0)
+  if (HeapLocked(ram, 2) || HeapLocked(ram, 3))
   {
-    s_min_free2 = std::min(s_min_free2, HeapFree(ram, 2));
-    s_min_free3 = std::min(s_min_free3, HeapFree(ram, 3));
+    s_heap_samples_skipped++;
+    return;
+  }
+  s_min_free2 = std::min(s_min_free2, HeapFree(ram, 2));
+  u32 largest = 0, nodes = 0;
+  const u32 free3 = HeapFree(ram, 3, &largest, &nodes);
+  if (free3 < s_min_free3)
+  {
+    s_min_free3 = free3;
+    s_min_free3_frame = f;
+    s_min_free3_largest = largest;
+    s_min_free3_nodes = nodes;
+    s_min_free3_resim = s_resim_target != 0;
+    s_min_free3_predicted = f > MinConfirmed();
+  }
+  if (free3 < 64 * 1024 && !s_low3_reported)
+  {
+    s_low3_reported = true;
+    const u32 h = Rd32(ram, 0x8040BD70 + 12);
+    char b[400];
+    snprintf(b, sizeof b,
+             "FFNY NOTE: memory heap 3 nearly full at frame %u: %u KB free (largest free block %u KB, %u free "
+             "blocks; heap %08x-%08x); %s, inputs of this frame %s; rollbacks so far %u (last %u->%u)",
+             f, free3 / 1024, largest / 1024, nodes, Rd32(ram, h + 8), Rd32(ram, h + 0xC),
+             s_resim_target ? "during a re-simulation" : "first run of the frame",
+             f > MinConfirmed() ? "partly predicted" : "all known", s_rollbacks, s_last_rb_from, s_last_rb_to);
+    Report(std::string(b) + ". " + RbtagSummary(ram));
   }
 }
 
@@ -2381,6 +2428,17 @@ void DrawFrameBegin(const u8* ram, u32 f, bool first)
 // Leave rollback mode: back to normal (lockstep) netplay. The fight-end callback pauses this machine until the host's
 // state arrives. forced = the reason when this machine did not reach the end of the fight itself (the host ended
 // it for everyone, or no inputs came for 10 s); its state is then replaced by the host's anyway.
+static std::string Low3Where()
+{
+  if (s_min_free3 == 0xFFFFFFFF)
+    return "";
+  char b[160];
+  snprintf(b, sizeof b, " (at frame %u, %s, %s; largest free block %u KB)", s_min_free3_frame,
+           s_min_free3_resim ? "re-simulated" : "first run", s_min_free3_predicted ? "predicted" : "confirmed",
+           s_min_free3_largest / 1024);
+  return b;
+}
+
 static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& forced)
 {
   // The other side may still lack our last frames (lost packets) and waits for them: send them once more, reliably.
@@ -2401,13 +2459,13 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
              "FFNY fight over at frame %u: %u rollbacks (max %u frames, %u frames re-simulated), %u waits "
              "for the other side (%.1f s in total), %u desyncs",
              f, s_rollbacks, s_max_depth, s_resim_frames, s_waits, s_wait_us / 1e6, s_desyncs);
-    char c[600];
+    char c[800];
     snprintf(c, sizeof c,
-             "; rbtag logs max %u/%u/%u of 96, lowest free KB heap2 %u heap3 %u; file system busy in %u frames, "
+             "; rbtag logs max %u/%u/%u of 96, lowest free KB heap2 %u heap3 %u%s; file system busy in %u frames, "
              "%u requests finished, rollbacks across a finished request %u, across a file conversion %u; empty "
              "animation bank lookups caught %u; lockstep for file loads %u frames (%.1f s waiting)",
              s_max_acq, s_max_rel, s_max_frl, s_min_free2 == 0xFFFFFFFF ? 0 : s_min_free2 / 1024,
-             s_min_free3 == 0xFFFFFFFF ? 0 : s_min_free3 / 1024, s_fs_busy_frames, s_fs_done, s_rb_across_load,
+             s_min_free3 == 0xFFFFFFFF ? 0 : s_min_free3 / 1024, Low3Where().c_str(), s_fs_busy_frames, s_fs_done, s_rb_across_load,
              s_rb_across_conv, s_bank_guard, s_lockstep_frames, s_lockstep_us / 1e6);
     std::string line = std::string(b) + c;
     {
