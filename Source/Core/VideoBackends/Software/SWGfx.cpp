@@ -26,7 +26,7 @@ SWGfx::~SWGfx() = default;
 
 bool SWGfx::IsHeadless() const
 {
-  return m_window->IsHeadless();
+  return !m_window || m_window->IsHeadless();
 }
 
 bool SWGfx::SupportsUtilityDrawing() const
@@ -61,6 +61,11 @@ bool SWGfx::BindBackbuffer(const ClearColor& clear_color)
   if (!g_presenter->SurfaceResizedTestAndClear())
     return true;
 
+  if (!m_window)
+  {
+    g_presenter->SetBackbuffer(640, 480);
+    return true;
+  }
   GLContext* context = m_window->GetContext();
   context->Update();
   g_presenter->SetBackbuffer(context->GetBackBufferWidth(), context->GetBackBufferHeight());
@@ -137,6 +142,8 @@ void SWGfx::SetScissorRect(const MathUtil::Rectangle<int>& rc)
 
 SurfaceInfo SWGfx::GetSurfaceInfo() const
 {
+  if (!m_window)
+    return {640, 480, 1.0f, AbstractTextureFormat::RGBA8};
   GLContext* context = m_window->GetContext();
   return {std::max(context->GetBackBufferWidth(), 1u), std::max(context->GetBackBufferHeight(), 1u),
           1.0f, AbstractTextureFormat::RGBA8};

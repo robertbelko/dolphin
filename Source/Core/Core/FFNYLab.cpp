@@ -21,6 +21,7 @@
 #include "Core/PowerPC/Gekko.h"
 #include "Core/System.h"
 #include "Core/HW/ProcessorInterface.h"
+#include "Core/HW/VideoInterface.h"
 #include "VideoCommon/CommandProcessor.h"
 #include "VideoCommon/FrameDumper.h"
 
@@ -890,6 +891,19 @@ static void Commands(Core::System& system)
     else if (c == "loopcount")
     {
       Reply("loopcount " + std::to_string(s_loops));
+    }
+    else if (c == "loaddbg")
+    {
+      std::string path;
+      in >> path;
+      Reply("loaddbg " + State::LabLoadDebug(system, path));
+    }
+    else if (c == "xfb")
+    {
+      auto& vi = system.GetVideoInterface();
+      char b[64];
+      snprintf(b, sizeof b, "xfb %08x %08x", vi.GetXFBAddressTop(), vi.GetXFBAddressBottom());
+      Reply(b);
     }
     else if (c == "fields")
     {

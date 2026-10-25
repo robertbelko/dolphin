@@ -268,7 +268,7 @@ u32 FifoManager::FifoBatchBytes(u32 read_ptr) const
 }
 
 // The deterministic_gpu_thread version.
-void FifoManager::ReadDataFromFifoOnCPU(u32 read_ptr, u32 len)
+u32 FifoManager::ReadDataFromFifoOnCPU(u32 read_ptr, u32 len)
 {
   u8* write_ptr = m_video_buffer_write_ptr;
   if (len > static_cast<size_t>(m_video_buffer + FIFO_SIZE - write_ptr))
@@ -279,13 +279,13 @@ void FifoManager::ReadDataFromFifoOnCPU(u32 read_ptr, u32 len)
     if (!m_gpu_mainloop.IsRunning())
     {
       // GPU is shutting down, so the next asserts may fail
-      return;
+      return 0;
     }
 
     if (m_video_buffer_pp_read_ptr != m_video_buffer_read_ptr)
     {
       PanicAlertFmt("Desynced read pointers");
-      return;
+      return 0;
     }
     write_ptr = m_video_buffer_write_ptr;
     const size_t existing_len = write_ptr - m_video_buffer_pp_read_ptr;
@@ -293,15 +293,32 @@ void FifoManager::ReadDataFromFifoOnCPU(u32 read_ptr, u32 len)
     {
       PanicAlertFmt("FIFO out of bounds (existing {} + new {} > {})", existing_len,
                     len, FIFO_SIZE);
-      return;
+      return 0;
     }
   }
   auto& memory = m_system.GetMemory();
   memory.CopyFromEmu(m_video_buffer_write_ptr, read_ptr, len);
+  u32 cycles = 0;
   m_video_buffer_pp_read_ptr = OpcodeDecoder::RunFifo<true>(
-      DataReader(m_video_buffer_pp_read_ptr, write_ptr + len), nullptr);
+      DataReader(m_video_buffer_pp_read_ptr, write_ptr + len), &cycles);
   // This would have to be locked if the GPU thread didn't spin.
   m_video_buffer_write_ptr = write_ptr + len;
+  if (m_drawdone_seen)
+  {
+    // FFNY fork: GXDrawDone with the deterministic GPU thread ("fake-completion", netplay). The
+    // finish is signalled to the game right away, so without this the CPU runs on while the GPU
+    // thread is still behind, and the GPU later reads textures / vertex data the CPU has already
+    // rewritten for the next frame (FFNY's Blazin' finisher flash came out darker). Waiting here
+    // for the GPU thread to reach the draw-done is what the game waits for on hardware and with
+    // the normal dual core. Host-side wait only: emulated timing and determinism are unchanged.
+    m_drawdone_seen = false;
+    if (m_sync_on_drawdone)
+    {
+      m_gpu_mainloop.Wakeup();
+      SyncGPU(SyncGPUReason::Other, false);
+    }
+  }
+  return cycles;
 }
 
 void FifoManager::ResetVideoBuffer()

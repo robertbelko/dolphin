@@ -113,6 +113,7 @@ bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& compressed);
 extern bool g_lab_fail_after_memory;  // lab
 bool FFNYLoadCompressed(Core::System& system, const u8* data, std::size_t size, std::string* where = nullptr);
 void LoadAs(Core::System& system, std::string filename);
+std::string LabLoadDebug(Core::System& system, const std::string& filename);
 
 void LoadLastSaved(Core::System& system, int i = 1);
 void SaveFirstSaved(Core::System& system);

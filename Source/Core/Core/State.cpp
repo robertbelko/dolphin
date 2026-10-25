@@ -879,6 +879,17 @@ static void LoadAsFromCore(Core::System& system, std::string filename)
     s_on_after_load_callback();
 }
 
+std::string LabLoadDebug(Core::System& system, const std::string& filename)
+{
+  Common::UniqueBuffer<u8> buffer;
+  LoadFileStateData(filename, buffer);
+  if (buffer.empty())
+    return "file read failed (header / decompression)";
+  PointerWrap::s_last_read_marker = "(start)";
+  const bool ok = LoadFromBuffer(system, buffer);
+  return std::string(ok ? "ok" : "FAILED") + " size " + std::to_string(buffer.size()) + " last marker " + PointerWrap::s_last_read_marker;
+}
+
 void LoadAs(Core::System& system, std::string filename)
 {
   if (!CheckIfStateLoadIsAllowed(system))
