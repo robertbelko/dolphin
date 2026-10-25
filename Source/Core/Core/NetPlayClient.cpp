@@ -441,6 +441,11 @@ void NetPlayClient::OnData(sf::Packet& packet)
       m_dialog->AppendChat(text);
       SendChatMessage(text);
       FFNYRollback::LogLine(text);
+      OSD::AddTypedMessage(OSD::MessageType::FFNYResync,
+                           ok ? std::string("FFNY resync: host's state loaded") :
+                                std::string("FFNY resync: loading the host's state FAILED (details in the chat)"),
+                           ok ? OSD::Duration::SHORT : OSD::Duration::VERY_LONG,
+                           ok ? OSD::Color::GREEN : OSD::Color::RED);
     }
     sf::Packet spac;
     spac << MessageID::FFNYStateLoaded;
@@ -641,6 +646,17 @@ void NetPlayClient::OnChunkedDataStart(sf::Packet& packet)
 
   m_chunked_data_receive_queue.emplace(cid, sf::Packet{});
 
+  if (title == "FFNY resync")
+  {
+    // no progress window (it took the focus away from the game window); a message in the game window instead
+    m_ffny_chunk_size[cid] = data_size;
+    m_ffny_chunk_percent[cid] = 0;
+    OSD::AddTypedMessage(OSD::MessageType::FFNYResync,
+                         fmt::format("FFNY resync: receiving the host's state ({} KB) 0 %", data_size / 1024),
+                         OSD::Duration::VERY_LONG, OSD::Color::CYAN);
+    return;
+  }
+
   std::vector<int> players;
   players.push_back(m_local_player->pid);
   m_dialog->ShowChunkedProgressDialog(title, data_size, players);
@@ -661,9 +677,15 @@ void NetPlayClient::OnChunkedDataEnd(sf::Packet& packet)
   INFO_LOG_FMT(NETPLAY, "Ending data chunk {}.", cid);
 
   auto& data_packet = data_packet_iter->second;
+  const bool ffny = m_ffny_chunk_size.erase(cid) != 0;
+  m_ffny_chunk_percent.erase(cid);
+  if (ffny)
+    OSD::AddTypedMessage(OSD::MessageType::FFNYResync, "FFNY resync: state received, loading",
+                         OSD::Duration::SHORT, OSD::Color::CYAN);
   OnData(data_packet);
   m_chunked_data_receive_queue.erase(data_packet_iter);
-  m_dialog->HideChunkedProgressDialog();
+  if (!ffny)
+    m_dialog->HideChunkedProgressDialog();
 
   sf::Packet complete_packet;
   complete_packet << MessageID::ChunkedDataComplete;
@@ -693,7 +715,22 @@ void NetPlayClient::OnChunkedDataPayload(sf::Packet& packet)
 
   INFO_LOG_FMT(NETPLAY, "Received {} bytes of data chunk {}.", data_packet.getDataSize(), cid);
 
-  m_dialog->SetChunkedProgress(m_local_player->pid, data_packet.getDataSize());
+  if (const auto it = m_ffny_chunk_size.find(cid); it != m_ffny_chunk_size.end())
+  {
+    const u32 percent = it->second ? static_cast<u32>(data_packet.getDataSize() * 100 / it->second) : 100;
+    if (percent / 10 != m_ffny_chunk_percent[cid] / 10)
+    {
+      m_ffny_chunk_percent[cid] = percent;
+      OSD::AddTypedMessage(OSD::MessageType::FFNYResync,
+                           fmt::format("FFNY resync: receiving the host's state ({} KB) {} %",
+                                       it->second / 1024, percent),
+                           OSD::Duration::VERY_LONG, OSD::Color::CYAN);
+    }
+  }
+  else
+  {
+    m_dialog->SetChunkedProgress(m_local_player->pid, data_packet.getDataSize());
+  }
 
   sf::Packet progress_packet;
   progress_packet << MessageID::ChunkedDataProgress;
@@ -717,6 +754,16 @@ void NetPlayClient::OnChunkedDataAbort(sf::Packet& packet)
   INFO_LOG_FMT(NETPLAY, "Aborting data chunk {}.", cid);
 
   m_chunked_data_receive_queue.erase(iter);
+  if (m_ffny_chunk_size.erase(cid) != 0)
+  {
+    m_ffny_chunk_percent.erase(cid);
+    const std::string text = "FFNY resync: the host aborted sending its state";
+    OSD::AddTypedMessage(OSD::MessageType::FFNYResync, text, OSD::Duration::NORMAL, OSD::Color::RED);
+    m_dialog->AppendChat(text);
+    SendChatMessage(text);
+    FFNYRollback::LogLine(text);
+    return;
+  }
   m_dialog->HideChunkedProgressDialog();
 }
 

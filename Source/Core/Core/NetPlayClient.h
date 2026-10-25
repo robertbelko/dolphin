@@ -357,6 +357,8 @@ private:
   u16 m_sync_ar_codes_success_count = 0;
   bool m_sync_ar_codes_complete = false;
   std::unordered_map<u32, sf::Packet> m_chunked_data_receive_queue;
+  std::unordered_map<u32, u64> m_ffny_chunk_size;     // FFNY resync transfers (shown in the game window)
+  std::unordered_map<u32, u32> m_ffny_chunk_percent;
 
   u64 m_initial_rtc = 0;
   u32 m_timebase_frame = 0;

@@ -74,6 +74,7 @@
 #include "InputCommon/InputConfig.h"
 
 #include "UICommon/GameFile.h"
+#include "VideoCommon/OnScreenDisplay.h"
 
 #if !defined(_WIN32)
 #include <sys/socket.h>
@@ -2789,7 +2790,13 @@ void NetPlayServer::ChunkedDataThreadFunc()
 
         ChunkedDataSend(std::move(pac), e.target_pid, e.target_mode);
 
-        if (e.target_mode == TargetMode::AllExcept && e.target_pid == 1)
+        // FFNY resync: no progress window (it took the focus away from the game window); a message in the game
+        // window instead
+        if (e.title == "FFNY resync")
+          OSD::AddTypedMessage(OSD::MessageType::FFNYResync,
+                               fmt::format("FFNY resync: sending my state ({} KB)", e.packet.getDataSize() / 1024),
+                               OSD::Duration::VERY_LONG, OSD::Color::CYAN);
+        else if (e.target_mode == TargetMode::AllExcept && e.target_pid == 1)
           m_dialog->ShowChunkedProgressDialog(e.title, e.packet.getDataSize(), players);
       }
 
@@ -2857,7 +2864,14 @@ void NetPlayServer::ChunkedDataThreadFunc()
              !m_abort_chunked_data && !skip_wait)
         m_chunked_data_complete_event.Wait();
       m_chunked_data_complete_count.erase(id);
-      m_dialog->HideChunkedProgressDialog();
+      if (e.title == "FFNY resync")
+        OSD::AddTypedMessage(OSD::MessageType::FFNYResync,
+                             m_abort_chunked_data ? std::string("FFNY resync: sending my state was aborted") :
+                                                    std::string("FFNY resync: state sent"),
+                             OSD::Duration::SHORT,
+                             m_abort_chunked_data ? OSD::Color::RED : OSD::Color::CYAN);
+      else
+        m_dialog->HideChunkedProgressDialog();
 
       m_chunked_data_queue.Pop();
     }
