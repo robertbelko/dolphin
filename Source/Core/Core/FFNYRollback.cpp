@@ -44,6 +44,7 @@
 #include "Core/Core.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HW/CPU.h"
+#include "Core/HW/DVD/DVDThread.h"
 #include "Core/HW/Memmap.h"
 #include "Core/State.h"
 #include "Common/Event.h"
@@ -198,6 +199,16 @@ char s_phase = '-';  // 'U' = inside a logic update (after PRE), 'T' = after the
 // object +8 gets in Inject); the counter itself is real-time system state and is not rewound.
 constexpr u32 ADDR_VICOUNT_GET = 0x8024E22C;  // lwz r3,-0x7BC0(r13); blr
 constexpr u32 ADDR_VICOUNT = 0x8043FC20;
+// FFNY's file system (EA FILESYS, struct 0x804018C0): the request start 0x80244408 (op 4 = read) hands a read to the
+// file-system thread 0x802490BC through 0x802491B8(handle, dest, offset, length) (OSSendMessage to 0x8040BCB8); that
+// thread reads with DVD reads (0x80248EC8, DVDFileInfo at handle + 0x108: +0x30 disc offset, +0x34 file length) and
+// then calls the request-done function 0x80244880(1), at a moment that depends on emulated time and thread
+// scheduling. Synchronous loads: the read is done at once by Dolphin and the request start continues at 0x80244820
+// (li r3,1; bl 0x80244880; = what it does after a write), so a load completes inside the call that started it -
+// inside the logic update that asked for it, at the same frame on every machine and again in a re-simulation.
+constexpr u32 ADDR_FS_READ = 0x802491B8;
+constexpr u32 FS_READ_RET_A = 0x802447F8, FS_READ_RET_B = 0x80244808;  // `b 0x8024486C` after the two calls
+constexpr u32 FS_DONE_OK = 0x80244820;
 u32 s_vi_fixed = 0;
 u32 s_vi_base = 0;     // real VI count at fight start
 bool s_vi_fix = true;
@@ -936,6 +947,17 @@ constexpr u32 W_CONF = 0x8049A40C, W_ACT = 0x8049B500, W_FRAME = 0x8049B504, W_R
 // In emulated RAM (free word of rbtag's area, which rollback never rewinds), so a resync carries it: both machines then
 // agree on it at the next update even if the host paused a little later inside that update than the client.
 constexpr u32 W_MATCH = 0x8049B5F0;
+// "rollback fight running" for rbtag (written by Dolphin: 1 from the fight start to the fight end). rbtag v5 reads
+// 0x803F1000 == 1 for its SysHeap routing (alloc hook 0x8049A670 / 0x8049A694) and its deferred main-heap frees
+// (free hook 0x8049A8B0 / 0x8049A8B8, flushed once the flag is not 1); 0x803F1000 stays 1 after a quit to the menus
+// and after environmental KOs, so frees stayed deferred in the menus (24 of 63 queued when both Dolphins crashed in
+// the heap code at 0x80249818 after a quit, 24 October). Dolphin points both reads at this word.
+constexpr u32 W_FIGHTW = 0x8049B5F4;
+bool s_rbtag_redirected = false;
+// synchronous loads (see ADDR_FS_READ); statistics per fight
+bool s_syncload = true;
+bool s_fsread_hook = false;
+u32 s_sync_reads = 0, s_sync_bytes = 0, s_sync_fail = 0, s_async_reads = 0;
 constexpr u32 ADDR_MATCH_UPDATE = 0x80096C04;  // match update (state machine at match +0x302A0; fight step 0x80098014)
 bool s_match_hook = false;
 bool s_left_match = false;  // for the fight-over line
@@ -1058,6 +1080,9 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   Wr32(ram, W_RB, 0);
   Wr32(ram, W_FRAME, f);
   Wr32(ram, W_ACT, 1);
+  if (s_rbtag_redirected)
+    Wr32(ram, W_FIGHTW, 1);
+  s_sync_reads = s_sync_bytes = s_sync_fail = s_async_reads = 0;
   s_start_frame = f;
   s_resim_target = 0;
   s_mispredict_from = 0xFFFFFFFF;
@@ -1643,6 +1668,25 @@ void OnVIField(Core::System& system)
     HLE::Patch(system, 0x8001841C, "FFNYRollbackBankGuard");
   if (Rd32(ram, 0x80274180) == 0x9421FFC0)  // stwu sp,-0x40(sp): the SDK's unhandled-exception handler
     HLE::Patch(system, 0x80274180, "FFNYRollbackCrash");
+  // rbtag v5's two reads of 0x803F1000 -> W_FIGHTW (see there)
+  if (Rd32(ram, 0x8049A670) == 0x3C60803F && Rd32(ram, 0x8049A694) == 0x80631000 &&
+      Rd32(ram, 0x8049A8B0) == 0x3C60803F && Rd32(ram, 0x8049A8B8) == 0x60631000)
+  {
+    u8* wram = memory.GetRAM();
+    Wr32(wram, W_FIGHTW, 0);
+    Wr32(wram, 0x8049A670, 0x3C60804A);  // lis r3,0x804A
+    Wr32(wram, 0x8049A694, 0x8063B5F4);  // lwz r3,-0x4A0C(r3) = 0x8049B5F4
+    Wr32(wram, 0x8049A8B0, 0x3C608049);  // lis r3,0x8049
+    Wr32(wram, 0x8049A8B8, 0x6063B5F4);  // ori r3,r3,0xB5F4
+    s_rbtag_redirected = true;
+  }
+  s_syncload = std::getenv("FFNY_RB_NOSYNCLOAD") == nullptr;
+  s_fsread_hook = Rd32(ram, ADDR_FS_READ) == 0x9421FFF8 && Rd32(ram, FS_READ_RET_A) == 0x48000074 &&
+                  Rd32(ram, FS_READ_RET_B) == 0x48000064 && Rd32(ram, FS_DONE_OK) == 0x38600001;
+  if (s_fsread_hook)
+    HLE::Patch(system, ADDR_FS_READ, "FFNYRollbackFsRead");
+  fprintf(stderr, "FFNYRB: rbtag fight flag %s, synchronous loads %s\n", s_rbtag_redirected ? "redirected" : "NOT redirected",
+          s_fsread_hook && s_syncload ? "on" : "off");
   s_match_hook = Rd32(ram, ADDR_MATCH_UPDATE) == 0x9421FFD0;  // stwu sp,-0x30(sp)
   if (s_match_hook)
   {
@@ -2086,6 +2130,57 @@ void HookRender(const Core::CPUThreadGuard& guard)
   s_phase = 'R';
 }
 
+// Synchronous loads (see ADDR_FS_READ): replaces 0x802491B8(handle r3, dest r4, offset r5, length r6).
+void HookFsRead(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  const u32 handle = ppc.gpr[3], dest = ppc.gpr[4], offset = ppc.gpr[5], length = ppc.gpr[6];
+  const u32 lr = ppc.spr[SPR_LR];
+  auto ok = [](u32 a) { return (a & 0xFE000000) == 0x80000000; };
+  if (s_settings.enabled && s_syncload && (lr == FS_READ_RET_A || lr == FS_READ_RET_B) && ok(handle) &&
+      Rd32(ram, handle) != 3 && ok(dest))
+  {
+    const u32 info = handle + 0x108;
+    const u32 start = Rd32(ram, info + 0x30), flen = Rd32(ram, info + 0x34);
+    const u32 ram_size = system.GetMemory().GetRamSizeReal();
+    if (length > 0 && length <= 0x01800000 && offset <= flen && length <= flen - offset &&
+        (dest & 0x01FFFFFF) + u64(length) <= ram_size)
+    {
+      std::vector<u8> buf(length);
+      if (system.GetDVDThread().ReadDiscNow(u64(start) + offset, length, buf.data()))
+      {
+        system.GetMemory().CopyToEmu(dest & 0x01FFFFFF, buf.data(), length);
+        system.GetJitInterface().InvalidateICache(dest, length, true);
+        s_sync_reads++;
+        s_sync_bytes += length;
+        if (s_log)
+          fprintf(stderr, "FFNYRB SYNCLOAD frame %u phase %c thread %08x disc %08x+%x -> %08x len %x (from %s)\n",
+                  Rd32(ram, ADDR_COUNTER), s_phase, Rd32(ram, 0x800000E4), start, offset, dest, length,
+                  CallChain(ram, ppc.gpr[1], 5).c_str());
+        ppc.gpr[3] = 1;
+        ppc.npc = FS_DONE_OK;  // li r3,1; bl 0x80244880 (request done); b 0x8024486C
+        return;
+      }
+      s_sync_fail++;
+    }
+    else
+    {
+      s_sync_fail++;
+    }
+  }
+  else if (s_settings.enabled)
+  {
+    s_async_reads++;
+  }
+  // the original function: stwu sp,-8(sp), continue after it
+  const u32 sp = ppc.gpr[1];
+  Wr32(ram, sp - 8, sp);
+  ppc.gpr[1] = sp - 8;
+  ppc.npc = ADDR_FS_READ + 4;
+}
+
 // The match update 0x80096C04 runs once per logic update while the game is in fight mode (every match state: fight,
 // pause, KO scenes, results). After "quit" in the pause menu the game goes to the menus without touching 0x803F1000 /
 // 0x803F1124 (Robert, 24 October: rollback stayed on in the main menu, both Dolphins crashed in the heap code at
@@ -2384,6 +2479,8 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
   s_active = false;
   s_loader_undo.clear();
   Wr32(ram, W_ACT, 0);  // rbtag: do the remaining deferred sound releases
+  if (s_rbtag_redirected)
+    Wr32(ram, W_FIGHTW, 0);  // rbtag: no more SysHeap routing / deferred frees; the queued frees are done at the next free
   if (s_log)
     PrintStats(f);
   fprintf(stderr, "FFNYRB fight end at frame %u%s\n", f, forced.empty() ? "" : " (forced)");
@@ -2410,6 +2507,9 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
                "; load episodes %u, lockstep frames only for the %u-frame tail %u, conversions of data outside the "
                "rollback state %u (at most %u frames after the file system was busy)",
                s_fs_episodes, LOAD_TAIL, s_lockstep_tail, s_conv_out, s_conv_gap_max);
+      line += e;
+      snprintf(e, sizeof e, "; synchronous loads %u (%u KB, %u failed), loads left to the file-system thread %u",
+               s_sync_reads, s_sync_bytes / 1024, s_sync_fail, s_async_reads);
       line += e;
     }
     if (!forced.empty())

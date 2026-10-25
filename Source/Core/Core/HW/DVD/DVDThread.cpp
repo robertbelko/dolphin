@@ -107,6 +107,12 @@ void DVDThread::SetDisc(std::unique_ptr<DiscIO::Volume> disc)
   m_disc = std::move(disc);
 }
 
+bool DVDThread::ReadDiscNow(u64 offset, u32 length, u8* out)
+{
+  WaitUntilIdle();
+  return m_disc && m_disc->Read(offset, length, out, DiscIO::PARTITION_NONE);
+}
+
 bool DVDThread::HasDisc() const
 {
   return m_disc != nullptr;

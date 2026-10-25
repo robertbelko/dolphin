@@ -63,6 +63,8 @@ public:
   void DoState(PointerWrap& p);
 
   void SetDisc(std::unique_ptr<DiscIO::Volume> disc);
+  // FFNY rollback: read the disc image right now (CPU thread), after the worker finished its queued reads
+  bool ReadDiscNow(u64 offset, u32 length, u8* out);
   bool HasDisc() const;
 
   bool HasWiiHashes() const;
