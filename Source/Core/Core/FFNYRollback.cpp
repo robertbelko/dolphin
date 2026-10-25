@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -136,6 +137,24 @@ bool s_sync_enabled = true;  // lab: FFNY_RB_NOSYNC
 bool s_installed = false;
 bool s_install_failed = false;
 bool s_active = false;
+std::array<u32, 32> s_count_addr{};  // lab: FFNY_RB_COUNT
+std::array<u32, 4> s_trace_addr{};  // lab: FFNY_RB_TRACE
+// held-back sound calls (see HookSndPost)
+constexpr u32 SND_POST = 0x801D3074, SND_SERVICE = 0x801D36B8;
+struct SndCall
+{
+  u32 frame, fn;
+  u32 r[8];  // r3..r10
+};
+std::deque<SndCall> s_snd_q;
+bool s_snd_defer = false;     // hooks installed
+bool s_snd_sending = false;   // a held call is being made right now (the hooks let it through)
+bool s_snd_end_after = false; // after the sends: end the fight (EndFight was due when they started)
+u32 s_snd_end_frame = 0;
+SavedState s_snd_regs;        // registers to continue with after the sends (only the register part is used)
+u32 s_snd_regs_npc = 0;
+u32 s_snd_held = 0, s_snd_sent = 0, s_snd_dropped = 0;  // stats of the current fight
+
 u32 s_start_frame = 0;
 u32 s_resim_target = 0;  // != 0 while re-simulating up to (excluding) this frame
 std::array<std::array<FrameInput, RING>, 4> s_input;  // per port: received / captured inputs
@@ -1079,6 +1098,8 @@ std::string CallChain(const u8* ram, u32 sp, int max)
 void StartFight(u8* ram, u32 tick_obj, u32 f)
 {
   s_active = true;
+  s_snd_q.clear();
+  s_snd_held = s_snd_sent = s_snd_dropped = 0;
   Wr32(ram, W_CONF, f - 1);
   Wr32(ram, W_RB, 0);
   Wr32(ram, W_FRAME, f);
@@ -1713,8 +1734,33 @@ void OnVIField(Core::System& system)
   {
     std::stringstream ss(c);
     std::string t;
-    while (std::getline(ss, t, ','))
-      HLE::Patch(system, u32(std::stoul(t, nullptr, 16)), "FFNYRollbackCount");
+    int i = 0;
+    while (std::getline(ss, t, ',') && i < 32)
+    {
+      s_count_addr[i] = u32(std::stoul(t, nullptr, 16));
+      HLE::Patch(system, s_count_addr[i], "FFNYRollbackCount" + std::to_string(i));
+      i++;
+    }
+  }
+  if (const char* c = std::getenv("FFNY_RB_TRACE"))
+  {
+    std::stringstream ss(c);
+    std::string t;
+    int i = 0;
+    while (std::getline(ss, t, ',') && i < 4)
+    {
+      s_trace_addr[i] = u32(std::stoul(t, nullptr, 16));
+      HLE::Patch(system, s_trace_addr[i], "FFNYRollbackTrace" + std::to_string(i));
+      i++;
+    }
+  }
+  // sound calls held back until their frame is confirmed (see HookSndPost)
+  if (Rd32(ram, SND_POST) == 0x9421FF60 && Rd32(ram, SND_SERVICE) == 0x9421FFF0 &&
+      std::getenv("FFNY_RB_NOSNDHOLD") == nullptr)
+  {
+    HLE::Patch(system, SND_POST, "FFNYRollbackSndPost");
+    HLE::Patch(system, SND_SERVICE, "FFNYRollbackSndService");
+    s_snd_defer = true;
   }
   if (std::getenv("FFNY_RB_NOSYSFREE") == nullptr)
   {
@@ -2578,10 +2624,11 @@ void DrawFrameBegin(const u8* ram, u32 f, bool first)
 // Leave rollback mode: back to normal (lockstep) netplay. The fight-end callback pauses this machine until the host's
 // state arrives. forced = the reason when this machine did not reach the end of the fight itself (the host ended
 // it for everyone, or no inputs came for 10 s); its state is then replaced by the host's anyway.
-// lab: FFNY_RB_COUNT=addr,addr,... -> calls of those functions by the main thread during the fight, first runs and
-// re-simulations separately (printed at the fight end)
+// lab: FFNY_RB_COUNT=addr,addr,... (up to 32) -> calls of those functions by the main thread during the fight,
+// first runs and re-simulations separately, with the most frequent callers (printed at the fight end)
 std::map<u32, std::array<u64, 2>> s_call_counts;
-void HookCount(const Core::CPUThreadGuard& guard)
+std::map<std::pair<u32, u32>, u64> s_call_sites;
+static void CountCall(const Core::CPUThreadGuard& guard, int i)
 {
   if (!s_active)
     return;
@@ -2589,8 +2636,67 @@ void HookCount(const Core::CPUThreadGuard& guard)
   const u8* ram = system.GetMemory().GetRAM();
   if (Rd32(ram, 0x800000E4) != 0x80432D10)
     return;
-  s_call_counts[system.GetPPCState().pc][s_resim_target != 0 ? 1 : 0]++;
+  s_call_counts[s_count_addr[i]][s_resim_target != 0 ? 1 : 0]++;
+  s_call_sites[{s_count_addr[i], system.GetPPCState().spr[SPR_LR]}]++;
 }
+template <int I>
+void HookCountN(const Core::CPUThreadGuard& guard)
+{
+  CountCall(guard, I);
+}
+template void HookCountN<0>(const Core::CPUThreadGuard&);
+template void HookCountN<1>(const Core::CPUThreadGuard&);
+template void HookCountN<2>(const Core::CPUThreadGuard&);
+template void HookCountN<3>(const Core::CPUThreadGuard&);
+template void HookCountN<4>(const Core::CPUThreadGuard&);
+template void HookCountN<5>(const Core::CPUThreadGuard&);
+template void HookCountN<6>(const Core::CPUThreadGuard&);
+template void HookCountN<7>(const Core::CPUThreadGuard&);
+template void HookCountN<8>(const Core::CPUThreadGuard&);
+template void HookCountN<9>(const Core::CPUThreadGuard&);
+template void HookCountN<10>(const Core::CPUThreadGuard&);
+template void HookCountN<11>(const Core::CPUThreadGuard&);
+template void HookCountN<12>(const Core::CPUThreadGuard&);
+template void HookCountN<13>(const Core::CPUThreadGuard&);
+template void HookCountN<14>(const Core::CPUThreadGuard&);
+template void HookCountN<15>(const Core::CPUThreadGuard&);
+template void HookCountN<16>(const Core::CPUThreadGuard&);
+template void HookCountN<17>(const Core::CPUThreadGuard&);
+template void HookCountN<18>(const Core::CPUThreadGuard&);
+template void HookCountN<19>(const Core::CPUThreadGuard&);
+template void HookCountN<20>(const Core::CPUThreadGuard&);
+template void HookCountN<21>(const Core::CPUThreadGuard&);
+template void HookCountN<22>(const Core::CPUThreadGuard&);
+template void HookCountN<23>(const Core::CPUThreadGuard&);
+template void HookCountN<24>(const Core::CPUThreadGuard&);
+template void HookCountN<25>(const Core::CPUThreadGuard&);
+template void HookCountN<26>(const Core::CPUThreadGuard&);
+template void HookCountN<27>(const Core::CPUThreadGuard&);
+template void HookCountN<28>(const Core::CPUThreadGuard&);
+template void HookCountN<29>(const Core::CPUThreadGuard&);
+template void HookCountN<30>(const Core::CPUThreadGuard&);
+template void HookCountN<31>(const Core::CPUThreadGuard&);
+
+// lab: FFNY_RB_TRACE=addr,... (up to 4) -> every main-thread call of those functions during the fight on stderr:
+// frame (rbtag's W_FRAME), r = re-simulation / f = first run, r3..r10, LR
+template <int I>
+void HookTraceN(const Core::CPUThreadGuard& guard)
+{
+  if (!s_active)
+    return;
+  auto& system = guard.GetSystem();
+  const u8* ram = system.GetMemory().GetRAM();
+  if (Rd32(ram, 0x800000E4) != 0x80432D10)
+    return;
+  const auto& ppc = system.GetPPCState();
+  fprintf(stderr, "TRACE %08x %u %c %08x %08x %08x %08x %08x %08x %08x %08x lr %08x\n", s_trace_addr[I],
+          Rd32(ram, W_FRAME), s_resim_target != 0 ? 'r' : 'f', ppc.gpr[3], ppc.gpr[4], ppc.gpr[5], ppc.gpr[6],
+          ppc.gpr[7], ppc.gpr[8], ppc.gpr[9], ppc.gpr[10], ppc.spr[SPR_LR]);
+}
+template void HookTraceN<0>(const Core::CPUThreadGuard&);
+template void HookTraceN<1>(const Core::CPUThreadGuard&);
+template void HookTraceN<2>(const Core::CPUThreadGuard&);
+template void HookTraceN<3>(const Core::CPUThreadGuard&);
 
 // rbtag's post-allocation hook (called by the heap allocator for every allocation, r3 = info: +0x18 pointer)
 void HookSysAlloc(const Core::CPUThreadGuard& guard)
@@ -2693,6 +2799,8 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
   ResendInputs(true);
   s_active = false;
   s_loader_undo.clear();
+  s_snd_dropped += u32(s_snd_q.size());  // only left when the fight was ended early (they never got confirmed)
+  s_snd_q.clear();
   Wr32(ram, W_ACT, 0);  // rbtag: do the remaining deferred sound releases
   if (s_rbtag_redirected)
     Wr32(ram, W_FIGHTW, 0);  // rbtag: no more SysHeap routing / deferred frees; the queued frees are done at the next free
@@ -2723,6 +2831,8 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
                "rollback state %u (at most %u frames after the file system was busy)",
                s_fs_episodes, LOAD_TAIL, s_lockstep_tail, s_conv_out, s_conv_gap_max);
       line += e;
+      snprintf(e, sizeof e, "; sound events held %u, sent %u, dropped %u", s_snd_held, s_snd_sent, s_snd_dropped);
+      line += e;
       snprintf(e, sizeof e, "; reads finished at once %u; SysHeap blocks of thrown-away frames freed %u%s", s_fs_instant,
                s_sys_freed, s_sys_free_overflow ? (" (" + std::to_string(s_sys_free_overflow) + " left: free log full)").c_str() : "");
       line += e;
@@ -2740,9 +2850,18 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
   else if (s_log)
   {
     for (const auto& [a, c] : s_call_counts)
-      fprintf(stderr, "FFNYRB LAB calls %08x: first runs %llu, re-simulations %llu\n", a, (unsigned long long)c[0],
-              (unsigned long long)c[1]);
+    {
+      std::string sites;
+      for (const auto& [k, n] : s_call_sites)
+        if (k.first == a)
+          sites += fmt::format(" {:08x}x{}", k.second, n);
+      fprintf(stderr, "FFNYRB LAB calls %08x: first runs %llu, re-simulations %llu; callers%s\n", a,
+              (unsigned long long)c[0], (unsigned long long)c[1], sites.c_str());
+    }
     s_call_counts.clear();
+    s_call_sites.clear();
+    fprintf(stderr, "FFNYRB sound events: held %u, sent %u, dropped (thrown-away frames) %u\n", s_snd_held, s_snd_sent,
+            s_snd_dropped);
     fprintf(stderr, "FFNYRB heap: lowest free KB heap2 %u heap3 %u%s; samples skipped (heap held by another thread) %u; SysHeap blocks of thrown-away frames freed %u, left %u\n",
             s_min_free2 / 1024, s_min_free3 / 1024, Low3Where().c_str(), s_heap_samples_skipped, s_sys_freed, s_sys_free_overflow);
     fprintf(stderr, "FFNYRB fight-over: rollbacks %u max %u resim %u waits %u lockstep %u frames, fs busy %u frames, "
@@ -2759,11 +2878,147 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
     s_fight_end_cb(system, f);
 }
 
+
+// Sound events (25 October, Robert's 8+ fight session: volume creeping up over the fights, missed music switches
+// fight -> Blazin' -> chorus -> back, then fast crackling audio and a crash in the sound thread at 0x801E7FC8).
+// The game talks to EA's sound library (not rewound) through the event poster at *0x8043FB40 = 0x801D3074
+// (event id, argument count, arguments) and the channel service 0x801D36B8 (channel). A rollback made the game post
+// the same events again in every re-simulation (lab: every event of a re-simulated frame 2-3 times), and events of
+// thrown-away predictions that the real timeline never had (lab: music event 0x2028 predicted, 0x202B real). Now
+// main-thread calls of both during the fight's updates are held back per frame and sent to the library only once
+// the frame can no longer be rolled back (exactly once, in order); a rewind to frame s drops the held calls of
+// frames >= s. Sending = a call of the library function made from the PRE hook with all registers saved and
+// restored (the function returns to ADDR_PRE, where the PRE hook sends the next one or restores the registers).
+static void SaveRegs(const PowerPC::PowerPCState& ppc, SavedState& s)
+{
+  memcpy(s.gpr, ppc.gpr, sizeof s.gpr);
+  memcpy(s.ps, ppc.ps, sizeof s.ps);
+  s.cr = ppc.cr;
+  s.fpscr = ppc.fpscr.Hex;
+  s.ca = ppc.xer_ca;
+  s.so = ppc.xer_so_ov;
+  s.lr = ppc.spr[SPR_LR];
+  s.ctr = ppc.spr[SPR_CTR];
+  for (int i = 0; i < 8; i++)
+    s.gqr[i] = ppc.spr[SPR_GQR0 + i];
+}
+
+static void LoadRegs(PowerPC::PowerPCState& ppc, const SavedState& s)
+{
+  memcpy(ppc.gpr, s.gpr, sizeof s.gpr);
+  memcpy(ppc.ps, s.ps, sizeof s.ps);
+  ppc.cr = s.cr;
+  ppc.fpscr.Hex = s.fpscr;
+  ppc.xer_ca = s.ca;
+  ppc.xer_so_ov = s.so;
+  ppc.spr[SPR_LR] = s.lr;
+  ppc.spr[SPR_CTR] = s.ctr;
+  for (int i = 0; i < 8; i++)
+    ppc.spr[SPR_GQR0 + i] = s.gqr[i];
+}
+
+// the newest frame whose held sound calls can go out (it can no longer be rolled back)
+static u32 SndReadyUpTo(u32 f)
+{
+  if (s_stress)
+    return f > s_stress + 1 ? f - 1 - s_stress : 0;
+  return std::min(MinConfirmed(), f - 1);
+}
+
+static void SndDropFrom(u32 s)
+{
+  while (!s_snd_q.empty() && s_snd_q.back().frame >= s)
+  {
+    s_snd_q.pop_back();
+    s_snd_dropped++;
+  }
+}
+
+// set up the call of the oldest held sound call that is due (registers already saved); false if none is due
+static bool SndSendNext(PowerPC::PowerPCState& ppc, u32 upto)
+{
+  if (s_snd_q.empty() || s_snd_q.front().frame > upto)
+    return false;
+  const SndCall c = s_snd_q.front();
+  s_snd_q.pop_front();
+  for (int i = 0; i < 8; i++)
+    ppc.gpr[3 + i] = c.r[i];
+  ppc.spr[SPR_LR] = ADDR_PRE;
+  ppc.npc = c.fn;
+  s_snd_sending = true;
+  s_snd_sent++;
+  return true;
+}
+
+// the start of the sends (end of the PRE hook, registers = how to go on); true if a call was set up
+static bool SndStartSends(PowerPC::PowerPCState& ppc, u32 upto)
+{
+  if (s_snd_q.empty() || s_snd_q.front().frame > upto)
+    return false;
+  SaveRegs(ppc, s_snd_regs);
+  s_snd_regs_npc = ppc.npc;
+  return SndSendNext(ppc, upto);
+}
+
+// main-thread call of the event poster / channel service: hold it back (fight updates) or let it through
+static void SndHook(const Core::CPUThreadGuard& guard, u32 fn)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  const bool hold = s_active && !s_snd_sending && (s_phase == 'U' || s_phase == 'T') &&
+                    Rd32(ram, 0x800000E4) == 0x80432D10 && !(fn == SND_POST && ppc.gpr[4] > 6);
+  if (!hold)
+  {
+    // the replaced instruction: stwu sp, d(sp)
+    const u32 ins = Rd32(ram, fn);
+    const u32 sp = ppc.gpr[1], nsp = sp + u32(s32(s16(ins & 0xFFFF)));
+    Wr32(ram, nsp, sp);
+    ppc.gpr[1] = nsp;
+    ppc.npc = fn + 4;
+    return;
+  }
+  SndCall c;
+  c.frame = Rd32(ram, W_FRAME);
+  c.fn = fn;
+  for (int i = 0; i < 8; i++)
+    c.r[i] = ppc.gpr[3 + i];
+  s_snd_q.push_back(c);
+  s_snd_held++;
+  ppc.gpr[3] = 1;
+  ppc.npc = ppc.spr[SPR_LR];
+}
+
+void HookSndPost(const Core::CPUThreadGuard& guard)
+{
+  SndHook(guard, SND_POST);
+}
+
+void HookSndService(const Core::CPUThreadGuard& guard)
+{
+  SndHook(guard, SND_SERVICE);
+}
+
 void HookPreUpdate(const Core::CPUThreadGuard& guard)
 {
   auto& system = guard.GetSystem();
   auto& ppc = system.GetPPCState();
   u8* ram = system.GetMemory().GetRAM();
+  if (s_snd_sending)
+  {
+    // a held sound call returned here: the next one, or go on where the PRE hook left off
+    s_snd_sending = false;
+    if (SndSendNext(ppc, s_snd_end_after ? 0xFFFFFFFF : SndReadyUpTo(Rd32(ram, ADDR_COUNTER))))
+      return;
+    LoadRegs(ppc, s_snd_regs);
+    ppc.npc = s_snd_regs_npc;
+    if (s_snd_end_after)
+    {
+      s_snd_end_after = false;
+      EndFight(system, ram, s_snd_end_frame, "");
+    }
+    return;
+  }
   // the replaced instruction
   ppc.gpr[3] = ppc.gpr[26];
   ppc.npc = ADDR_PRE + 4;
@@ -3026,6 +3281,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
         Wr32(ram, W_RB, old ? std::min(old, s + 1) : s + 1);
         FreeThrownSysAllocs(ram, s);
         DrainSysPending(ram);
+        SndDropFrom(s);
         Wr32(ram, W_CONF, std::min(MinConfirmed(), s - 1));
         Wr32(ram, W_FRAME, s);
       }
@@ -3043,7 +3299,13 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
 
   if (!fight)
   {
-    // fight over and every input confirmed: back to normal netplay
+    // fight over and every input confirmed: back to normal netplay (the held sound calls go out first)
+    if (SndStartSends(ppc, 0xFFFFFFFF))
+    {
+      s_snd_end_after = true;
+      s_snd_end_frame = f;
+      return;
+    }
     EndFight(system, ram, f, "");
     return;
   }
@@ -3060,6 +3322,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     HashFrame(ram, f);
     s_hashed_upto = f;
   }
+  SndStartSends(ppc, SndReadyUpTo(f));
 }
 
 void SetReportCallback(std::function<void(const std::string&)> callback)

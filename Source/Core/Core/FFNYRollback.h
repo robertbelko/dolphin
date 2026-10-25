@@ -83,7 +83,12 @@ void HookRng1(const Core::CPUThreadGuard& guard);    // generator 1 entry 0x8001
 void HookRender(const Core::CPUThreadGuard& guard);
 void HookMatchUpdate(const Core::CPUThreadGuard& guard);
 void HookFsWait(const Core::CPUThreadGuard& guard);
-void HookCount(const Core::CPUThreadGuard& guard);  // lab
+void HookSndPost(const Core::CPUThreadGuard& guard);
+void HookSndService(const Core::CPUThreadGuard& guard);
+template <int I>
+void HookTraceN(const Core::CPUThreadGuard& guard);  // lab
+template <int I>
+void HookCountN(const Core::CPUThreadGuard& guard);  // lab
 void HookSysAlloc(const Core::CPUThreadGuard& guard);  // rbtag's post-allocation hook: SysHeap blocks of the main thread  // 0x80274EB0, OSReceiveMessage puts a thread to sleep
 void HookFsRead(const Core::CPUThreadGuard& guard);  // 0x802491B8, read handed to the file-system thread  // 0x80096C04, the match update (fight mode only)
 void HookProbe(const Core::CPUThreadGuard& guard);  // lab
