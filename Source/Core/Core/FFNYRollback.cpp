@@ -1018,6 +1018,7 @@ u32 s_heap_samples_skipped = 0;
 // laptop 25 October: heap 3 down to 0 KB after 4 rollbacks across file conversions). They are handed to rbtag's
 // free log after the rewind, so the game frees them itself at its next sound call.
 std::vector<std::pair<u32, u32>> s_sys_allocs;
+std::vector<u32> s_sys_pending;  // thrown-away SysHeap blocks waiting for room in rbtag's free log
 u32 s_sys_freed = 0, s_sys_free_overflow = 0, s_sys_alloc_hook = 0;
 
 // ---- Auto-play (test tool) ----
@@ -1178,6 +1179,7 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_min_free3_resim = s_min_free3_predicted = s_low3_reported = false;
   s_heap_samples_skipped = 0;
   s_sys_allocs.clear();
+  s_sys_pending.clear();
   s_sys_freed = s_sys_free_overflow = 0;
   OSD::AddMessage("FFNY rollback: fight started (input delay " + std::to_string(s_settings.input_delay) +
                       (s_settings.load_lockstep ? ", lockstep while loading" : "") + ")",
@@ -2352,9 +2354,10 @@ static void DiagCheck(const u8* ram, u32 f, const char* where)
     return;
   if (!s_sys_allocs.empty())
   {
-    // frames up to the confirmed one are never thrown away
+    // frames up to the confirmed one are never thrown away (and no rewind goes back more than 16 frames; the lab's
+    // stress mode rewinds frames that count as confirmed)
     const u32 mc = MinConfirmed();
-    std::erase_if(s_sys_allocs, [mc](const auto& a) { return a.second <= mc; });
+    std::erase_if(s_sys_allocs, [mc, f](const auto& a) { return a.second <= mc && a.second + 16 < f; });
   }
   DiagLoads(ram, f);
   if (!s_diag_heap_reported)
@@ -2455,8 +2458,11 @@ void HookSysAlloc(const Core::CPUThreadGuard& guard)
     return;
   auto& system = guard.GetSystem();
   const u8* ram = system.GetMemory().GetRAM();
-  if (Rd32(ram, 0x800000E4) != 0x80432D10 || Rd32(ram, W_ACT) != 1)
-    return;  // only the main thread's allocations belong to the rewound logic
+  // the main thread's allocations belong to the rewound logic, and so do the file-system thread's: with instant
+  // disc reads it allocates the file buffers inside the logic frame that asked for the file
+  const u32 thread = Rd32(ram, 0x800000E4);
+  if ((thread != 0x80432D10 && thread != FS_THREAD) || Rd32(ram, W_ACT) != 1)
+    return;
   const u32 info = system.GetPPCState().gpr[3];
   if ((info & 0xFE000000) != 0x80000000)
     return;
@@ -2473,22 +2479,34 @@ void HookSysAlloc(const Core::CPUThreadGuard& guard)
 // frames did of the same block is not done twice)
 static void FreeThrownSysAllocs(u8* ram, u32 s)
 {
-  const u32 sysidx = Rd32(ram, 0x8049A404);
   size_t k = 0;
   for (const auto& [p, fr] : s_sys_allocs)
   {
     if (fr < s)
-    {
       s_sys_allocs[k++] = {p, fr};
-      continue;
-    }
+    else
+      s_sys_pending.push_back(p);
+  }
+  s_sys_allocs.resize(k);
+}
+
+// hand pending blocks to rbtag's free log, leaving half of it to rbtag's own logging (a full log makes rbtag free
+// at once, which a later rewind would repeat); called at every update start
+static void DrainSysPending(u8* ram)
+{
+  if (s_sys_pending.empty())
+    return;
+  const u32 sysidx = Rd32(ram, 0x8049A404);
+  size_t k = 0;
+  for (const u32 p : s_sys_pending)
+  {
     const u32 hw = Rd32(ram, p - 16);
     if ((hw >> 16) != 0x424D || (hw & 0x3F) != sysidx || (hw & 0xC000) == 0x4000)
       continue;  // already freed
     const u32 n = Rd32(ram, 0x8049B518);  // FRL_N
-    if (n >= 96)
+    if (n >= 48)
     {
-      s_sys_free_overflow++;
+      s_sys_pending[k++] = p;
       continue;
     }
     Wr32(ram, 0x8049BC00 + 8 * n, p);
@@ -2496,7 +2514,8 @@ static void FreeThrownSysAllocs(u8* ram, u32 s)
     Wr32(ram, 0x8049B518, n + 1);
     s_sys_freed++;
   }
-  s_sys_allocs.resize(k);
+  s_sys_pending.resize(k);
+  s_sys_free_overflow = static_cast<u32>(k);
 }
 
 static std::string Low3Where()
@@ -2642,6 +2661,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     LoaderDropConfirmed(std::min(MinConfirmed(), f - 1), f, ram);
     Wr32(ram, W_CONF, std::min(MinConfirmed(), f - 1));
     Wr32(ram, W_FRAME, f);
+    DrainSysPending(ram);
     s_resim_frames++;
     if (f > s_hashed_upto && MinConfirmed() >= f)
     {
@@ -2841,6 +2861,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
         const u32 old = Rd32(ram, W_RB);
         Wr32(ram, W_RB, old ? std::min(old, s + 1) : s + 1);
         FreeThrownSysAllocs(ram, s);
+        DrainSysPending(ram);
         Wr32(ram, W_CONF, std::min(MinConfirmed(), s - 1));
         Wr32(ram, W_FRAME, s);
       }
@@ -2869,6 +2890,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   LoaderDropConfirmed(std::min(MinConfirmed(), f - 1), f, ram);
   Wr32(ram, W_CONF, std::min(MinConfirmed(), f - 1));
   Wr32(ram, W_FRAME, f);
+  DrainSysPending(ram);
   if (f > s_hashed_upto && MinConfirmed() >= f)
   {
     HashFrame(ram, f);
