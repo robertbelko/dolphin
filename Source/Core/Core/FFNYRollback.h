@@ -68,6 +68,8 @@ bool IsActive();  // a fight is currently running in rollback mode
 // the CPU thread ends it at its next update (or right away when it waits for inputs) and calls the fight-end callback
 void RequestForceEnd(const std::string& reason);
 void ClearForceEnd();
+// disc reads complete at once while FFNY rollback netplay is on (see FFNYRollback.cpp)
+bool InstantDiscReads();
 
 // Called once per VI field on the CPU thread: installs the hooks once the game code is in memory.
 void OnVIField(Core::System& system);
@@ -79,7 +81,9 @@ void HookLoader(const Core::CPUThreadGuard& guard);  // 0x80121B4C (EAGL ELF .o 
 void HookRng(const Core::CPUThreadGuard& guard);     // generator 2 entry 0x800B7DAC
 void HookRng1(const Core::CPUThreadGuard& guard);    // generator 1 entry 0x8001FC88
 void HookRender(const Core::CPUThreadGuard& guard);
-void HookMatchUpdate(const Core::CPUThreadGuard& guard);  // 0x80096C04, the match update (fight mode only)
+void HookMatchUpdate(const Core::CPUThreadGuard& guard);
+void HookFsWait(const Core::CPUThreadGuard& guard);  // 0x80274EB0, OSReceiveMessage puts a thread to sleep
+void HookFsRead(const Core::CPUThreadGuard& guard);  // 0x802491B8, read handed to the file-system thread  // 0x80096C04, the match update (fight mode only)
 void HookProbe(const Core::CPUThreadGuard& guard);  // lab
 void HookSndRelease(const Core::CPUThreadGuard& guard);  // lab, 0x801F33E4
 void HookHeapLog(const Core::CPUThreadGuard& guard);     // lab

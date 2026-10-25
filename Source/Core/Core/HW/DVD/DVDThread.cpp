@@ -73,6 +73,7 @@ void DVDThread::DoState(PointerWrap& p)
 
   p.Do(m_result_map);
   p.Do(m_next_id);
+  p.Do(m_pending_ids);
 
   // m_disc isn't savestated (because it points to files on the
   // local system). Instead, we check that the status of the disc
@@ -216,6 +217,17 @@ void DVDThread::StartReadInternal(bool copy_to_ram, u32 output_address, u64 dvd_
 
   m_dvd_thread.Push(std::move(request));
   core_timing.ScheduleEvent(ticks_until_completion, m_finish_read, id);
+  m_pending_ids.push_back(id);
+}
+
+void DVDThread::FinishPendingReadsNow()
+{
+  if (m_pending_ids.empty())
+    return;
+  auto& core_timing = m_system.GetCoreTiming();
+  core_timing.RemoveAllEvents(m_finish_read);
+  for (const u64 id : m_pending_ids)
+    core_timing.ScheduleEvent(0, m_finish_read, id);
 }
 
 void DVDThread::GlobalFinishRead(Core::System& system, u64 id, s64 cycles_late)
@@ -225,6 +237,7 @@ void DVDThread::GlobalFinishRead(Core::System& system, u64 id, s64 cycles_late)
 
 void DVDThread::FinishRead(u64 id, s64 cycles_late)
 {
+  std::erase(m_pending_ids, id);
   // We can't simply pop result_queue and always get the ReadResult
   // we want, because the DVD thread may add ReadResults to the queue
   // in a different order than we want to get them. What we do instead

@@ -43,6 +43,7 @@
 #include <random>
 #include "Core/Core.h"
 #include "Core/HLE/HLE.h"
+#include "Core/HW/DVD/DVDThread.h"
 #include "Core/HW/Memmap.h"
 #include "Core/PowerPC/Gekko.h"
 #include "Core/PowerPC/JitInterface.h"
@@ -932,6 +933,18 @@ constexpr u32 W_CONF = 0x8049A40C, W_ACT = 0x8049B500, W_FRAME = 0x8049B504, W_R
 // In emulated RAM (free word of rbtag's area, which rollback never rewinds), so a resync carries it: both machines then
 // agree on it at the next update even if the host paused a little later inside that update than the client.
 constexpr u32 W_MATCH = 0x8049B5F0;
+// "rollback fight running" for rbtag (written by Dolphin: 1 from the fight start to the fight end). rbtag v5 reads
+// 0x803F1000 == 1 for its SysHeap routing (alloc hook 0x8049A670 / 0x8049A694) and its deferred main-heap frees
+// (free hook 0x8049A8B0 / 0x8049A8B8, flushed once the flag is not 1); 0x803F1000 stays 1 after a quit to the menus
+// and after environmental KOs, so frees stayed deferred in the menus (24 of 63 queued when both Dolphins crashed in
+// the heap code at 0x80249818 after a quit, 24 October). Dolphin points both reads at this word.
+constexpr u32 W_FIGHTW = 0x8049B5F4;
+bool s_rbtag_redirected = false;
+// instant loads (see InstantDiscReads): the file-system thread's two waits for its DVD read
+// OSReceiveMessage 0x80274E5C puts the receiving thread to sleep at 0x80274EB0 (bl OSSleepThread 0x802776E8, interrupts
+// disabled); the file-system thread object is 0x804099A0, its message queue 0x8040BCB8
+constexpr u32 OS_RECV_SLEEP = 0x80274EB0, FS_THREAD = 0x804099A0, FS_QUEUE = 0x8040BCB8;
+u32 s_fs_instant = 0;  // reads finished at once in this fight
 constexpr u32 ADDR_MATCH_UPDATE = 0x80096C04;  // match update (state machine at match +0x302A0; fight step 0x80098014)
 bool s_match_hook = false;
 bool s_left_match = false;  // for the fight-over line
@@ -1054,6 +1067,9 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   Wr32(ram, W_RB, 0);
   Wr32(ram, W_FRAME, f);
   Wr32(ram, W_ACT, 1);
+  if (s_rbtag_redirected)
+    Wr32(ram, W_FIGHTW, 1);
+  s_fs_instant = 0;
   s_start_frame = f;
   s_resim_target = 0;
   s_mispredict_from = 0xFFFFFFFF;
@@ -1339,6 +1355,24 @@ bool IsActive()
   return s_active;
 }
 
+// FFNY's file system (EA FILESYS, struct 0x804018C0): the request start 0x80244408 hands a read to the file-system
+// thread 0x802490BC (priority 2, above the main thread; created at 0x8024894C; message queue 0x8040BCB8) through
+// 0x802491B8 (OSSendMessage, so the thread runs at once); that thread starts DVD reads (0x80248EC8), waits for them
+// (OSReceiveMessage at 0x80249140 / 0x80249164) and then calls the request-done function 0x80244880, which runs the
+// request's callback. The DVD read normally completes after an emulated seek / transfer time while the main thread
+// runs on, so the done step came at a moment that depended on emulated time - another game frame on each machine,
+// and not again in a re-simulation: rollbacks across a finished load broke the game (23 October) and needed the
+// lockstep while loading. Instant loads: when the file-system thread is about to wait for its read, the read's
+// completion is moved to the current time (DVDThread::FinishPendingReadsNow), so its interrupt is taken as soon as the
+// thread sleeps and the thread finishes the whole load before the main thread runs another instruction.
+bool InstantDiscReads()
+{
+  static const bool off = std::getenv("FFNY_RB_NOINSTANTDISC") != nullptr;
+  // only in rollback fights: with every read instant from the boot on, the game crashed early in the boot (OS run
+  // queue broken after ~4300 reads, lab 25 October) - some boot code expects a read to take time
+  return s_active && !off;
+}
+
 void RequestForceEnd(const std::string& reason)
 {
   s_force_reason = reason;
@@ -1575,6 +1609,23 @@ void OnVIField(Core::System& system)
     HLE::Patch(system, 0x8001841C, "FFNYRollbackBankGuard");
   if (Rd32(ram, 0x80274180) == 0x9421FFC0)  // stwu sp,-0x40(sp): the SDK's unhandled-exception handler
     HLE::Patch(system, 0x80274180, "FFNYRollbackCrash");
+  // rbtag v5's two reads of 0x803F1000 -> W_FIGHTW (see there)
+  if (Rd32(ram, 0x8049A670) == 0x3C60803F && Rd32(ram, 0x8049A694) == 0x80631000 &&
+      Rd32(ram, 0x8049A8B0) == 0x3C60803F && Rd32(ram, 0x8049A8B8) == 0x60631000)
+  {
+    u8* wram = memory.GetRAM();
+    Wr32(wram, W_FIGHTW, 0);
+    Wr32(wram, 0x8049A670, 0x3C60804A);  // lis r3,0x804A
+    Wr32(wram, 0x8049A694, 0x8063B5F4);  // lwz r3,-0x4A0C(r3) = 0x8049B5F4
+    Wr32(wram, 0x8049A8B0, 0x3C608049);  // lis r3,0x8049
+    Wr32(wram, 0x8049A8B8, 0x6063B5F4);  // ori r3,r3,0xB5F4
+    s_rbtag_redirected = true;
+  }
+  if (Rd32(ram, OS_RECV_SLEEP) == 0x48002839)  // bl 0x802776E8
+    HLE::Patch(system, OS_RECV_SLEEP, "FFNYRollbackFsWait");
+  fprintf(stderr, "FFNYRB: rbtag fight flag %s, instant disc reads in rollback fights %s\n",
+          s_rbtag_redirected ? "redirected" : "NOT redirected",
+          std::getenv("FFNY_RB_NOINSTANTDISC") ? "off" : "on");
   s_match_hook = Rd32(ram, ADDR_MATCH_UPDATE) == 0x9421FFD0;  // stwu sp,-0x30(sp)
   if (s_match_hook)
   {
@@ -1655,7 +1706,12 @@ void HookLoader(const Core::CPUThreadGuard& guard)
         s_conv_gap_max = std::max(s_conv_gap_max, cf > s_fs_real_busy ? cf - s_fs_real_busy : 0);
       }
       s_conv_frame = std::max(s_conv_frame, cf);
-      s_fs_last_busy = std::max(s_fs_last_busy, s_conv_frame);
+      // With instant loads the data comes from a read that finished inside the logic frame that asked for it: a
+      // rewind before that frame reads it again, a rewind between the read and the conversion converts it again
+      // (loader fix: original bytes restored) - no lockstep needed (lab 25 October: stress rollbacks on every frame,
+      // no lockstep, whole fight to the KO: 0 mismatches, 0 empty-bank lookups)
+      if (!InstantDiscReads())
+        s_fs_last_busy = std::max(s_fs_last_busy, s_conv_frame);
     }
   }
   if (s_log)
@@ -2018,6 +2074,22 @@ void HookRender(const Core::CPUThreadGuard& guard)
   s_phase = 'R';
 }
 
+void HookFsWait(const Core::CPUThreadGuard& guard)
+{
+  // HookType::Start at OS_RECV_SLEEP: a thread is about to sleep in OSReceiveMessage (r31 = queue). When it is the
+  // file-system thread waiting for its DVD read, the read completes now: its interrupt is taken right after the switch
+  // to the next thread (interrupts are off until then), and the file-system thread runs again before that thread
+  // executes anything - like a real read, only without the wait in between.
+  if (!InstantDiscReads())
+    return;
+  auto& system = guard.GetSystem();
+  const u8* ram = system.GetMemory().GetRAM();
+  if (system.GetPPCState().gpr[31] != FS_QUEUE || Rd32(ram, 0x800000E4) != FS_THREAD)
+    return;
+  system.GetDVDThread().FinishPendingReadsNow();
+  s_fs_instant++;
+}
+
 // The match update 0x80096C04 runs once per logic update while the game is in fight mode (every match state: fight,
 // pause, KO scenes, results). After "quit" in the pause menu the game goes to the menus without touching 0x803F1000 /
 // 0x803F1124 (Robert, 24 October: rollback stayed on in the main menu, both Dolphins crashed in the heap code at
@@ -2316,6 +2388,8 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
   s_active = false;
   s_loader_undo.clear();
   Wr32(ram, W_ACT, 0);  // rbtag: do the remaining deferred sound releases
+  if (s_rbtag_redirected)
+    Wr32(ram, W_FIGHTW, 0);  // rbtag: no more SysHeap routing / deferred frees; the queued frees are done at the next free
   if (s_log)
     PrintStats(f);
   fprintf(stderr, "FFNYRB fight end at frame %u%s\n", f, forced.empty() ? "" : " (forced)");
@@ -2343,6 +2417,9 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
                "rollback state %u (at most %u frames after the file system was busy)",
                s_fs_episodes, LOAD_TAIL, s_lockstep_tail, s_conv_out, s_conv_gap_max);
       line += e;
+      snprintf(e, sizeof e, "; reads finished at once %u", s_fs_instant);
+      line += e;
+
     }
     if (!forced.empty())
       line += ". THIS MACHINE DID NOT REACH THE END ITSELF: " + forced + " - the host's state replaces mine";
@@ -2352,6 +2429,14 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
     line += d;
     s_report_cb(line);
     LogLine(line);
+  }
+  else if (s_log)
+  {
+    fprintf(stderr, "FFNYRB fight-over: rollbacks %u max %u resim %u waits %u lockstep %u frames, fs busy %u frames, "
+                    "requests finished %u, across finished %u, across conversion %u, outside conversions %u, "
+                    "reads finished at once %u, empty-bank lookups %u, desyncs %u\n",
+            s_rollbacks, s_max_depth, s_resim_frames, s_waits, s_lockstep_frames, s_fs_busy_frames, s_fs_done,
+            s_rb_across_load, s_rb_across_conv, s_conv_out, s_fs_instant, s_bank_guard, s_desyncs);
   }
   OSD::AddMessage("FFNY rollback: fight over - " + std::to_string(s_rollbacks) + " rollbacks (max " +
                       std::to_string(s_max_depth) + " frames), " + std::to_string(s_desyncs) +
@@ -2604,7 +2689,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       if (s_conv_frame >= s)
       {
         s_rb_across_conv++;  // the game converted a loaded file in a frame that is now thrown away
-        if (!s_conv_warned)
+        if (!s_conv_warned && !InstantDiscReads())  // with instant loads the re-simulation converts it again
         {
           s_conv_warned = true;
           Report("FFNY WARNING: rollback " + std::to_string(f) + "->" + std::to_string(s) +
