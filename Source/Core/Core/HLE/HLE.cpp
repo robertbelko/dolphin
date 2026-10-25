@@ -68,7 +68,7 @@ constexpr std::array<Hook, 41> os_patches{{
     {"FFNYRollbackRng1",             FFNYRollback::HookRng1,                HookType::Replace, HookFlag::Fixed},
     {"FFNYRollbackRender",           FFNYRollback::HookRender,              HookType::Start,   HookFlag::Fixed},
     {"FFNYRollbackMatch",            FFNYRollback::HookMatchUpdate,         HookType::Start,   HookFlag::Fixed},
-    {"FFNYRollbackFsRead",           FFNYRollback::HookFsRead,              HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackFsWait",           FFNYRollback::HookFsWait,              HookType::Start,   HookFlag::Fixed},
     {"FFNYRollbackViCount",          FFNYRollback::HookViCount,             HookType::Replace, HookFlag::Fixed},
     {"FFNYRollbackSndCtx",           FFNYRollback::HookSndNullContext,      HookType::Replace, HookFlag::Fixed},
     {"FFNYRollbackBankGuard",        FFNYRollback::HookBankGuard,           HookType::Replace, HookFlag::Fixed},

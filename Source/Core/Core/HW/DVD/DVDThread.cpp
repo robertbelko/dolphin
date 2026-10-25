@@ -4,6 +4,8 @@
 #include "Core/HW/DVD/DVDThread.h"
 #include "Core/FFNYRollback.h"
 
+#include <cstdlib>
+#include <cstdio>
 #include <map>
 #include <memory>
 #include <optional>
@@ -74,6 +76,7 @@ void DVDThread::DoState(PointerWrap& p)
 
   p.Do(m_result_map);
   p.Do(m_next_id);
+  p.Do(m_pending_ids);
 
   // m_disc isn't savestated (because it points to files on the
   // local system). Instead, we check that the status of the disc
@@ -105,12 +108,6 @@ void DVDThread::SetDisc(std::unique_ptr<DiscIO::Volume> disc)
 {
   WaitUntilIdle();
   m_disc = std::move(disc);
-}
-
-bool DVDThread::ReadDiscNow(u64 offset, u32 length, u8* out)
-{
-  WaitUntilIdle();
-  return m_disc && m_disc->Read(offset, length, out, DiscIO::PARTITION_NONE);
 }
 
 bool DVDThread::HasDisc() const
@@ -223,6 +220,21 @@ void DVDThread::StartReadInternal(bool copy_to_ram, u32 output_address, u64 dvd_
 
   m_dvd_thread.Push(std::move(request));
   core_timing.ScheduleEvent(ticks_until_completion, m_finish_read, id);
+  m_pending_ids.push_back(id);
+}
+
+void DVDThread::FinishPendingReadsNow()
+{
+  if (m_pending_ids.empty())
+    return;
+  auto& core_timing = m_system.GetCoreTiming();
+  if (std::getenv("FFNY_RB_FSDEBUG"))
+    fprintf(stderr, "FSPULL ticks %llu pending %zu first %llu thread %08x\n", (unsigned long long)core_timing.GetTicks(),
+            m_pending_ids.size(), (unsigned long long)m_pending_ids[0],
+            m_system.GetMemory().Read_U32(0x800000E4));
+  core_timing.RemoveAllEvents(m_finish_read);
+  for (const u64 id : m_pending_ids)
+    core_timing.ScheduleEvent(0, m_finish_read, id);
 }
 
 void DVDThread::GlobalFinishRead(Core::System& system, u64 id, s64 cycles_late)
@@ -232,6 +244,11 @@ void DVDThread::GlobalFinishRead(Core::System& system, u64 id, s64 cycles_late)
 
 void DVDThread::FinishRead(u64 id, s64 cycles_late)
 {
+  std::erase(m_pending_ids, id);
+  if (std::getenv("FFNY_RB_FSDEBUG"))
+    fprintf(stderr, "FSDONE id %llu ticks %llu late %lld thread %08x\n", (unsigned long long)id,
+            (unsigned long long)m_system.GetCoreTiming().GetTicks(), (long long)cycles_late,
+            m_system.GetMemory().Read_U32(0x800000E4));
   // We can't simply pop result_queue and always get the ReadResult
   // we want, because the DVD thread may add ReadResults to the queue
   // in a different order than we want to get them. What we do instead

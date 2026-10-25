@@ -63,8 +63,9 @@ public:
   void DoState(PointerWrap& p);
 
   void SetDisc(std::unique_ptr<DiscIO::Volume> disc);
-  // FFNY rollback: read the disc image right now (CPU thread), after the worker finished its queued reads
-  bool ReadDiscNow(u64 offset, u32 length, u8* out);
+  // FFNY rollback: the reads that are still in flight complete now (their completion events are moved to the
+  // current time, in their original order)
+  void FinishPendingReadsNow();
   bool HasDisc() const;
 
   bool HasWiiHashes() const;
@@ -134,6 +135,7 @@ private:
   std::map<u64, ReadResult> m_result_map;
 
   std::unique_ptr<DiscIO::Volume> m_disc;
+  std::vector<u64> m_pending_ids;  // reads whose completion event is scheduled
 
   FileMonitor::FileLogger m_file_logger;
 
