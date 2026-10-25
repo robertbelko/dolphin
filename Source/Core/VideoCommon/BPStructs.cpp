@@ -845,7 +845,10 @@ void LoadBPRegPreprocess(u8 reg, u32 value, int cycles_into_future)
   {
   case BPMEM_SETDRAWDONE:
     if ((newval & 0xff) == 0x02)
+    {
       system.GetPixelEngine().SetFinish(cycles_into_future);
+      system.GetFifo().NoteDrawDonePreprocessed();
+    }
     break;
   case BPMEM_PE_TOKEN_ID:
     system.GetPixelEngine().SetToken(newval & 0xffff, false, cycles_into_future);

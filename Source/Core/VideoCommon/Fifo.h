@@ -42,6 +42,8 @@ class FifoManager final
 {
 public:
   explicit FifoManager(Core::System& system);
+  // FFNY fork: a GXDrawDone was preprocessed on the CPU thread (deterministic GPU thread)
+  void NoteDrawDonePreprocessed() { m_drawdone_seen = true; }
   FifoManager(const FifoManager& other) = delete;
   FifoManager(FifoManager&& other) = delete;
   FifoManager& operator=(const FifoManager& other) = delete;
@@ -99,6 +101,7 @@ private:
   // This could be in SConfig, but it depends on multiple settings
   // and can change at runtime.
   bool m_use_deterministic_gpu_thread = false;
+  bool m_drawdone_seen = false;
 
   CoreTiming::EventType* m_event_sync_gpu = nullptr;
 
