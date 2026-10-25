@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -181,6 +182,21 @@ u32 s_loader_calls = 0, s_loader_restores = 0;
 u32 s_lab_mom_every = 0;
 u32 s_rng_from = 0, s_rng_to = 0;  // lab: FFNY_RB_RNGLOG=from:to -> log draws from generator 2 (0x803BE03C)
 char s_phase = '-';  // 'U' = inside a logic update (after PRE), 'T' = after the TICK hook, 'R' = render part of the loop
+// held-back sound calls (see HookSndPost)
+constexpr u32 SND_POST = 0x801D3074, SND_SERVICE = 0x801D36B8;
+struct SndCall
+{
+  u32 frame, fn;
+  u32 r[8];  // r3..r10
+};
+std::deque<SndCall> s_snd_q;
+bool s_snd_defer = false;     // hooks installed
+bool s_snd_sending = false;   // a held call is being made right now (the hooks let it through)
+bool s_snd_end_after = false; // after the sends: end the fight (EndFight was due when they started)
+u32 s_snd_end_frame = 0;
+SavedState s_snd_regs;        // registers to continue with after the sends (only the register part is used)
+u32 s_snd_regs_npc = 0;
+u32 s_snd_held = 0, s_snd_sent = 0, s_snd_dropped = 0;  // stats of the current fight
 // Render-side code also draws from the two shared random generators (lab 22 October: 0x800EDA24, called from the
 // mode's render method 0x800838F4 via 0x80086690, draws randint(gen2, 255) every rendered frame while its effect is
 // on, e.g. in Blazin' mode). Rendering happens once per DISPLAYED frame, never for re-simulated frames, so the number
@@ -1075,6 +1091,8 @@ std::string CallChain(const u8* ram, u32 sp, int max)
 void StartFight(u8* ram, u32 tick_obj, u32 f)
 {
   s_active = true;
+  s_snd_q.clear();
+  s_snd_held = s_snd_sent = s_snd_dropped = 0;
   Wr32(ram, W_CONF, f - 1);
   Wr32(ram, W_RB, 0);
   Wr32(ram, W_FRAME, f);
@@ -1641,6 +1659,14 @@ void OnVIField(Core::System& system)
   }
   if (Rd32(ram, OS_RECV_SLEEP) == 0x48002839)  // bl 0x802776E8
     HLE::Patch(system, OS_RECV_SLEEP, "FFNYRollbackFsWait");
+  // sound calls held back until their frame is confirmed (see HookSndPost)
+  if (Rd32(ram, SND_POST) == 0x9421FF60 && Rd32(ram, SND_SERVICE) == 0x9421FFF0 &&
+      std::getenv("FFNY_RB_NOSNDHOLD") == nullptr)
+  {
+    HLE::Patch(system, SND_POST, "FFNYRollbackSndPost");
+    HLE::Patch(system, SND_SERVICE, "FFNYRollbackSndService");
+    s_snd_defer = true;
+  }
   if (std::getenv("FFNY_RB_NOSYSFREE") == nullptr)
   {
     s_sys_alloc_hook = hook;
@@ -2535,6 +2561,8 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
   ResendInputs(true);
   s_active = false;
   s_loader_undo.clear();
+  s_snd_dropped += u32(s_snd_q.size());  // only left when the fight was ended early (they never got confirmed)
+  s_snd_q.clear();
   Wr32(ram, W_ACT, 0);  // rbtag: do the remaining deferred sound releases
   if (s_rbtag_redirected)
     Wr32(ram, W_FIGHTW, 0);  // rbtag: no more SysHeap routing / deferred frees; the queued frees are done at the next free
@@ -2564,6 +2592,8 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
                "; load episodes %u, lockstep frames only for the %u-frame tail %u, conversions of data outside the "
                "rollback state %u (at most %u frames after the file system was busy)",
                s_fs_episodes, LOAD_TAIL, s_lockstep_tail, s_conv_out, s_conv_gap_max);
+      line += e;
+      snprintf(e, sizeof e, "; sound events held %u, sent %u, dropped %u", s_snd_held, s_snd_sent, s_snd_dropped);
       line += e;
       snprintf(e, sizeof e, "; reads finished at once %u; SysHeap blocks of thrown-away frames freed %u%s", s_fs_instant,
                s_sys_freed, s_sys_free_overflow ? (" (" + std::to_string(s_sys_free_overflow) + " left: free log full)").c_str() : "");
@@ -2595,11 +2625,136 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
     s_fight_end_cb(system, f);
 }
 
+static void SaveRegs(const PowerPC::PowerPCState& ppc, SavedState& s)
+{
+  memcpy(s.gpr, ppc.gpr, sizeof s.gpr);
+  memcpy(s.ps, ppc.ps, sizeof s.ps);
+  s.cr = ppc.cr;
+  s.fpscr = ppc.fpscr.Hex;
+  s.ca = ppc.xer_ca;
+  s.so = ppc.xer_so_ov;
+  s.lr = ppc.spr[SPR_LR];
+  s.ctr = ppc.spr[SPR_CTR];
+  for (int i = 0; i < 8; i++)
+    s.gqr[i] = ppc.spr[SPR_GQR0 + i];
+}
+
+static void LoadRegs(PowerPC::PowerPCState& ppc, const SavedState& s)
+{
+  memcpy(ppc.gpr, s.gpr, sizeof s.gpr);
+  memcpy(ppc.ps, s.ps, sizeof s.ps);
+  ppc.cr = s.cr;
+  ppc.fpscr.Hex = s.fpscr;
+  ppc.xer_ca = s.ca;
+  ppc.xer_so_ov = s.so;
+  ppc.spr[SPR_LR] = s.lr;
+  ppc.spr[SPR_CTR] = s.ctr;
+  for (int i = 0; i < 8; i++)
+    ppc.spr[SPR_GQR0 + i] = s.gqr[i];
+}
+
+// the newest frame whose held sound calls can go out (it can no longer be rolled back)
+static u32 SndReadyUpTo(u32 f)
+{
+  if (s_stress)
+    return f > s_stress + 1 ? f - 1 - s_stress : 0;
+  return std::min(MinConfirmed(), f - 1);
+}
+
+static void SndDropFrom(u32 s)
+{
+  while (!s_snd_q.empty() && s_snd_q.back().frame >= s)
+  {
+    s_snd_q.pop_back();
+    s_snd_dropped++;
+  }
+}
+
+// set up the call of the oldest held sound call that is due (registers already saved); false if none is due
+static bool SndSendNext(PowerPC::PowerPCState& ppc, u32 upto)
+{
+  if (s_snd_q.empty() || s_snd_q.front().frame > upto)
+    return false;
+  const SndCall c = s_snd_q.front();
+  s_snd_q.pop_front();
+  for (int i = 0; i < 8; i++)
+    ppc.gpr[3 + i] = c.r[i];
+  ppc.spr[SPR_LR] = ADDR_PRE;
+  ppc.npc = c.fn;
+  s_snd_sending = true;
+  s_snd_sent++;
+  return true;
+}
+
+// the start of the sends (end of the PRE hook, registers = how to go on); true if a call was set up
+static bool SndStartSends(PowerPC::PowerPCState& ppc, u32 upto)
+{
+  if (s_snd_q.empty() || s_snd_q.front().frame > upto)
+    return false;
+  SaveRegs(ppc, s_snd_regs);
+  s_snd_regs_npc = ppc.npc;
+  return SndSendNext(ppc, upto);
+}
+
+// main-thread call of the event poster / channel service: hold it back (fight updates) or let it through
+static void SndHook(const Core::CPUThreadGuard& guard, u32 fn)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  const bool hold = s_active && !s_snd_sending && (s_phase == 'U' || s_phase == 'T') &&
+                    Rd32(ram, 0x800000E4) == 0x80432D10 && !(fn == SND_POST && ppc.gpr[4] > 6);
+  if (!hold)
+  {
+    // the replaced instruction: stwu sp, d(sp)
+    const u32 ins = Rd32(ram, fn);
+    const u32 sp = ppc.gpr[1], nsp = sp + u32(s32(s16(ins & 0xFFFF)));
+    Wr32(ram, nsp, sp);
+    ppc.gpr[1] = nsp;
+    ppc.npc = fn + 4;
+    return;
+  }
+  SndCall c;
+  c.frame = Rd32(ram, W_FRAME);
+  c.fn = fn;
+  for (int i = 0; i < 8; i++)
+    c.r[i] = ppc.gpr[3 + i];
+  s_snd_q.push_back(c);
+  s_snd_held++;
+  ppc.gpr[3] = 1;
+  ppc.npc = ppc.spr[SPR_LR];
+}
+
+void HookSndPost(const Core::CPUThreadGuard& guard)
+{
+  SndHook(guard, SND_POST);
+}
+
+void HookSndService(const Core::CPUThreadGuard& guard)
+{
+  SndHook(guard, SND_SERVICE);
+}
+
 void HookPreUpdate(const Core::CPUThreadGuard& guard)
 {
   auto& system = guard.GetSystem();
   auto& ppc = system.GetPPCState();
   u8* ram = system.GetMemory().GetRAM();
+  if (s_snd_sending)
+  {
+    // a held sound call returned here: the next one, or go on where the PRE hook left off
+    s_snd_sending = false;
+    if (SndSendNext(ppc, s_snd_end_after ? 0xFFFFFFFF : SndReadyUpTo(Rd32(ram, ADDR_COUNTER))))
+      return;
+    LoadRegs(ppc, s_snd_regs);
+    ppc.npc = s_snd_regs_npc;
+    if (s_snd_end_after)
+    {
+      s_snd_end_after = false;
+      EndFight(system, ram, s_snd_end_frame, "");
+    }
+    return;
+  }
   // the replaced instruction
   ppc.gpr[3] = ppc.gpr[26];
   ppc.npc = ADDR_PRE + 4;
@@ -2862,6 +3017,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
         Wr32(ram, W_RB, old ? std::min(old, s + 1) : s + 1);
         FreeThrownSysAllocs(ram, s);
         DrainSysPending(ram);
+        SndDropFrom(s);
         Wr32(ram, W_CONF, std::min(MinConfirmed(), s - 1));
         Wr32(ram, W_FRAME, s);
       }
@@ -2879,7 +3035,13 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
 
   if (!fight)
   {
-    // fight over and every input confirmed: back to normal netplay
+    // fight over and every input confirmed: back to normal netplay (the held sound calls go out first)
+    if (SndStartSends(ppc, 0xFFFFFFFF))
+    {
+      s_snd_end_after = true;
+      s_snd_end_frame = f;
+      return;
+    }
     EndFight(system, ram, f, "");
     return;
   }
@@ -2896,6 +3058,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     HashFrame(ram, f);
     s_hashed_upto = f;
   }
+  SndStartSends(ppc, SndReadyUpTo(f));
 }
 
 void SetReportCallback(std::function<void(const std::string&)> callback)
