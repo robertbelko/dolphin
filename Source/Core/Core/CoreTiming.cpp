@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/CoreTiming.h"
+#include "Core/HW/Memmap.h"
+#include <cstdlib>
 
 #include <algorithm>
 #include <mutex>
@@ -237,7 +239,7 @@ void CoreTimingManager::DoState(PointerWrap& p)
 u64 CoreTimingManager::GetTicks() const
 {
   u64 ticks = static_cast<u64>(m_globals.global_timer);
-  if (!m_is_global_timer_sane)
+  if (!m_is_global_timer_sane && !m_frozen)
   {
     int downcount = DowncountToCycles(m_system.GetPPCState().downcount);
     ticks += m_globals.slice_length - downcount;
@@ -354,7 +356,15 @@ void CoreTimingManager::Advance()
   auto& ppc_state = power_pc.GetPPCState();
 
   int cyclesExecuted = m_globals.slice_length - DowncountToCycles(ppc_state.downcount);
-  m_globals.global_timer += cyclesExecuted;
+  if (m_frozen && !m_idle_in_frozen)
+    m_frozen_cycles += cyclesExecuted;  // re-simulation: time stands still
+  else
+  {
+    if (m_frozen)
+      m_frozen_idle_cycles += cyclesExecuted;  // every thread waits for the hardware: time has to pass
+    m_globals.global_timer += cyclesExecuted;
+  }
+  m_idle_in_frozen = false;
   m_last_oc_factor = m_config_oc_factor;
   m_globals.last_OC_factor_inverted = m_config_oc_inv_factor;
   m_globals.slice_length = MAX_SLICE_LENGTH;
@@ -585,6 +595,30 @@ void CoreTimingManager::Idle()
   PowerPC::UpdatePerformanceMonitor(ppc_state.downcount, 0, 0, ppc_state);
   m_idled_cycles += DowncountToCycles(ppc_state.downcount);
   ppc_state.downcount = 0;
+  if (m_frozen)
+  {
+    m_idle_in_frozen = true;
+    static int shown = 0;
+    if (std::getenv("FFNY_RB_LOG") && shown < 80)
+    {
+      shown++;
+      // the main thread's saved context (OSThread 0x80432D10): where it waits
+      auto& mem = m_system.GetMemory();
+      auto rd = [&](u32 a) { return mem.Read_U32(a); };
+      const u32 t = 0x80432D10;
+      u32 sp = rd(t + 4);
+      fprintf(stderr, "FFNYRB frozen-time idle: main thread srr0 %08x lr %08x chain", rd(t + 0x198), rd(t + 0x84));
+      for (int k = 0; k < 8 && (sp & 0xFE000000) == 0x80000000; k++)
+      {
+        const u32 nsp = rd(sp);
+        if ((nsp & 0xFE000000) != 0x80000000)
+          break;
+        fprintf(stderr, " %08x", rd(nsp + 4));
+        sp = nsp;
+      }
+      fprintf(stderr, "\n");
+    }
+  }
 }
 
 std::string CoreTimingManager::GetScheduledEventsSummary() const

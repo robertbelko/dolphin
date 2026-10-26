@@ -158,6 +158,9 @@ struct SndCall
   u32 r[8];  // r3..r10
 };
 std::deque<SndCall> s_snd_q;
+std::deque<std::pair<SndCall, bool>> s_music_sent;  // music cues sent by first runs (+ matched in the current re-simulation)
+u32 s_music_deduped = 0, s_music_resent = 0;
+bool s_music_hold_old = std::getenv("FFNY_RB_MUSICHOLD") != nullptr;  // lab: the 153a233 behaviour (held until confirmed)
 bool s_snd_defer = false;     // hooks installed
 bool s_snd_trace = false, s_snd_hold_on = true;  // lab: FFNY_RB_SNDTRACE; FFNY_RB_NOSNDHOLD
 bool s_snd_sending = false;   // a held call is being made right now (the hooks let it through)
@@ -170,6 +173,7 @@ u32 s_snd_held = 0, s_snd_sent = 0, s_snd_dropped = 0;  // stats of the current 
 
 u32 s_start_frame = 0;
 u32 s_resim_target = 0;  // != 0 while re-simulating up to (excluding) this frame
+bool s_stall_now = false;  // this PRE is a logic counter stall (same frame as the last first run)
 std::array<std::array<FrameInput, RING>, 4> s_input;  // per port: received / captured inputs
 std::array<std::array<FrameInput, RING>, 4> s_used;   // per port: what the simulation used
 std::array<Record, 4> s_base{};                       // records at fight start (prediction seed)
@@ -482,7 +486,7 @@ void SaveState(Core::System& system, u32 frame)
   const u8* ram = memory.GetRAM();
   SavedState& s = s_states[frame % NSLOTS];
   const bool resaved = s.frame == frame;  // lab stress: this slot already holds this frame (a re-simulation)
-  if (s_stress && s.frame == frame)
+  if (s_stress && s.frame == frame && !s_stall_now)  // (a counter stall saves the same frame again: no compare)
   {
     // lab stress: the re-simulated state of this frame must equal the first one
     std::vector<std::pair<u32, u32>> nr;
@@ -1159,6 +1163,26 @@ constexpr u32 W_AFCTR = 0x8049CFF0;  // bigspace, rewound (rbtag's lists end at 
 constexpr u32 AF_ARRAY = 0x8043FBB8, AF_COUNT = 0x804405A0, AF_FREE = 0x804405A4;
 constexpr u32 AF_SETID = 0x80244DD0, AF_FIND = 0x80244E00, AF_RELEASE = 0x80244E48;
 bool s_af_on = false;  // deterministic async file ids (HookAfSetId)
+// ---- The game's worker threads (26 October) ----
+// Besides the main thread the game runs worker threads that do work for the logic asynchronously and write the results
+// into game memory: the loader 0x806D8AE0 (fight loading; its own file requests, not instant), the worker 0x806D5A34
+// (memory card and more, via queue 0x80A1CD1C), "MCThread" 0x80A29C80. Their own state is not rewound. A rollback across
+// their work loses the results the logic already consumed (the re-simulation then waits for a result that never comes
+// again: the stress run hung in the fight loading). Rules, like the memory card's: a frame in which such a thread is busy
+// at the update start (not asleep on the queue it sleeps on when idle, learned when rollback starts) and the next
+// ASYNC_TAIL frames run with all inputs known (lockstep), and no rollback goes back into them; a message from the
+// logic that wakes such a thread (OSSendMessage 0x80274D94 to the queue it sleeps on) is a barrier like a card call.
+// Workers = threads other than the main thread with priority >= 5 (the file system 2, audio 1, the per-frame pump 4
+// are not: their work is either instant for the logic or handled elsewhere).
+std::map<u32, u32> s_idle_wait;  // worker thread -> what it waits on when idle
+u32 s_async_last = 0, s_async_busy_frames = 0, s_async_barriers = 0, s_async_aborts = 0;
+u32 s_async_last_thread = 0;
+bool s_async_on = false;
+constexpr u32 ASYNC_TAIL = 2;
+bool s_card_on = false;
+constexpr std::array<u32, 19> CARD_FUNCS = {0x8025BF7C, 0x8025C184, 0x8025C2D4, 0x8025D9BC, 0x8025DADC, 0x8025E340, 0x8025E424,
+                                             0x8025EC6C, 0x8025F134, 0x8025F238, 0x8025F354, 0x8025F700, 0x8025FB74, 0x8025FEF0,
+                                             0x80260108, 0x80260260, 0x802604A0, 0x80260728, 0x80260854};
 constexpr u32 ADDR_MATCH_UPDATE = 0x80096C04;  // match update (state machine at match +0x302A0; fight step 0x80098014)
 bool s_match_hook = false;
 bool s_left_match = false;  // for the fight-over line
@@ -1934,6 +1958,25 @@ void OnVIField(Core::System& system)
   {
     HLE::Patch(system, OS_RECV_SLEEP, "FFNYRollbackFsWait");
     HLE::Patch(system, 0x80244408, "FFNYRollbackFsKick");
+  }
+  s_async_on = std::getenv("FFNY_RB_NOASYNCLOCK") == nullptr && Rd32(ram, 0x80274D94) == 0x7C0802A6;
+  if (s_async_on)
+    HLE::Patch(system, 0x80274D94, "FFNYRollbackAsyncSend");
+  s_card_on = std::getenv("FFNY_RB_NOCARDLOCK") == nullptr;
+  if (s_card_on)
+  {
+    for (size_t i = 0; i < CARD_FUNCS.size(); i++)
+    {
+      if (Rd32(ram, CARD_FUNCS[i]) != 0x7C0802A6)
+      {
+        s_card_on = false;
+        fprintf(stderr, "FFNYRB: memory-card function %08x not as expected - card lockstep off\n", CARD_FUNCS[i]);
+        break;
+      }
+    }
+    if (s_card_on)
+      for (size_t i = 0; i < CARD_FUNCS.size(); i++)
+        HLE::Patch(system, CARD_FUNCS[i], "FFNYRollbackCard" + std::to_string(i));
   }
   // deterministic file ids (see HookAfSetId)
   s_af_on = std::getenv("FFNY_RB_NOAFID") == nullptr && Rd32(ram, AF_SETID) == 0x812D8DCC &&
@@ -3360,10 +3403,13 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
   // The other side may still lack our last frames (lost packets) and waits for them: send them once more, reliably.
   ResendInputs(true);
   s_active = false;
+  system.GetCoreTiming().SetFrozen(false);
   s_loader_undo.clear();
   s_snd_dropped += u32(s_snd_q.size());  // only left when the fight was ended early (they never got confirmed)
   s_snd_q.clear();
   AfEnd(ram);
+  s_music_sent.clear();
+  s_idle_wait.clear();
   s_fs_main_queued = false;
   fprintf(stderr, "FFNYRB file ids: %u virtual opens, %u objects of thrown-away frames returned (%u busy), %u releases taken back, %u done after confirmation; %u reads of other threads hurried for the logic\n",
           s_af_opened, s_af_orphans, s_af_busy_orphans, s_af_unfreed, s_af_freed, s_fs_hurried);
@@ -3493,6 +3539,9 @@ static u32 SndReadyUpTo(u32 f)
 
 static void SndDropFrom(u32 s)
 {
+  for (auto& e : s_music_sent)
+    if (e.first.frame >= s)
+      e.second = false;  // the re-simulation from s may send these again: match them anew
   while (!s_snd_q.empty() && s_snd_q.back().frame >= s)
   {
     s_snd_q.pop_back();
@@ -3580,6 +3629,16 @@ void HookSndTrEvict(const Core::CPUThreadGuard& guard)
   const auto& ppc = system.GetPPCState();
   SndTr("DISCARD", ram, ppc, SlotKey(ram, ppc.gpr[3]));
 }
+static void SndExecOriginal(u8* ram, PowerPC::PowerPCState& ppc, u32 fn)
+{
+  // the replaced instruction: stwu sp, d(sp)
+  const u32 ins = Rd32(ram, fn);
+  const u32 sp = ppc.gpr[1], nsp = sp + u32(s32(s16(ins & 0xFFFF)));
+  Wr32(ram, nsp, sp);
+  ppc.gpr[1] = nsp;
+  ppc.npc = fn + 4;
+}
+
 static void SndHook(const Core::CPUThreadGuard& guard, u32 fn)
 {
   auto& system = guard.GetSystem();
@@ -3607,6 +3666,34 @@ static void SndHook(const Core::CPUThreadGuard& guard, u32 fn)
   c.fn = fn;
   for (int i = 0; i < 8; i++)
     c.r[i] = ppc.gpr[3 + i];
+  if (fn != SND_POST && fn != SND_SERVICE && !s_music_hold_old)
+  {
+    // Music cues: sent at once in a first run, not held. Held until confirmed (153a233), a cue reached the music
+    // player some frames late, and the music module - which asks the player for the song position every frame
+    // (0x800111C0 at 0x80031568) - took "no position yet" for "song over" and went to the next song (lab: the menu
+    // song changed every 376 frames in stress mode, never without rollback; with the hold off it stayed). In a
+    // re-simulation a cue the first run of that frame already sent (same arguments) is not sent again; a different
+    // one (the inputs were mispredicted) is sent then.
+    if (!s_resim_target)
+    {
+      s_music_sent.push_back({c, false});
+      SndExecOriginal(ram, ppc, fn);
+      return;
+    }
+    for (auto& e : s_music_sent)
+      if (!e.second && e.first.frame == c.frame && e.first.fn == c.fn && (e.first.r[0] & 0xFFFF) == (c.r[0] & 0xFFFF))  // 0x80011108 uses only (s16)r3
+      {
+        e.second = true;  // matched in this re-simulation
+        s_music_deduped++;
+        ppc.gpr[3] = 1;
+        ppc.npc = ppc.spr[SPR_LR];
+        return;
+      }
+    s_music_sent.push_back({c, true});
+    s_music_resent++;
+    SndExecOriginal(ram, ppc, fn);
+    return;
+  }
   s_snd_q.push_back(c);
   s_snd_held++;
   ppc.gpr[3] = 1;
@@ -3702,6 +3789,222 @@ void HookSndExtra(const Core::CPUThreadGuard& guard)
 
 static u32 HeapFree(const u8* ram, u32 i, u32* largest, u32* nodes);
 static u32 HeapFreeFwd(const u8* ram, u32 i, u32* largest, u32* nodes) { return HeapFree(ram, i, largest, nodes); }
+
+// ---- Memory card: never rolled back (26 October) ----
+// FFNY's memory-card module (0x8014C000..0x80150FFF, on the main thread inside the logic update) calls the SDK's CARD
+// functions directly and polls them in loops that sleep (e.g. the probe loop 0x8014F4E0); the "MCThread" (0x80A29C80)
+// does more card work in the background. The CARD library and the card are not part of the rollback state, so a
+// re-simulated card call meets a card that already did it (lab, same inputs: SELECT USER ID's card prompt never
+// finished under stress). Two rules make sure no card work is ever re-simulated:
+// 1. barrier: a card call of the logic in a frame whose inputs are not all known yet waits for them; if one turns
+//    out mispredicted, the frame is abandoned right there (rollback from inside the call, before the card is touched);
+// 2. lockstep: while the card is in use (any CARD call or memory-card device command) and CARD_TAIL frames after,
+//    a frame only runs once all its inputs are known - so no rollback can go back into card activity.
+u32 g_card_activity = 0;
+constexpr u32 CARD_TAIL = 10;
+u32 s_card_last = 0, s_card_seen = 0, s_card_waits = 0, s_card_aborts = 0, s_card_resim_calls = 0, s_card_calls = 0;
+u64 s_card_wait_us = 0;
+u32 s_prev_first_f = 0, s_stall_guard = 0, s_stalls = 0;  // logic counter stalls (see HookPreUpdate)
+std::array<u32, 19> s_card_fn_calls{};
+
+static bool CardLocked(u32 f)
+{
+  return (s_card_on && s_card_last && f <= s_card_last + CARD_TAIL) ||
+         (s_async_on && s_async_last && f <= s_async_last + ASYNC_TAIL);
+}
+
+// worker threads (see s_idle_wait): learn their idle waits (rollback start), find busy ones (update start)
+static void LearnIdleWaits(const u8* ram)
+{
+  s_idle_wait.clear();
+  for (u32 t = Rd32(ram, 0x800000DC), k = 0; t && k < 64; t = Rd32(ram, t + 0x2FC), k++)
+    if (t != 0x80432D10 && s32(Rd32(ram, t + 0x2D0)) >= 5 && (Rd32(ram, t + 0x2C8) >> 16) == 4)
+      s_idle_wait[t] = Rd32(ram, t + 0x2DC);
+}
+static u32 BusyWorker(const u8* ram)
+{
+  for (const auto& [t, w] : s_idle_wait)
+    if ((Rd32(ram, t + 0x2C8) >> 16) != 4 || Rd32(ram, t + 0x2DC) != w)
+      return t;
+  return 0;
+}
+
+// rollback to frame s from inside a hook in the middle of frame f (s <= f): as the PRE hook's rollback, then go on at
+// the start of update s
+static bool RollbackFromHook(Core::System& system, u8* ram, u32 f, u32 s)
+{
+  if (s > f || !LoadState(system, s))
+    return false;
+  auto& ppc = system.GetPPCState();
+  s_rollbacks++;
+  s_last_rb_from = f;
+  s_last_rb_to = s;
+  s_max_depth = std::max(s_max_depth, f - s);
+  // s < f: frames s .. f-1 are re-simulated and f runs as a first run again (its local input is already sent);
+  // s == f: just the start of f again, now with the right inputs
+  s_resim_target = s < f ? f : 0;
+  static const bool no_freeze = std::getenv("FFNY_RB_NOFREEZE") != nullptr;
+  if (s < f && !no_freeze)
+    system.GetCoreTiming().SetFrozen(true);
+  ppc.gpr[3] = ppc.gpr[26];
+  ppc.npc = ADDR_PRE + 4;
+  s_phase = 'U';
+  DrawFrameBegin(ram, s, s == f);
+  Inject(ram, ppc.gpr[28], s);
+  SaveState(system, s);
+  const u32 old = Rd32(ram, W_RB);
+  Wr32(ram, W_RB, old ? std::min(old, s + 1) : s + 1);
+  FreeThrownSysAllocs(ram, s);
+  DrainSysPending(ram);
+  SndDropFrom(s);
+  AfRewind(ram, s);
+  Wr32(ram, W_CONF, std::min(MinConfirmed(), s - 1));
+  Wr32(ram, W_FRAME, s);
+  if (s < f)
+    s_resim_frames++;
+  return true;
+}
+
+// wait until all inputs up to f are known; if one was mispredicted, roll back from here (true: rolled back)
+static bool BarrierWait(Core::System& system, u8* ram, u32 f, const char* what)
+{
+  if (s_resim_target || (MinConfirmed() >= f && s_mispredict_from > f))
+    return false;
+  const auto t0 = std::chrono::steady_clock::now();
+  auto last_resend = t0;
+  while (MinConfirmed() < f && !s_force_end && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(10))
+  {
+    if (s_loop)
+    {
+      for (const auto& q : s_loop_q)
+        OnRemoteInput(1, q.first, q.second.data());
+      s_loop_q.clear();
+    }
+    std::this_thread::sleep_for(std::chrono::microseconds(250));
+    Pump();
+    if (std::chrono::steady_clock::now() - last_resend > std::chrono::milliseconds(8))
+    {
+      last_resend = std::chrono::steady_clock::now();
+      ResendInputs(false);
+    }
+  }
+  s_card_waits++;
+  s_card_wait_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+  if (s_mispredict_from <= f)
+  {
+    const u32 s = std::max(s_mispredict_from, s_start_frame);
+    s_mispredict_from = 0xFFFFFFFF;
+    if (RollbackFromHook(system, ram, f, s))
+    {
+      if (s_log)
+        fprintf(stderr, "FFNYRB %s in frame %u with a mispredicted input: rollback to %u before it\n", what, f, s);
+      return true;
+    }
+  }
+  return false;
+}
+
+// OSSendMessage 0x80274D94 (Replace hook; r3 = queue): the logic wakes a worker thread
+void HookAsyncSend(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  if (s_active && s_async_on && s_phase == 'U' && Rd32(ram, 0x800000E4) == 0x80432D10)
+  {
+    const u32 q = ppc.gpr[3];
+    for (const auto& [t, w] : s_idle_wait)
+      if (w == q + 8)
+      {
+        const u32 f = Rd32(ram, W_FRAME);
+        s_async_last = std::max(s_async_last, f);
+        s_async_last_thread = t;
+        s_async_barriers++;
+        if (BarrierWait(system, ram, f, "message to a worker thread"))
+        {
+          s_async_aborts++;
+          return;
+        }
+        break;
+      }
+  }
+  ppc.gpr[0] = ppc.spr[SPR_LR];  // mflr r0 (first instruction of OSSendMessage)
+  ppc.npc = 0x80274D94 + 4;
+}
+
+template <int I>
+void HookCardBarrierN(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  if (s_active && s_card_on)
+  {
+    const u32 f = Rd32(ram, W_FRAME);
+    s_card_calls++;
+    s_card_fn_calls[I]++;
+    // 0x8025DADC (CARDProbeEx: is a card in the slot) is polled every frame by the logic (0x8014D660); it only reads
+    // the slot state, so it neither waits nor starts card activity
+    if (CARD_FUNCS[I] == 0x8025DADC)
+    {
+      ppc.gpr[0] = ppc.spr[SPR_LR];
+      ppc.npc = CARD_FUNCS[I] + 4;
+      return;
+    }
+    if (s_log && s_card_fn_calls[I] <= 3)
+      fprintf(stderr, "FFNYRB CARD %08x frame %u thread %08x lr %08x r3 %08x\n", CARD_FUNCS[I], f, Rd32(ram, 0x800000E4),
+              ppc.spr[SPR_LR], ppc.gpr[3]);
+    s_card_last = std::max(s_card_last, f);
+    if (Rd32(ram, 0x800000E4) == 0x80432D10 && s_phase == 'U')
+    {
+      if (s_resim_target)
+        s_card_resim_calls++;  // should not happen (lab stress mode only)
+      else if (MinConfirmed() < f || s_mispredict_from <= f)
+      {
+        const auto t0 = std::chrono::steady_clock::now();
+        auto last_resend = t0;
+        while (MinConfirmed() < f && !s_force_end && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(10))
+        {
+          if (s_loop)
+          {
+            // lab loopback: the "other side" would send them anyway
+            for (const auto& q : s_loop_q)
+              OnRemoteInput(1, q.first, q.second.data());
+            s_loop_q.clear();
+          }
+          std::this_thread::sleep_for(std::chrono::microseconds(250));
+          Pump();
+          if (std::chrono::steady_clock::now() - last_resend > std::chrono::milliseconds(8))
+          {
+            last_resend = std::chrono::steady_clock::now();
+            ResendInputs(false);
+          }
+        }
+        s_card_waits++;
+        s_card_wait_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+        if (s_mispredict_from <= f)
+        {
+          const u32 s = std::max(s_mispredict_from, s_start_frame);
+          s_mispredict_from = 0xFFFFFFFF;
+          if (RollbackFromHook(system, ram, f, s))
+          {
+            s_card_aborts++;
+            if (s_log)
+              fprintf(stderr, "FFNYRB card call in frame %u with a mispredicted input: rollback to %u before it\n", f, s);
+            return;
+          }
+        }
+      }
+    }
+  }
+  ppc.gpr[0] = ppc.spr[SPR_LR];  // mflr r0
+  ppc.npc = CARD_FUNCS[I] + 4;
+}
+#define FFNY_CARD_INST(n) template void HookCardBarrierN<n>(const Core::CPUThreadGuard&);
+FFNY_CARD_INST(0) FFNY_CARD_INST(1) FFNY_CARD_INST(2) FFNY_CARD_INST(3) FFNY_CARD_INST(4) FFNY_CARD_INST(5) FFNY_CARD_INST(6)
+FFNY_CARD_INST(7) FFNY_CARD_INST(8) FFNY_CARD_INST(9) FFNY_CARD_INST(10) FFNY_CARD_INST(11) FFNY_CARD_INST(12)
+FFNY_CARD_INST(13) FFNY_CARD_INST(14) FFNY_CARD_INST(15) FFNY_CARD_INST(16) FFNY_CARD_INST(17) FFNY_CARD_INST(18)
+#undef FFNY_CARD_INST
 
 void HookPreUpdate(const Core::CPUThreadGuard& guard)
 {
@@ -3816,14 +4119,65 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     }
     return;
   }
+  // lab: re-simulations that had to let emulated time pass (every thread waited for hardware): where the main thread
+  // waited (its saved context: srr0, lr, call chain)
+  if (s_log && s_resim_target)
+  {
+    static u64 last_idle = 0;
+    const u64 idle = system.GetCoreTiming().GetFrozenIdleCycles();
+    static u32 shown = 0;
+    if (idle != last_idle && shown < 60)
+    {
+      shown++;
+      // the wait already ended (we are at the next update start): report the frame
+      fprintf(stderr, "FFNYRB FROZEN IDLE before update %u (re-simulation): %llu cycles let through\n", f,
+              (unsigned long long)(idle - last_idle));
+    }
+    last_idle = idle;
+  }
+  // lab: FFNY_RB_THREADS=f1,f2,... -> the OS thread list at those frames (address, state, priority, the queue it waits
+  // on, saved pc / lr)
+  {
+    static std::vector<u32> tf;
+    static bool tf_read = false;
+    if (!tf_read)
+    {
+      tf_read = true;
+      if (const char* t = std::getenv("FFNY_RB_THREADS"))
+      {
+        std::stringstream ss(t);
+        std::string x;
+        while (std::getline(ss, x, ','))
+          tf.push_back(u32(std::atoi(x.c_str())));
+      }
+    }
+    if (std::find(tf.begin(), tf.end(), f) != tf.end() && !s_resim_target)
+      for (u32 t = Rd32(ram, 0x800000DC), k = 0; t && k < 64; t = Rd32(ram, t + 0x2FC), k++)
+        fprintf(stderr, "FFNYRB THREAD frame %u: %08x state %u prio %d waits %08x pc %08x lr %08x stack %08x-%08x\n", f, t,
+                Rd32(ram, t + 0x2C8) >> 16, s32(Rd32(ram, t + 0x2D0)), Rd32(ram, t + 0x2DC), Rd32(ram, t + 0x198),
+                Rd32(ram, t + 0x84), Rd32(ram, t + 0x308), Rd32(ram, t + 0x304));
+  }
   const bool caught_up = s_resim_target != 0;  // f == target: this frame's local input is known
   s_resim_target = 0;
+  if (caught_up)
+    system.GetCoreTiming().SetFrozen(false);  // the re-simulation is over: emulated time runs again
   if (caught_up)
     StressCheck(ram, f, false);
   Pump();
 
   if (!caught_up)
   {
+    // Logic counter stalls (26 October): while the fight loads, the update runs again and again without moving the
+    // logic counter (lab: 9270). Frame numbers then no longer name one state: a rollback to an earlier frame would undo
+    // every stalled update (the loading screen's progress) and a re-simulation runs it once - the stress run looped at
+    // 9270 forever. A stall therefore waits for all inputs up to f (below), and no rollback goes back to f or before.
+    s_stall_now = f == s_prev_first_f;
+    if (s_stall_now)
+    {
+      s_stall_guard = f;
+      s_stalls++;
+    }
+    s_prev_first_f = f;
     // a new real frame: capture the local pads (they become the input of frame f + delay)
     s_frames++;
     s_frame_now = f;
@@ -3929,10 +4283,39 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
         fprintf(stderr, "FFNYRB stress: %u re-simulated frames compared, %u mismatches\n", s_stress_checked, s_stress_bad);
       fprintf(stderr, "FFNYRB file ids: %u virtual opens, %u returned, %u releases taken back, %u done; %u reads hurried\n",
               s_af_opened, s_af_orphans, s_af_unfreed, s_af_freed, s_fs_hurried);
+      {
+        std::string per;
+        for (size_t i = 0; i < CARD_FUNCS.size(); i++)
+          if (s_card_fn_calls[i])
+            per += fmt::format(" {:08x}:{}", CARD_FUNCS[i], s_card_fn_calls[i]);
+        fprintf(stderr, "FFNYRB memory card calls per function:%s; device commands %u\n", per.c_str(), g_card_activity);
+      }
+      fprintf(stderr, "FFNYRB worker threads: %zu known, busy at %u update starts (last frame %u, thread %08x), %u wake-up barriers, %u frames abandoned\n",
+              s_idle_wait.size(), s_async_busy_frames, s_async_last, s_async_last_thread, s_async_barriers, s_async_aborts);
+      fprintf(stderr, "FFNYRB logic counter stalls: %u (last at frame %u)\n", s_stalls, s_stall_guard);
+      fprintf(stderr, "FFNYRB music cues: %u not sent again in re-simulations, %u sent by re-simulations\n", s_music_deduped, s_music_resent);
+      fprintf(stderr, "FFNYRB memory card: %u calls, last activity frame %u, %u barrier waits (%.1f ms), %u frames abandoned, %u calls in re-simulations\n",
+              s_card_calls, s_card_last, s_card_waits, s_card_wait_us / 1000.0, s_card_aborts, s_card_resim_calls);
+      fprintf(stderr, "FFNYRB frozen time: %llu cycles of re-simulation not counted, %llu idle cycles let through\n",
+              (unsigned long long)system.GetCoreTiming().GetFrozenCycles(),
+              (unsigned long long)system.GetCoreTiming().GetFrozenIdleCycles());
     }
     StressCheck(ram, f, true);
-    if (s_stress && f > s_start_frame + s_stress && f >= s_stress_from && fight)
-      s_mispredict_from = f - 1 - (std::rand() % s_stress);
+    static u32 pause_lo = 0, pause_hi = 0;
+    static bool pause_read = false;
+    if (!pause_read)
+    {
+      pause_read = true;
+      if (const char* pz = std::getenv("FFNY_RB_STRESS_PAUSE"))  // lab: lo:hi -> no forced rollbacks into [lo, hi)
+        sscanf(pz, "%u:%u", &pause_lo, &pause_hi);
+    }
+    const bool stress_paused = pause_hi && f >= pause_lo && f < pause_hi + s_stress + 1;
+    if (s_stress && f > s_start_frame + s_stress && f >= s_stress_from && fight && !stress_paused)
+    {
+      const u32 t = f - 1 - (std::rand() % s_stress);
+      if (!CardLocked(t) && t > s_stall_guard)  // card activity / counter stalls ran in lockstep: never mispredicted
+        s_mispredict_from = t;
+    }
   }
 
   // too far ahead of the other side (or a fight that ended on this machine with frames still
@@ -3948,7 +4331,25 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     s_fs_last_busy = std::max(s_fs_last_busy, f);
     s_fs_real_busy = std::max(s_fs_real_busy, f);
   }
-  const bool lockstep = s_settings.load_lockstep && fight && f <= s_fs_last_busy + LOAD_TAIL;
+  if (s_async_on)
+  {
+    if (s_idle_wait.empty())
+      LearnIdleWaits(ram);
+    if (const u32 bt = BusyWorker(ram))
+    {
+      s_async_last = std::max(s_async_last, f);
+      s_async_last_thread = bt;
+      s_async_busy_frames++;
+    }
+  }
+  if (g_card_activity != s_card_seen)
+  {
+    s_card_seen = g_card_activity;
+    if (s_card_on)
+      s_card_last = std::max(s_card_last, f > 0 ? f - 1 : 0);
+  }
+  const bool card_lock = fight && (CardLocked(f) || (s_stall_guard && f <= s_stall_guard + 1));
+  const bool lockstep = (s_settings.load_lockstep && fight && f <= s_fs_last_busy + LOAD_TAIL) || card_lock;
   if (lockstep)
   {
     s_lockstep_frames++;
@@ -4049,6 +4450,15 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
         fprintf(stderr, "FFNYRB rollback %u: %u -> %u fight %u scr %08x\n", s_rollbacks, f, s, Rd32(ram, ADDR_FIGHT), Rd32(ram, 0x803EA56C));
       s_max_depth = std::max(s_max_depth, f - s);
       s_resim_target = f;
+      // Time-free re-simulation (26 October): the re-simulated frames take no emulated time. Before, every rollback
+      // added the re-simulation's cycles to emulated time, so per logic frame the hardware and the game's other
+      // threads (VI pacing, audio / streams, the memory-card thread, loader threads) got a different amount of time
+      // than without rollback and than on the other machine (lab, same inputs: 116 VIs more by frame 4299 in stress
+      // mode; the SELECT USER ID memory-card step then went another way and the menus never reached the fighter
+      // select). Frozen time keeps the hardware's view = the first runs only.
+      static const bool no_freeze = std::getenv("FFNY_RB_NOFREEZE") != nullptr;
+      if (!no_freeze)
+        system.GetCoreTiming().SetFrozen(true);
       // we are frame s again (registers restored); do the replaced instruction again
       ppc.gpr[3] = ppc.gpr[26];
       ppc.npc = ADDR_PRE + 4;
@@ -4089,6 +4499,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   DrawFrameBegin(ram, f, true);  // first run of update f (also right after a re-simulation caught up)
   Inject(ram, tick_obj, f);
   SaveState(system, f);
+  s_stall_now = false;
   LoaderDropConfirmed(std::min(MinConfirmed(), f - 1), f, ram);
   Wr32(ram, W_CONF, std::min(MinConfirmed(), f - 1));
   Wr32(ram, W_FRAME, f);
@@ -4099,6 +4510,8 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     s_hashed_upto = f;
   }
   AfConfirm(ram, SndReadyUpTo(f));
+  while (!s_music_sent.empty() && s_music_sent.front().first.frame + 1 <= SndReadyUpTo(f))
+    s_music_sent.pop_front();
   SndStartSends(ppc, SndReadyUpTo(f));
 }
 

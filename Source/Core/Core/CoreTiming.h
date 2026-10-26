@@ -136,6 +136,13 @@ public:
   // Pretend that the main CPU has executed enough cycles to reach the next event.
   void Idle();
 
+  // FFNY rollback: while frozen (re-simulated frames) emulated time stands still - the re-simulation's cycles are not
+  // added to the global timer, so the hardware (VI, audio, memory card, other game threads) sees only the first runs
+  void SetFrozen(bool frozen) { m_frozen = frozen; }
+  bool IsFrozen() const { return m_frozen; }
+  u64 GetFrozenCycles() const { return m_frozen_cycles; }
+  u64 GetFrozenIdleCycles() const { return m_frozen_idle_cycles; }
+
   // Clear all pending events. This should ONLY be done on exit or state load.
   void ClearPendingEvents();
 
@@ -207,6 +214,10 @@ private:
 
   // Are we in a function that has been called from Advance()
   bool m_is_global_timer_sane = false;
+  bool m_frozen = false;
+  bool m_idle_in_frozen = false;
+  u64 m_frozen_cycles = 0;
+  u64 m_frozen_idle_cycles = 0;
 
   EventType* m_ev_lost = nullptr;
 

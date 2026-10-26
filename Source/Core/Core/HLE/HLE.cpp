@@ -28,7 +28,7 @@ namespace HLE
 static std::map<u32, u32> s_hooked_addresses;
 
 // clang-format off
-constexpr std::array<Hook, 91> os_patches{{
+constexpr std::array<Hook, 111> os_patches{{
     // Placeholder, os_patches[0] is the "non-existent function" index
     {"FAKE_TO_SKIP_0",               HLE_Misc::UnimplementedFunction,       HookType::Replace, HookFlag::Generic},
 
@@ -74,6 +74,26 @@ constexpr std::array<Hook, 91> os_patches{{
     {"FFNYRollbackAfFind",           FFNYRollback::HookAfFind,              HookType::Replace, HookFlag::Fixed},
     {"FFNYRollbackAfRelease",        FFNYRollback::HookAfRelease,           HookType::Replace, HookFlag::Fixed},
     {"FFNYRollbackAfBufAlloc",       FFNYRollback::HookAfBufAlloc,          HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackAsyncSend", FFNYRollback::HookAsyncSend, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard0", FFNYRollback::HookCardBarrierN<0>, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard1", FFNYRollback::HookCardBarrierN<1>, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard2", FFNYRollback::HookCardBarrierN<2>, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard3", FFNYRollback::HookCardBarrierN<3>, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard4", FFNYRollback::HookCardBarrierN<4>, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard5", FFNYRollback::HookCardBarrierN<5>, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard6", FFNYRollback::HookCardBarrierN<6>, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard7", FFNYRollback::HookCardBarrierN<7>, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard8", FFNYRollback::HookCardBarrierN<8>, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard9", FFNYRollback::HookCardBarrierN<9>, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard10", FFNYRollback::HookCardBarrierN<10>, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard11", FFNYRollback::HookCardBarrierN<11>, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard12", FFNYRollback::HookCardBarrierN<12>, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard13", FFNYRollback::HookCardBarrierN<13>, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard14", FFNYRollback::HookCardBarrierN<14>, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard15", FFNYRollback::HookCardBarrierN<15>, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard16", FFNYRollback::HookCardBarrierN<16>, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard17", FFNYRollback::HookCardBarrierN<17>, HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackCard18", FFNYRollback::HookCardBarrierN<18>, HookType::Replace, HookFlag::Fixed},
     {"FFNYRollbackSysAlloc",         FFNYRollback::HookSysAlloc,            HookType::Start,   HookFlag::Fixed},
     {"FFNYRollbackCount0", FFNYRollback::HookCountN<0>, HookType::Start, HookFlag::Fixed},
     {"FFNYRollbackCount1", FFNYRollback::HookCountN<1>, HookType::Start, HookFlag::Fixed},

@@ -88,6 +88,10 @@ void HookAfSetId(const Core::CPUThreadGuard& guard);    // 0x80244DD0: async fil
 void HookAfFind(const Core::CPUThreadGuard& guard);     // 0x80244E00: id -> async file object
 void HookAfRelease(const Core::CPUThreadGuard& guard);  // 0x80244E48: async file object back to the pool
 void HookAfBufAlloc(const Core::CPUThreadGuard& guard);  // 0x802450D8: buffer of an async file load
+template <int I>
+void HookCardBarrierN(const Core::CPUThreadGuard& guard);  // memory-card API entry points (see FFNYRollback.cpp)
+extern u32 g_card_activity;
+void HookAsyncSend(const Core::CPUThreadGuard& guard);  // OSSendMessage: the logic wakes a worker thread  // memory card device commands (EXI chip selects) so far
 void HookSndPost(const Core::CPUThreadGuard& guard);
 // rollback in the menus: the game's main thread reads a clock that follows the logic frames (Jit64 / interpreter
 // mftb call JitTimeBase while g_virtual_tb is set; set before the JIT compiles, or the JIT cache is cleared)
