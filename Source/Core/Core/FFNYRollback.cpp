@@ -2429,7 +2429,8 @@ void HookFsWait(const Core::CPUThreadGuard& guard)
   if (std::getenv("FFNY_RB_FSDEBUG"))
     fprintf(stderr, "FSWAIT queue count %u state %u node %08x requester %08x\n", Rd32(ram, FS_QUEUE + 0x1C),
             Rd32(ram, 0x80401940), node, requester);
-  if (requester != 0x80432D10)
+  static const u32 extra_req = std::getenv("FFNY_RB_FSEXTRA") ? u32(std::strtoul(std::getenv("FFNY_RB_FSEXTRA"), nullptr, 16)) : 0;
+  if (requester != 0x80432D10 && !(extra_req && requester == extra_req))
   {
     s_fs_not_main++;
     return;
@@ -3324,8 +3325,28 @@ void HookSndMusic(const Core::CPUThreadGuard& guard)
 // 26 October, rollback in the menus)
 void HookSndExtra(const Core::CPUThreadGuard& guard)
 {
-  SndHook(guard, 0x80011164);
+  // volume: made at once in a first run (its natural time: held, the call landed while a stream had no player object
+  // and the game's callback 0x800D0ADC crashed), skipped in re-simulations (setting the same volume again; a
+  // re-simulated call crashed in the same callback)
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  const u32 fn = 0x80011164;
+  if (s_active && s_resim_target != 0 && Rd32(ram, 0x800000E4) == 0x80432D10)
+  {
+    ppc.gpr[3] = 1;
+    ppc.npc = ppc.spr[SPR_LR];
+    return;
+  }
+  const u32 ins = Rd32(ram, fn);
+  const u32 sp = ppc.gpr[1], nsp = sp + u32(s32(s16(ins & 0xFFFF)));
+  Wr32(ram, nsp, sp);
+  ppc.gpr[1] = nsp;
+  ppc.npc = fn + 4;
 }
+
+static u32 HeapFree(const u8* ram, u32 i, u32* largest, u32* nodes);
+static u32 HeapFreeFwd(const u8* ram, u32 i, u32* largest, u32* nodes) { return HeapFree(ram, i, largest, nodes); }
 
 void HookPreUpdate(const Core::CPUThreadGuard& guard)
 {
@@ -3333,6 +3354,21 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   auto& ppc = system.GetPPCState();
   u8* ram = system.GetMemory().GetRAM();
   s_vtb_steps = 0;
+  if (s_log && s_active && !s_snd_sending)
+  {
+    // lab: main heap free space / largest block and rbtag's free queues, every 25 logic frames
+    const u8* hr = guard.GetSystem().GetMemory().GetRAM();
+    const u32 fr = Rd32(hr, ADDR_COUNTER);
+    static u32 last = 0;
+    if (fr >= last + 25 || fr + 100 < last)
+    {
+      last = fr;
+      u32 lg = 0, nd = 0;
+      const u32 tot = HeapFreeFwd(hr, 0, &lg, &nd);
+      fprintf(stderr, "FFNYRB HEAP0 frame %u%s: free %u KB in %u blocks, largest %u KB; deferred %u, delayed %u\n", fr,
+              s_resim_target ? " (resim)" : "", tot / 1024, nd, lg / 1024, Rd32(hr, 0x8049B400), Rd32(hr, 0x8049C000));
+    }
+  }
   if (s_snd_sending)
   {
     // a held sound call returned here: the next one, or go on where the PRE hook left off

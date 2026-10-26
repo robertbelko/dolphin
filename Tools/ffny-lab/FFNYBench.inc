@@ -115,6 +115,19 @@ static void Watch()
 static void Step()
 {
   s_polls++;
+  {
+    // FFNY_BENCH_CTR: waits / presses count logic frames (0x80440C24 changes) instead of pad polls, so runs with a
+    // different emulation speed (lab stress mode) get the same input on the same logic frame
+    static const bool ctr_mode = getenv("FFNY_BENCH_CTR") != nullptr;
+    static u32 last_ctr = 0xFFFFFFFF;
+    if (ctr_mode)
+    {
+      const u32 c = FFNYBench_Read32(0x80440C24);
+      if (c == last_ctr)
+        return;
+      last_ctr = c;
+    }
+  }
   if (FFNYBench_Read32(0x803F1000) == 1) Watch();
   while (s_pc < s_steps.size())
   {
