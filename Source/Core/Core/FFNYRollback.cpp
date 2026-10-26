@@ -3143,7 +3143,16 @@ u64 JitTimeBase()
   if (!s_active || !s_vtb_mode)
     return real;
   const u8* ram = system.GetMemory().GetRAM();
-  if (!ram || Rd32(ram, 0x800000E4) != 0x80432D10)
+  // only inside the logic update: the main loop's tick() (0x800EC144) paces the loop with the clock, and a clock that
+  // only moves with the updates froze it (lab: logic counter stuck at 2992 on the title screen)
+  if (!ram || Rd32(ram, 0x800000E4) != 0x80432D10 || s_phase != 'U')
+    return real;
+  // only the game's own code: the SDK (0x80240000 and up: OS alarms / sleeps, DVD, AI ...) times hardware with the
+  // real clock (OSSetAlarm from 0x80274C70 read OSGetTime 0x80277A44 in the menus); OSGetTime / OSGetTick called by
+  // game code count as the game's
+  const u32 pc = ppc.pc, lr = ppc.spr[SPR_LR];
+  const bool game_code = pc < 0x80240000 || (pc >= 0x80277A40 && pc < 0x80277A70 && lr < 0x80240000);
+  if (!game_code)
     return real;
   const u32 f = Rd32(ram, ADDR_COUNTER);
   if (!s_vtb_anchor)
@@ -3151,7 +3160,15 @@ u64 JitTimeBase()
     s_vtb_anchor = real;
     s_vtb_frame0 = f;
   }
-  return s_vtb_anchor + u64(s32(f - s_vtb_frame0)) * 675000 + (++s_vtb_steps);
+  ++s_vtb_steps;
+  if (s_log && (s_vtb_steps == 50 || s_vtb_steps == 5000))
+  {
+    static u32 shown = 0;
+    if (shown++ < 60)
+      fprintf(stderr, "FFNYRB VTB frame %u: %u reads in this update, pc %08x lr %08x\n", f, s_vtb_steps, ppc.pc,
+              ppc.spr[SPR_LR]);
+  }
+  return s_vtb_anchor + u64(s32(f - s_vtb_frame0)) * 675000 + s_vtb_steps;
 }
 
 void HookSndMusic(const Core::CPUThreadGuard& guard)
