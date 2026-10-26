@@ -111,6 +111,8 @@ struct SavedState
   u32 frame = 0xFFFFFFFF;
   std::vector<std::pair<u32, u32>> ranges;
   std::vector<u8> data;
+  std::vector<std::pair<u32, u32>> vranges;  // fake VMEM (0x7E000000..) offsets: heaps that live there
+  std::vector<u8> vdata;
   u32 gpr[32];
   PowerPC::PairedSingle ps[32];
   PowerPC::ConditionRegister cr;
@@ -264,6 +266,75 @@ bool IsRemote(int port)
   return (s_settings.active_ports >> port & 1) && !(s_settings.local_ports >> port & 1);
 }
 
+// Heaps that live in fake VMEM (heap 4 at 0x7E000010: the Apt / Flash front end's heap). Its block headers and the
+// contents of its used, untagged blocks are part of the rollback state, like heap 0's; without them a rewind restored
+// the front end's pointers (in MEM1) but not the heap they point into (lab 26 October, rollback in the menus: crash in
+// the heap code 0x80249818 freeing 0x7E128000 from the front end at 0x801A315C).
+constexpr u32 VMEM_BASE = 0x7E000000, VMEM_SIZE = 0x02000000;
+u32 VRd32(const u8* vmem, u32 a)
+{
+  const u32 o = a - VMEM_BASE;
+  if (o > VMEM_SIZE - 4)
+    return 0;
+  return (u32(vmem[o]) << 24) | (u32(vmem[o + 1]) << 16) | (u32(vmem[o + 2]) << 8) | vmem[o + 3];
+}
+void BuildVRanges(const u8* ram, const u8* vmem, std::vector<std::pair<u32, u32>>& out)
+{
+  out.clear();
+  if (!vmem)
+    return;
+  for (u32 k = 0; k < 16; k++)
+  {
+    const u32 h = Rd32(ram, 0x8040BD70 + 4 * k);
+    if (h < VMEM_BASE || h >= VMEM_BASE + VMEM_SIZE)
+      continue;
+    const u32 base = VRd32(vmem, h + 8), end = VRd32(vmem, h + 0xC);
+    if (base < VMEM_BASE || end > VMEM_BASE + VMEM_SIZE || end <= base)
+      continue;
+    out.push_back({std::min(h, base) - VMEM_BASE, base + 0x90 - VMEM_BASE});  // descriptor
+    // its blocks are page-aligned (headers at 0x...FF0) and doubly linked (+8 next, +0xC previous): find the first
+    // one by walking back from the free-list head (descriptor +0x20)
+    auto is_block = [&](u32 b) {
+      const u32 m = VRd32(vmem, b) >> 16;
+      return b >= base && b < end && (m == 0x424D || m == 0x4246);
+    };
+    u32 a = VRd32(vmem, h + 0x20), n = 0;
+    if (!is_block(a))
+      a = base + 0x90;
+    while (n++ < 40000)
+    {
+      const u32 pv = VRd32(vmem, a + 0xC);
+      if (!is_block(pv) || pv >= a)
+        break;
+      a = pv;
+    }
+    n = 0;
+    while (a >= base && a < end && n < 40000)
+    {
+      const u32 w = VRd32(vmem, a), sz = VRd32(vmem, a + 4), nx = VRd32(vmem, a + 8);
+      out.push_back({a - VMEM_BASE, a + ((w >> 16) == 0x4246 ? 0x18 : 0x10) - VMEM_BASE});
+      if ((w >> 16) == 0x424D && sz && !(w & 0x80) && a + 16 + sz <= end)
+        out.push_back({a + 16 - VMEM_BASE, a + 16 + sz - VMEM_BASE});
+      if (nx <= a)
+        break;
+      a = nx;
+      n++;
+    }
+  }
+  std::sort(out.begin(), out.end());
+  std::vector<std::pair<u32, u32>> r;
+  for (auto p : out)
+  {
+    if (p.first >= p.second)
+      continue;
+    if (!r.empty() && p.first <= r.back().second)
+      r.back().second = std::max(r.back().second, p.second);
+    else
+      r.push_back(p);
+  }
+  out.swap(r);
+}
+
 void BuildRanges(const u8* ram, u32 size, std::vector<std::pair<u32, u32>>& out)
 {
   auto rd = [&](u32 a) { return Rd32(ram, a); };
@@ -409,6 +480,7 @@ void SaveState(Core::System& system, u32 frame)
   auto& ppc = system.GetPPCState();
   const u8* ram = memory.GetRAM();
   SavedState& s = s_states[frame % NSLOTS];
+  const bool resaved = s.frame == frame;  // lab stress: this slot already holds this frame (a re-simulation)
   if (s_stress && s.frame == frame)
   {
     // lab stress: the re-simulated state of this frame must equal the first one
@@ -471,6 +543,58 @@ void SaveState(Core::System& system, u32 frame)
     memcpy(s.data.data() + o, ram + lo, hi - lo);
     o += hi - lo;
   }
+  {
+    const u8* vmem = memory.GetFakeVMEM();
+    if (s_stress && vmem && resaved && !s.vranges.empty())
+    {
+      // lab stress: the re-simulated VMEM heap must equal the first run's
+      size_t vo = 0;
+      u32 vdiff = 0;
+      for (auto [lo, hi] : s.vranges)
+      {
+        for (u32 x = lo; x + 4 <= hi; x += 4)
+          if (memcmp(vmem + x, s.vdata.data() + vo + (x - lo), 4) != 0 && vdiff++ < 8)
+            fprintf(stderr, "FFNYRB STRESS frame %u: VMEM %08x differs\n", frame, x + VMEM_BASE);
+        vo += hi - lo;
+      }
+      if (vdiff)
+        fprintf(stderr, "FFNYRB STRESS frame %u: %u VMEM words differ\n", frame, vdiff);
+    }
+    // outside fights only: in a fight the VMEM heap holds ~5 MB of loaded data the fight logic does not change
+    // (fights ran without it), and copying it every frame would cost speed
+    if (Rd32(ram, ADDR_FIGHT) == 1 && !(Rd32(ram, ADDR_FIGHT_FLAGS) & FIGHT_DECIDED))
+      s.vranges.clear();
+    else
+      BuildVRanges(ram, vmem, s.vranges);
+    size_t vt = 0;
+    for (auto [lo, hi] : s.vranges)
+      vt += hi - lo;
+    s.vdata.resize(vt);
+    size_t vo = 0;
+    for (auto [lo, hi] : s.vranges)
+    {
+      memcpy(s.vdata.data() + vo, vmem + lo, hi - lo);
+      vo += hi - lo;
+    }
+    static u32 shown_at = 0;
+    if (vmem && (frame >= shown_at + 300 || frame == 3280))
+    {
+      shown_at = frame;
+      const u32 h = Rd32(ram, 0x8040BD70 + 16);
+      fprintf(stderr, "FFNYRB VMEM frame %u: %zu ranges, %zu KB; heap 4 desc %08x words %08x %08x %08x %08x %08x %08x\n",
+              frame, s.vranges.size(), vt / 1024, h, VRd32(vmem, h), VRd32(vmem, h + 4), VRd32(vmem, h + 8),
+              VRd32(vmem, h + 12), VRd32(vmem, h + 16), VRd32(vmem, h + 20));
+      if (frame == 3280 || frame == 2500)
+      {
+        for (u32 x = 0x8060C050; x < 0x8060C0E0; x += 16)
+          fprintf(stderr, "FFNYRB HEAP0 %08x: %08x %08x %08x %08x\n", x, Rd32(ram, x), Rd32(ram, x + 4), Rd32(ram, x + 8), Rd32(ram, x + 12));
+      }
+      if (frame == 3280 || frame == 2500)
+        for (u32 x : {0x7E000010u, 0x7E000020u, 0x7E000030u, 0x7E000040u, 0x7E000050u, 0x7E000060u, 0x7E000070u, 0x7E125FF0u})
+          fprintf(stderr, "FFNYRB VMEM %08x: %08x %08x %08x %08x\n", x, VRd32(vmem, x), VRd32(vmem, x + 4),
+                  VRd32(vmem, x + 8), VRd32(vmem, x + 12));
+    }
+  }
   memcpy(s.gpr, ppc.gpr, sizeof s.gpr);
   memcpy(s.ps, ppc.ps, sizeof s.ps);
   s.cr = ppc.cr;
@@ -499,6 +623,15 @@ bool LoadState(Core::System& system, u32 frame)
   {
     memcpy(ram + lo, s.data.data() + o, hi - lo);
     o += hi - lo;
+  }
+  if (u8* vmem = system.GetMemory().GetFakeVMEM())
+  {
+    size_t vo = 0;
+    for (auto [lo, hi] : s.vranges)
+    {
+      memcpy(vmem + lo, s.vdata.data() + vo, hi - lo);
+      vo += hi - lo;
+    }
   }
   memcpy(ppc.gpr, s.gpr, sizeof s.gpr);
   memcpy(ppc.ps, s.ps, sizeof s.ps);
@@ -1158,6 +1291,8 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
     for (u32 i = 0; i < 16; i++)
     {
       const u32 h = Rd32(ram, 0x8040BD70 + 4 * i);
+      if (h && (h & 0xFE000000) != 0x80000000)
+        fprintf(stderr, "FFNYRB heap %u: desc %08x (outside MEM1)\n", i, h);
       if ((h & 0xFE000000) != 0x80000000)
         continue;
       const u32 base = Rd32(ram, h + 8), end = Rd32(ram, h + 0xC);
@@ -1709,7 +1844,8 @@ void OnVIField(Core::System& system)
   if (Rd32(ram, ADDR_PRE) != INSN_PRE || Rd32(ram, ADDR_TICK) != INSN_TICK)
     return;
   const u32 hook = Rd32(ram, ADDR_HEAP_HOOK);
-  if (hook < 0x8049A410 || hook >= 0x8049B400 || Rd32(ram, 0x8049A408) != 0x52425435)  // "RBT5"
+  const u32 rbt = Rd32(ram, 0x8049A408);
+  if (hook < 0x8049A410 || hook >= 0x8049B400 || (rbt != 0x52425435 && rbt != 0x52425436))  // "RBT5" / "RBT6"
   {
     // the game installs the hook in main() right after the memory init; before that it is 0
     if (hook != 0)
@@ -1740,6 +1876,13 @@ void OnVIField(Core::System& system)
     Wr32(wram, 0x8049A694, 0x8063B5F4);  // lwz r3,-0x4A0C(r3) = 0x8049B5F4
     Wr32(wram, 0x8049A8B0, 0x3C608049);  // lis r3,0x8049
     Wr32(wram, 0x8049A8B8, 0x6063B5F4);  // ori r3,r3,0xB5F4
+    s_rbtag_redirected = true;
+  }
+  else if (rbt == 0x52425436)
+  {
+    // rbtag v6 reads W_FIGHTW itself (and keeps the main thread's frees of its tagged main-heap blocks in a list that
+    // is part of the rollback state, done 12 logic frames later)
+    Wr32(memory.GetRAM(), W_FIGHTW, 0);
     s_rbtag_redirected = true;
   }
   if (Rd32(ram, OS_RECV_SLEEP) == 0x48002839)  // bl 0x802776E8

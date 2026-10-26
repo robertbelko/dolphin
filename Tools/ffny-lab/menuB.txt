@@ -1,0 +1,3621 @@
+# FFNY Babylon benchmark (Robert's GCI save in Card A). Screen counter 0x803ea56c, logic counter 0x80440C24
+untilge 80440C24 600 20000
+press 0 100 18 180
+untilge 80440C24 800 20000
+press 0 100 18 180
+untilge 8042ffdc 1 20000
+mashge 0 100 18 180 80440C24 96c 200000
+mark title
+mark mainmenu
+wait 180
+wait 108
+wait 198
+untilge 80440C24 cbb 200000
+wait 180
+wait 198
+untilge 80440C24 d79 200000
+wait 180
+wait 198
+untilge 80440C24 e35 200000
+wait 180
+wait 198
+untilge 80440C24 f1c 200000
+wait 180
+wait 198
+press 1 1000 18 180
+untilge 80440C24 103c 200000
+wait 90
+wait 198
+untilge 80440C24 10cc 200000
+wait 90
+press 1 100 18 180
+wait 270
+wait 90
+wait 198
+untilge 80440C24 1267 200000
+mark fighterselect
+wait 270
+wait 198
+press 1 2 18 90             # P2 RIGHT -> Crack
+press 1 100 18 180
+untilge 80440C24 13e3 200000
+wait 90
+wait 198
+untilge 80440C24 1471 200000
+mark venueselect
+wait 360
+wait 138
+wait 138
+wait 138
+wait 138
+wait 138
+wait 90
+wait 198
+mark fight
+wait 180
+pad 1 0 255 128
+wait 600
+rel 1
+wait 180
+
+mark f0
+pad 1 400 255 255
+wait 24
+pad 1 0 0 255
+wait 5
+pad 1 800 0 128
+wait 21
+pad 1 100 255 0
+wait 17
+pad 1 200 0 0
+wait 23
+pad 1 200 0 0
+wait 10
+pad 1 0 0 128
+wait 14
+pad 1 40 0 0
+wait 26
+wait 4
+wait 2
+pad 1 100 128 128
+wait 9
+pad 1 400 128 255
+wait 22
+pad 1 40 128 0
+wait 13
+pad 1 40 128 0
+wait 19
+pad 1 100 128 0
+wait 27
+pad 1 20 128 128
+wait 16
+pad 1 100 255 0
+wait 23
+pad 1 0 128 128
+wait 20
+pad 1 0 128 0
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+wait 22
+pad 1 100 128 0
+wait 10
+pad 1 400 0 128
+wait 12
+pad 1 400 255 128
+wait 13
+pad 1 200 255 255
+wait 13
+pad 1 100 0 255
+wait 21
+pad 1 40 255 128
+wait 30
+pad 1 800 0 0
+wait 24
+pad 1 0 0 0
+wait 27
+wait 4
+wait 2
+pad 1 0 128 0
+wait 9
+pad 1 100 128 128
+wait 8
+pad 1 20 128 128
+wait 26
+pad 1 400 128 128
+wait 16
+pad 1 0 255 0
+wait 24
+pad 1 100 128 128
+wait 20
+pad 1 400 0 128
+wait 26
+pad 1 0 128 128
+wait 21
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+pad 1 0 128 128
+wait 28
+pad 1 400 255 0
+wait 22
+pad 1 20 128 128
+wait 25
+pad 1 0 255 255
+wait 25
+pad 1 400 255 128
+wait 27
+pad 1 0 0 255
+wait 18
+pad 1 200 255 0
+wait 10
+pad 1 400 255 0
+wait 27
+pad 1 200 255 255
+wait 4
+wait 2
+wait 20
+pad 1 20 255 255
+wait 12
+pad 1 200 255 128
+wait 23
+pad 1 0 255 0
+wait 24
+pad 1 200 0 0
+wait 8
+pad 1 800 0 255
+wait 5
+pad 1 800 255 255
+wait 6
+pad 1 40 128 0
+wait 15
+pad 1 0 0 255
+wait 30
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+pad 1 20 255 128
+wait 7
+pad 1 400 255 128
+wait 15
+pad 1 800 255 255
+wait 21
+pad 1 200 255 128
+wait 22
+pad 1 20 0 128
+wait 30
+pad 1 100 128 255
+wait 23
+pad 1 40 255 128
+wait 17
+pad 1 400 128 255
+wait 16
+wait 4
+wait 2
+pad 1 20 128 255
+wait 13
+pad 1 100 128 128
+wait 19
+pad 1 100 0 255
+wait 23
+pad 1 100 0 128
+wait 4
+pad 1 400 0 128
+wait 29
+pad 1 400 0 255
+wait 13
+pad 1 800 255 255
+wait 23
+pad 1 0 0 128
+wait 13
+pad 1 20 128 255
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+wait 20
+pad 1 400 255 255
+wait 30
+pad 1 100 128 255
+wait 18
+pad 1 20 0 0
+wait 17
+pad 1 20 255 255
+wait 24
+pad 1 800 128 255
+wait 27
+pad 1 0 0 128
+wait 30
+pad 1 20 128 255
+wait 28
+pad 1 200 128 255
+wait 21
+wait 4
+wait 2
+pad 1 200 128 255
+wait 21
+pad 1 40 0 128
+wait 30
+pad 1 100 128 255
+wait 17
+pad 1 800 0 0
+wait 30
+pad 1 40 0 255
+wait 8
+pad 1 200 0 255
+wait 9
+pad 1 20 0 0
+wait 21
+pad 1 40 0 128
+wait 5
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+pad 1 40 128 255
+wait 8
+pad 1 400 255 255
+wait 19
+pad 1 400 0 0
+wait 26
+pad 1 40 255 255
+wait 13
+pad 1 200 128 0
+wait 21
+pad 1 20 0 0
+wait 15
+pad 1 200 0 255
+wait 4
+pad 1 20 255 0
+wait 6
+pad 1 20 128 0
+wait 4
+wait 2
+wait 16
+pad 1 100 255 0
+wait 21
+pad 1 0 0 128
+wait 25
+pad 1 100 0 255
+wait 19
+pad 1 40 255 128
+wait 15
+pad 1 400 255 255
+wait 15
+pad 1 200 255 128
+wait 24
+pad 1 0 128 255
+wait 5
+pad 1 40 0 128
+wait 6
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+pad 1 200 0 0
+wait 5
+pad 1 0 128 0
+wait 17
+pad 1 800 128 128
+wait 18
+pad 1 40 0 0
+wait 15
+pad 1 200 255 128
+wait 7
+pad 1 40 0 0
+wait 19
+pad 1 400 0 255
+wait 4
+pad 1 0 0 0
+wait 29
+wait 4
+wait 2
+pad 1 800 255 0
+wait 27
+pad 1 40 0 255
+wait 11
+pad 1 800 255 128
+wait 25
+pad 1 400 128 0
+wait 27
+pad 1 0 0 0
+wait 25
+pad 1 20 128 255
+wait 12
+pad 1 800 255 128
+wait 9
+pad 1 0 255 255
+wait 15
+pad 1 200 128 0
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+wait 19
+pad 1 40 0 128
+wait 16
+pad 1 400 128 128
+wait 13
+pad 1 200 0 255
+wait 20
+pad 1 20 0 0
+wait 14
+pad 1 20 0 255
+wait 6
+pad 1 20 0 128
+wait 21
+pad 1 20 128 255
+wait 24
+pad 1 0 128 255
+wait 18
+wait 4
+wait 2
+pad 1 100 0 128
+wait 19
+pad 1 400 0 0
+wait 21
+pad 1 40 0 128
+wait 22
+pad 1 100 128 255
+wait 11
+pad 1 0 128 128
+wait 7
+pad 1 800 255 0
+wait 13
+pad 1 100 128 0
+wait 30
+pad 1 40 0 255
+wait 17
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+pad 1 20 0 128
+wait 6
+pad 1 400 128 255
+wait 14
+pad 1 20 255 255
+wait 4
+pad 1 200 128 128
+wait 12
+pad 1 20 128 0
+wait 15
+pad 1 100 0 255
+wait 23
+pad 1 100 128 255
+wait 23
+pad 1 200 128 128
+wait 29
+pad 1 400 128 0
+wait 4
+wait 2
+wait 18
+pad 1 800 0 255
+wait 9
+pad 1 20 0 0
+wait 8
+pad 1 100 0 0
+wait 5
+pad 1 40 128 128
+wait 18
+pad 1 0 0 128
+wait 21
+pad 1 400 128 0
+wait 30
+pad 1 800 128 128
+wait 8
+pad 1 800 0 0
+wait 9
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+pad 1 400 0 128
+wait 19
+pad 1 20 0 0
+wait 16
+pad 1 20 255 255
+wait 23
+pad 1 400 255 0
+wait 23
+pad 1 20 128 255
+wait 26
+pad 1 0 255 255
+wait 21
+pad 1 200 128 128
+wait 22
+pad 1 200 128 128
+wait 6
+wait 4
+wait 2
+pad 1 20 255 255
+wait 17
+pad 1 40 0 0
+wait 5
+pad 1 400 128 255
+wait 29
+pad 1 20 255 0
+wait 19
+pad 1 200 128 255
+wait 17
+pad 1 800 128 0
+wait 28
+pad 1 40 255 128
+wait 16
+pad 1 20 255 255
+wait 15
+pad 1 400 128 128
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+wait 29
+pad 1 100 255 128
+wait 28
+pad 1 100 255 255
+wait 24
+pad 1 40 128 128
+wait 11
+pad 1 20 0 128
+wait 17
+pad 1 400 0 128
+wait 4
+pad 1 20 255 255
+wait 22
+pad 1 400 255 0
+wait 24
+pad 1 40 0 0
+wait 19
+wait 4
+wait 2
+pad 1 400 0 128
+wait 24
+pad 1 20 128 0
+wait 4
+pad 1 100 0 128
+wait 8
+pad 1 20 128 255
+wait 14
+pad 1 20 255 255
+wait 7
+pad 1 200 0 128
+wait 15
+pad 1 40 0 0
+wait 16
+pad 1 100 0 255
+wait 15
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+pad 1 800 128 128
+wait 27
+pad 1 40 128 0
+wait 7
+pad 1 0 255 0
+wait 14
+pad 1 800 255 255
+wait 28
+pad 1 100 128 128
+wait 14
+pad 1 800 0 0
+wait 17
+pad 1 40 0 0
+wait 12
+pad 1 800 0 255
+wait 16
+pad 1 800 128 0
+wait 4
+wait 2
+wait 29
+pad 1 400 0 0
+wait 12
+pad 1 0 255 0
+wait 5
+pad 1 100 128 255
+wait 6
+pad 1 800 255 0
+wait 5
+pad 1 800 255 255
+wait 24
+pad 1 100 0 0
+wait 17
+pad 1 0 128 128
+wait 4
+pad 1 200 128 0
+wait 17
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+pad 1 200 128 128
+wait 10
+pad 1 400 128 0
+wait 25
+pad 1 0 128 0
+wait 6
+pad 1 800 0 0
+wait 24
+pad 1 400 255 128
+wait 8
+pad 1 400 255 0
+wait 4
+pad 1 400 0 255
+wait 15
+pad 1 400 255 255
+wait 21
+wait 4
+wait 2
+pad 1 100 255 128
+wait 15
+pad 1 20 255 128
+wait 11
+pad 1 100 255 0
+wait 27
+pad 1 800 255 255
+wait 5
+pad 1 800 0 255
+wait 26
+pad 1 100 255 0
+wait 5
+pad 1 0 0 255
+wait 13
+pad 1 40 0 128
+wait 22
+pad 1 20 255 128
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+wait 16
+pad 1 40 0 255
+wait 18
+pad 1 20 255 128
+wait 7
+pad 1 400 128 0
+wait 18
+pad 1 100 255 255
+wait 10
+pad 1 100 255 0
+wait 7
+pad 1 400 128 128
+wait 19
+pad 1 100 128 128
+wait 30
+pad 1 800 0 255
+wait 29
+wait 4
+wait 2
+pad 1 20 128 0
+wait 23
+pad 1 40 128 255
+wait 7
+pad 1 40 255 128
+wait 25
+pad 1 100 255 128
+wait 7
+pad 1 20 128 255
+wait 22
+pad 1 100 255 0
+wait 27
+pad 1 100 0 255
+wait 18
+pad 1 20 255 0
+wait 24
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+pad 1 800 128 128
+wait 18
+pad 1 0 128 255
+wait 25
+pad 1 200 255 0
+wait 12
+pad 1 800 0 0
+wait 15
+pad 1 800 255 255
+wait 24
+pad 1 200 128 0
+wait 25
+pad 1 400 0 0
+wait 17
+pad 1 20 255 0
+wait 21
+pad 1 800 255 128
+wait 4
+wait 2
+wait 30
+pad 1 100 0 128
+wait 17
+pad 1 800 255 255
+wait 24
+pad 1 0 0 128
+wait 7
+pad 1 0 255 0
+wait 5
+pad 1 200 255 128
+wait 27
+pad 1 800 128 0
+wait 13
+pad 1 400 128 128
+wait 6
+pad 1 200 0 0
+wait 29
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+mark g0
+pad 1 100 128 128
+wait 6
+pad 1 20 255 128
+wait 24
+pad 1 400 128 0
+wait 18
+pad 1 0 0 0
+wait 23
+pad 1 40 255 255
+wait 16
+pad 1 400 255 128
+wait 30
+pad 1 20 0 128
+wait 25
+pad 1 400 255 255
+wait 6
+wait 4
+wait 2
+pad 1 0 255 128
+wait 13
+pad 1 40 255 128
+wait 13
+pad 1 400 128 128
+wait 16
+pad 1 100 0 255
+wait 10
+pad 1 0 0 128
+wait 11
+pad 1 40 0 255
+wait 18
+pad 1 0 255 0
+wait 29
+pad 1 400 255 128
+wait 24
+pad 1 20 255 255
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+wait 7
+pad 1 20 255 128
+wait 24
+pad 1 20 128 255
+wait 14
+pad 1 20 128 128
+wait 17
+pad 1 40 0 255
+wait 5
+pad 1 400 128 255
+wait 13
+pad 1 800 128 255
+wait 20
+pad 1 40 255 0
+wait 9
+pad 1 100 255 128
+wait 28
+wait 4
+wait 2
+pad 1 200 255 0
+wait 19
+pad 1 200 0 255
+wait 11
+pad 1 100 128 128
+wait 24
+pad 1 400 0 0
+wait 25
+pad 1 40 255 128
+wait 17
+pad 1 40 0 128
+wait 21
+pad 1 0 255 255
+wait 5
+pad 1 200 128 0
+wait 18
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+pad 1 100 0 128
+wait 18
+pad 1 400 255 0
+wait 4
+pad 1 20 128 255
+wait 23
+pad 1 200 0 255
+wait 18
+pad 1 40 128 0
+wait 7
+pad 1 200 0 128
+wait 4
+pad 1 400 0 255
+wait 16
+pad 1 800 255 0
+wait 10
+pad 1 200 128 0
+wait 4
+wait 2
+wait 12
+pad 1 40 255 255
+wait 12
+pad 1 800 128 255
+wait 25
+pad 1 800 255 0
+wait 10
+pad 1 40 255 0
+wait 10
+pad 1 400 255 0
+wait 26
+pad 1 0 0 255
+wait 13
+pad 1 200 255 128
+wait 7
+pad 1 20 128 128
+wait 27
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+pad 1 400 0 0
+wait 27
+pad 1 400 255 128
+wait 14
+pad 1 200 128 128
+wait 21
+pad 1 800 128 0
+wait 30
+pad 1 800 0 0
+wait 25
+pad 1 100 0 255
+wait 14
+pad 1 400 0 128
+wait 24
+pad 1 100 255 255
+wait 24
+wait 4
+wait 2
+pad 1 20 128 0
+wait 18
+pad 1 400 255 128
+wait 22
+pad 1 200 128 0
+wait 22
+pad 1 400 128 0
+wait 9
+pad 1 100 128 0
+wait 15
+pad 1 400 0 128
+wait 14
+pad 1 40 0 255
+wait 11
+pad 1 800 255 255
+wait 15
+pad 1 0 255 255
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+wait 18
+pad 1 20 255 128
+wait 17
+pad 1 800 128 0
+wait 13
+pad 1 20 255 0
+wait 9
+pad 1 40 128 0
+wait 22
+pad 1 100 0 0
+wait 13
+pad 1 800 255 0
+wait 5
+pad 1 200 255 128
+wait 20
+pad 1 0 128 128
+wait 23
+wait 4
+wait 2
+pad 1 400 128 128
+wait 23
+pad 1 400 128 128
+wait 24
+pad 1 0 128 128
+wait 8
+pad 1 20 128 128
+wait 12
+pad 1 100 255 128
+wait 14
+pad 1 200 128 255
+wait 20
+pad 1 800 0 0
+wait 30
+pad 1 200 255 128
+wait 22
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+pad 1 100 255 128
+wait 7
+pad 1 400 0 0
+wait 5
+pad 1 400 128 255
+wait 10
+pad 1 0 128 0
+wait 15
+pad 1 40 0 0
+wait 7
+pad 1 200 0 255
+wait 7
+pad 1 0 128 128
+wait 12
+pad 1 400 0 128
+wait 9
+pad 1 0 0 128
+wait 4
+wait 2
+wait 19
+pad 1 40 255 255
+wait 28
+pad 1 40 255 0
+wait 13
+pad 1 400 0 128
+wait 8
+pad 1 200 128 128
+wait 11
+pad 1 0 255 255
+wait 4
+pad 1 800 128 128
+wait 12
+pad 1 400 128 0
+wait 25
+pad 1 200 0 0
+wait 22
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+pad 1 200 0 128
+wait 25
+pad 1 400 255 0
+wait 10
+pad 1 20 255 255
+wait 26
+pad 1 800 0 128
+wait 24
+pad 1 100 255 0
+wait 22
+pad 1 100 255 255
+wait 24
+pad 1 20 0 128
+wait 4
+pad 1 200 255 128
+wait 16
+wait 4
+wait 2
+pad 1 20 255 128
+wait 8
+pad 1 20 255 0
+wait 27
+pad 1 800 0 128
+wait 21
+pad 1 40 0 128
+wait 16
+pad 1 40 128 128
+wait 26
+pad 1 100 255 0
+wait 12
+pad 1 0 128 0
+wait 19
+pad 1 800 255 255
+wait 19
+pad 1 20 255 0
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+wait 10
+pad 1 400 255 255
+wait 9
+pad 1 0 255 255
+wait 25
+pad 1 0 255 255
+wait 11
+pad 1 40 0 128
+wait 28
+pad 1 800 255 255
+wait 9
+pad 1 800 128 255
+wait 22
+pad 1 40 255 0
+wait 8
+pad 1 40 128 255
+wait 24
+wait 4
+wait 2
+pad 1 200 0 128
+wait 26
+pad 1 200 0 0
+wait 30
+pad 1 800 0 0
+wait 28
+pad 1 20 255 255
+wait 24
+pad 1 200 0 128
+wait 20
+pad 1 400 0 255
+wait 14
+pad 1 200 0 255
+wait 12
+pad 1 0 255 0
+wait 18
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+pad 1 800 128 0
+wait 14
+pad 1 400 128 0
+wait 14
+pad 1 400 128 0
+wait 15
+pad 1 100 255 255
+wait 19
+pad 1 20 255 128
+wait 5
+pad 1 100 128 128
+wait 28
+pad 1 400 128 0
+wait 5
+pad 1 800 0 0
+wait 12
+pad 1 800 255 0
+wait 4
+wait 2
+wait 29
+pad 1 400 255 128
+wait 8
+pad 1 400 255 128
+wait 12
+pad 1 20 0 128
+wait 19
+pad 1 100 128 255
+wait 28
+pad 1 100 0 255
+wait 11
+pad 1 800 255 0
+wait 25
+pad 1 20 255 128
+wait 10
+pad 1 100 0 255
+wait 16
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+pad 1 800 128 255
+wait 11
+pad 1 200 0 128
+wait 19
+pad 1 100 255 255
+wait 21
+pad 1 100 255 128
+wait 5
+pad 1 200 128 255
+wait 30
+pad 1 200 128 0
+wait 25
+pad 1 200 0 128
+wait 24
+pad 1 800 0 128
+wait 19
+wait 4
+wait 2
+pad 1 100 128 128
+wait 25
+pad 1 200 0 255
+wait 12
+pad 1 400 255 255
+wait 5
+pad 1 400 0 0
+wait 16
+pad 1 20 128 128
+wait 17
+pad 1 200 255 0
+wait 14
+pad 1 40 128 255
+wait 23
+pad 1 100 128 0
+wait 15
+pad 1 20 0 128
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+wait 14
+pad 1 800 128 128
+wait 30
+pad 1 400 0 0
+wait 5
+pad 1 200 0 255
+wait 19
+pad 1 400 0 255
+wait 14
+pad 1 0 255 0
+wait 19
+pad 1 0 128 255
+wait 23
+pad 1 20 0 0
+wait 17
+pad 1 100 255 255
+wait 22
+wait 4
+wait 2
+pad 1 0 0 0
+wait 25
+pad 1 40 255 0
+wait 26
+pad 1 0 0 255
+wait 22
+pad 1 40 0 255
+wait 16
+pad 1 20 128 128
+wait 23
+pad 1 400 255 128
+wait 14
+pad 1 40 128 128
+wait 23
+pad 1 400 0 0
+wait 6
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+pad 1 800 255 255
+wait 7
+pad 1 800 128 0
+wait 19
+pad 1 0 255 255
+wait 12
+pad 1 40 255 0
+wait 22
+pad 1 800 0 255
+wait 6
+pad 1 40 255 255
+wait 11
+pad 1 100 0 128
+wait 28
+pad 1 800 255 0
+wait 12
+pad 1 20 255 0
+wait 4
+wait 2
+wait 22
+pad 1 20 255 128
+wait 20
+pad 1 100 0 0
+wait 21
+pad 1 40 255 128
+wait 4
+pad 1 0 128 255
+wait 12
+pad 1 800 0 128
+wait 9
+pad 1 800 255 128
+wait 19
+pad 1 0 128 128
+wait 28
+pad 1 40 0 255
+wait 27
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+pad 1 200 255 255
+wait 21
+pad 1 400 255 255
+wait 17
+pad 1 800 0 0
+wait 6
+pad 1 40 255 0
+wait 6
+pad 1 0 128 128
+wait 11
+pad 1 200 0 255
+wait 25
+pad 1 40 128 255
+wait 16
+pad 1 200 255 255
+wait 8
+wait 4
+wait 2
+pad 1 40 0 0
+wait 30
+pad 1 0 128 128
+wait 19
+pad 1 20 0 255
+wait 14
+pad 1 100 255 0
+wait 24
+pad 1 0 0 0
+wait 19
+pad 1 200 255 128
+wait 4
+pad 1 400 0 0
+wait 28
+pad 1 800 128 128
+wait 11
+pad 1 20 0 0
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+wait 10
+pad 1 40 255 128
+wait 24
+pad 1 400 255 128
+wait 10
+pad 1 20 255 128
+wait 8
+pad 1 200 128 255
+wait 7
+pad 1 200 128 255
+wait 30
+pad 1 400 0 128
+wait 27
+pad 1 0 128 0
+wait 9
+pad 1 400 128 0
+wait 7
+wait 4
+wait 2
+pad 1 20 0 128
+wait 27
+pad 1 100 128 0
+wait 25
+pad 1 800 0 255
+wait 9
+pad 1 40 0 255
+wait 25
+pad 1 400 128 128
+wait 11
+pad 1 100 255 128
+wait 27
+pad 1 20 255 255
+wait 7
+pad 1 800 128 255
+wait 6
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+pad 1 0 255 255
+wait 19
+pad 1 400 0 0
+wait 15
+pad 1 20 128 0
+wait 7
+pad 1 200 255 0
+wait 10
+pad 1 20 0 0
+wait 30
+pad 1 400 255 255
+wait 27
+pad 1 800 0 128
+wait 13
+pad 1 200 255 0
+wait 8
+pad 1 0 0 255
+wait 4
+wait 2
+wait 11
+pad 1 800 128 128
+wait 30
+pad 1 400 255 128
+wait 6
+pad 1 40 128 0
+wait 25
+pad 1 0 255 255
+wait 16
+pad 1 400 0 0
+wait 21
+pad 1 200 0 128
+wait 19
+pad 1 400 128 0
+wait 11
+pad 1 100 128 0
+wait 19
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+mark g1
+rel 1
+wait 60
+mark pause_g1
+wait 306
+mark unpause_g1
+wait 126
+pad 1 400 255 128
+wait 21
+pad 1 400 0 255
+wait 11
+pad 1 40 0 128
+wait 17
+pad 1 40 0 0
+wait 17
+pad 1 200 255 128
+wait 22
+pad 1 200 255 128
+wait 23
+pad 1 100 0 255
+wait 18
+pad 1 100 255 128
+wait 14
+wait 4
+wait 2
+pad 1 20 255 0
+wait 29
+pad 1 200 255 255
+wait 15
+pad 1 20 0 255
+wait 12
+pad 1 100 0 0
+wait 25
+pad 1 200 0 255
+wait 27
+pad 1 100 128 128
+wait 13
+pad 1 100 0 0
+wait 25
+pad 1 20 255 0
+wait 18
+pad 1 200 128 0
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+wait 21
+pad 1 0 128 0
+wait 14
+pad 1 200 0 128
+wait 29
+pad 1 200 128 255
+wait 25
+pad 1 20 128 255
+wait 30
+pad 1 400 255 255
+wait 15
+pad 1 20 255 128
+wait 10
+pad 1 200 255 128
+wait 22
+pad 1 100 128 128
+wait 8
+wait 4
+wait 2
+pad 1 0 0 128
+wait 16
+pad 1 20 128 128
+wait 8
+pad 1 800 255 0
+wait 29
+pad 1 20 128 128
+wait 25
+pad 1 400 255 128
+wait 8
+pad 1 40 0 255
+wait 19
+pad 1 20 128 128
+wait 5
+pad 1 800 0 0
+wait 9
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+pad 1 100 0 128
+wait 23
+pad 1 20 255 128
+wait 20
+pad 1 800 0 128
+wait 27
+pad 1 800 255 128
+wait 27
+pad 1 20 0 0
+wait 12
+pad 1 400 128 255
+wait 13
+pad 1 200 128 0
+wait 15
+pad 1 40 128 255
+wait 9
+pad 1 20 255 128
+wait 4
+wait 2
+wait 29
+pad 1 200 0 0
+wait 22
+pad 1 0 255 128
+wait 21
+pad 1 20 128 255
+wait 9
+pad 1 20 255 128
+wait 19
+pad 1 40 128 255
+wait 12
+pad 1 100 0 255
+wait 6
+pad 1 200 128 128
+wait 10
+pad 1 0 128 0
+wait 16
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+pad 1 200 0 255
+wait 9
+pad 1 40 255 128
+wait 9
+pad 1 0 255 255
+wait 20
+pad 1 400 0 128
+wait 26
+pad 1 20 255 255
+wait 21
+pad 1 40 128 0
+wait 16
+pad 1 200 128 255
+wait 23
+pad 1 400 128 255
+wait 27
+wait 4
+wait 2
+pad 1 20 0 0
+wait 21
+pad 1 400 128 255
+wait 6
+pad 1 400 128 128
+wait 10
+pad 1 200 0 255
+wait 9
+pad 1 100 0 255
+wait 5
+pad 1 400 0 0
+wait 17
+pad 1 100 255 255
+wait 24
+pad 1 400 255 255
+wait 9
+pad 1 400 128 0
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+wait 21
+pad 1 40 128 0
+wait 23
+pad 1 800 128 128
+wait 18
+pad 1 800 128 255
+wait 12
+pad 1 20 255 0
+wait 28
+pad 1 0 128 0
+wait 19
+pad 1 400 255 255
+wait 19
+pad 1 20 255 255
+wait 16
+pad 1 400 255 255
+wait 20
+wait 4
+wait 2
+pad 1 400 128 255
+wait 10
+pad 1 800 128 0
+wait 5
+pad 1 40 128 0
+wait 29
+pad 1 100 0 0
+wait 17
+pad 1 400 128 255
+wait 8
+pad 1 40 0 128
+wait 23
+pad 1 20 255 0
+wait 20
+pad 1 20 255 255
+wait 30
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+pad 1 0 0 255
+wait 19
+pad 1 800 0 255
+wait 24
+pad 1 400 255 255
+wait 14
+pad 1 0 0 0
+wait 21
+pad 1 200 255 255
+wait 19
+pad 1 0 255 255
+wait 27
+pad 1 400 0 0
+wait 10
+pad 1 0 0 128
+wait 18
+pad 1 200 255 0
+wait 4
+wait 2
+wait 22
+pad 1 200 128 255
+wait 21
+pad 1 800 128 255
+wait 10
+pad 1 0 255 128
+wait 25
+pad 1 40 128 128
+wait 6
+pad 1 20 128 128
+wait 12
+pad 1 40 255 255
+wait 25
+pad 1 800 0 0
+wait 7
+pad 1 400 0 0
+wait 22
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+pad 1 20 255 0
+wait 17
+pad 1 400 0 128
+wait 22
+pad 1 400 255 128
+wait 12
+pad 1 100 0 255
+wait 13
+pad 1 400 255 0
+wait 8
+pad 1 400 0 255
+wait 12
+pad 1 0 128 0
+wait 21
+pad 1 100 128 255
+wait 9
+wait 4
+wait 2
+pad 1 0 128 0
+wait 13
+pad 1 100 255 0
+wait 15
+pad 1 20 128 0
+wait 8
+pad 1 20 0 0
+wait 25
+pad 1 100 128 128
+wait 5
+pad 1 100 0 128
+wait 8
+pad 1 40 128 128
+wait 11
+pad 1 100 128 128
+wait 28
+pad 1 20 0 255
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+wait 29
+pad 1 200 0 255
+wait 6
+pad 1 0 128 255
+wait 10
+pad 1 200 128 128
+wait 12
+pad 1 20 128 255
+wait 20
+pad 1 200 0 255
+wait 5
+pad 1 20 128 255
+wait 6
+pad 1 20 255 0
+wait 22
+pad 1 400 0 0
+wait 4
+wait 4
+wait 2
+pad 1 800 255 128
+wait 21
+pad 1 40 128 255
+wait 30
+pad 1 0 255 128
+wait 20
+pad 1 40 255 255
+wait 26
+pad 1 400 0 128
+wait 24
+pad 1 400 255 128
+wait 22
+pad 1 40 0 128
+wait 11
+pad 1 0 0 255
+wait 12
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+pad 1 20 128 128
+wait 14
+pad 1 40 128 128
+wait 23
+pad 1 400 255 0
+wait 17
+pad 1 800 255 128
+wait 18
+pad 1 0 128 0
+wait 8
+pad 1 20 255 128
+wait 13
+pad 1 100 128 255
+wait 8
+pad 1 200 0 128
+wait 4
+pad 1 100 255 0
+wait 4
+wait 2
+wait 26
+pad 1 40 0 0
+wait 20
+pad 1 100 0 255
+wait 18
+pad 1 100 255 128
+wait 14
+pad 1 40 255 128
+wait 6
+pad 1 200 255 255
+wait 5
+pad 1 200 128 128
+wait 16
+pad 1 20 255 128
+wait 16
+pad 1 0 0 255
+wait 14
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+pad 1 200 128 128
+wait 4
+pad 1 20 0 128
+wait 26
+pad 1 20 128 0
+wait 18
+pad 1 100 0 128
+wait 13
+pad 1 100 128 255
+wait 30
+pad 1 0 255 0
+wait 10
+pad 1 100 255 255
+wait 15
+pad 1 0 0 255
+wait 6
+wait 4
+wait 2
+pad 1 400 0 255
+wait 23
+pad 1 400 0 255
+wait 28
+pad 1 20 128 255
+wait 15
+pad 1 20 0 128
+wait 14
+pad 1 40 0 128
+wait 7
+pad 1 20 128 0
+wait 18
+pad 1 400 128 255
+wait 9
+pad 1 100 0 255
+wait 12
+pad 1 40 128 255
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+wait 27
+pad 1 800 0 255
+wait 25
+pad 1 0 255 0
+wait 30
+pad 1 100 128 255
+wait 10
+pad 1 400 255 128
+wait 7
+pad 1 100 255 255
+wait 12
+pad 1 40 0 0
+wait 19
+pad 1 100 255 255
+wait 10
+pad 1 40 255 128
+wait 26
+wait 4
+wait 2
+pad 1 200 255 255
+wait 13
+pad 1 40 128 0
+wait 18
+pad 1 100 255 0
+wait 14
+pad 1 40 0 255
+wait 18
+pad 1 200 0 255
+wait 25
+pad 1 40 0 0
+wait 15
+pad 1 100 128 0
+wait 5
+pad 1 20 255 128
+wait 30
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+pad 1 800 255 0
+wait 5
+pad 1 400 255 255
+wait 23
+pad 1 400 255 0
+wait 16
+pad 1 40 128 0
+wait 23
+pad 1 0 0 0
+wait 14
+pad 1 400 128 255
+wait 17
+pad 1 0 0 255
+wait 14
+pad 1 200 0 128
+wait 25
+pad 1 20 0 255
+wait 4
+wait 2
+wait 15
+pad 1 20 0 128
+wait 26
+pad 1 20 0 255
+wait 26
+pad 1 400 0 0
+wait 7
+pad 1 40 128 0
+wait 30
+pad 1 400 255 255
+wait 13
+pad 1 40 255 255
+wait 20
+pad 1 40 0 128
+wait 8
+pad 1 800 0 255
+wait 29
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+pad 1 200 255 255
+wait 18
+pad 1 100 128 0
+wait 17
+pad 1 800 255 255
+wait 11
+pad 1 0 128 128
+wait 25
+pad 1 100 255 128
+wait 18
+pad 1 100 255 128
+wait 8
+pad 1 100 255 128
+wait 7
+pad 1 20 255 0
+wait 9
+wait 4
+wait 2
+pad 1 20 128 255
+wait 7
+pad 1 0 255 128
+wait 6
+pad 1 40 255 0
+wait 23
+pad 1 100 128 128
+wait 24
+pad 1 0 128 0
+wait 10
+pad 1 20 0 128
+wait 9
+pad 1 200 128 0
+wait 25
+pad 1 800 0 255
+wait 10
+pad 1 800 128 128
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+wait 16
+pad 1 20 255 255
+wait 24
+pad 1 800 0 128
+wait 20
+pad 1 20 0 0
+wait 18
+pad 1 40 128 128
+wait 8
+pad 1 800 128 128
+wait 11
+pad 1 100 0 128
+wait 23
+pad 1 400 128 0
+wait 18
+pad 1 20 128 128
+wait 4
+wait 4
+wait 2
+pad 1 400 0 255
+wait 27
+pad 1 200 255 255
+wait 14
+pad 1 100 0 255
+wait 14
+pad 1 20 0 0
+wait 8
+pad 1 800 255 255
+wait 19
+pad 1 200 255 255
+wait 30
+pad 1 20 128 255
+wait 9
+pad 1 0 0 255
+wait 20
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+pad 1 200 255 128
+wait 26
+pad 1 20 0 255
+wait 9
+pad 1 100 255 128
+wait 16
+pad 1 40 255 255
+wait 6
+pad 1 100 0 255
+wait 29
+pad 1 20 0 0
+wait 27
+pad 1 100 128 0
+wait 7
+pad 1 100 255 0
+wait 24
+pad 1 20 128 255
+wait 4
+wait 2
+wait 24
+pad 1 800 0 128
+wait 26
+pad 1 40 0 128
+wait 17
+pad 1 40 128 255
+wait 17
+pad 1 40 255 255
+wait 10
+pad 1 40 255 255
+wait 4
+pad 1 200 255 0
+wait 30
+pad 1 200 255 0
+wait 19
+pad 1 400 0 0
+wait 27
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+mark g2
+pad 1 100 0 0
+wait 5
+pad 1 100 128 128
+wait 9
+pad 1 800 128 255
+wait 17
+pad 1 200 255 0
+wait 11
+pad 1 200 0 0
+wait 16
+pad 1 200 255 0
+wait 27
+pad 1 400 128 0
+wait 30
+pad 1 0 128 128
+wait 22
+wait 4
+wait 2
+pad 1 200 0 255
+wait 12
+pad 1 800 0 0
+wait 10
+pad 1 20 128 255
+wait 12
+pad 1 0 255 128
+wait 9
+pad 1 200 255 128
+wait 14
+pad 1 800 255 0
+wait 21
+pad 1 20 0 255
+wait 9
+pad 1 20 0 255
+wait 10
+pad 1 20 0 0
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+wait 19
+pad 1 200 255 255
+wait 6
+pad 1 20 0 0
+wait 8
+pad 1 800 255 128
+wait 22
+pad 1 800 0 0
+wait 13
+pad 1 0 128 255
+wait 25
+pad 1 100 255 255
+wait 8
+pad 1 400 128 128
+wait 26
+pad 1 800 0 128
+wait 8
+wait 4
+wait 2
+pad 1 20 0 128
+wait 24
+pad 1 800 0 255
+wait 6
+pad 1 40 0 128
+wait 27
+pad 1 40 255 0
+wait 6
+pad 1 800 0 128
+wait 13
+pad 1 100 0 0
+wait 7
+pad 1 100 128 128
+wait 18
+pad 1 20 0 0
+wait 20
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+pad 1 400 255 0
+wait 13
+pad 1 100 255 0
+wait 28
+pad 1 400 128 255
+wait 30
+pad 1 100 255 0
+wait 5
+pad 1 200 128 0
+wait 17
+pad 1 400 128 0
+wait 11
+pad 1 40 255 0
+wait 27
+pad 1 100 255 0
+wait 5
+pad 1 800 0 255
+wait 4
+wait 2
+wait 7
+pad 1 100 0 255
+wait 16
+pad 1 20 255 255
+wait 15
+pad 1 800 0 255
+wait 23
+pad 1 40 0 255
+wait 13
+pad 1 100 128 255
+wait 20
+pad 1 100 128 128
+wait 13
+pad 1 200 128 255
+wait 20
+pad 1 100 255 0
+wait 30
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+pad 1 20 128 0
+wait 22
+pad 1 0 128 128
+wait 20
+pad 1 800 255 255
+wait 14
+pad 1 200 128 0
+wait 9
+pad 1 200 128 255
+wait 29
+pad 1 40 0 0
+wait 4
+pad 1 20 128 0
+wait 17
+pad 1 20 0 0
+wait 21
+wait 4
+wait 2
+pad 1 20 255 255
+wait 20
+pad 1 800 128 128
+wait 19
+pad 1 0 0 0
+wait 10
+pad 1 100 0 128
+wait 6
+pad 1 100 0 128
+wait 6
+pad 1 0 128 0
+wait 12
+pad 1 800 255 128
+wait 18
+pad 1 40 128 255
+wait 5
+pad 1 40 0 128
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+wait 23
+pad 1 0 0 255
+wait 18
+pad 1 40 128 255
+wait 27
+pad 1 0 255 255
+wait 7
+pad 1 20 0 255
+wait 6
+pad 1 100 0 255
+wait 6
+pad 1 800 128 255
+wait 10
+pad 1 400 0 0
+wait 30
+pad 1 400 255 128
+wait 15
+wait 4
+wait 2
+pad 1 800 255 255
+wait 12
+pad 1 200 255 128
+wait 26
+pad 1 40 128 255
+wait 24
+pad 1 400 128 0
+wait 14
+pad 1 40 255 255
+wait 25
+pad 1 40 0 128
+wait 23
+pad 1 40 128 255
+wait 12
+pad 1 40 255 0
+wait 12
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+pad 1 20 128 255
+wait 17
+pad 1 400 0 255
+wait 15
+pad 1 800 0 0
+wait 29
+pad 1 200 0 128
+wait 28
+pad 1 20 0 128
+wait 18
+pad 1 200 128 255
+wait 9
+pad 1 40 255 255
+wait 11
+pad 1 400 128 128
+wait 10
+pad 1 800 128 128
+wait 4
+wait 2
+wait 21
+pad 1 0 128 128
+wait 23
+pad 1 0 128 128
+wait 21
+pad 1 0 0 255
+wait 22
+pad 1 40 128 0
+wait 17
+pad 1 40 255 128
+wait 27
+pad 1 400 255 0
+wait 26
+pad 1 200 128 128
+wait 17
+pad 1 800 0 0
+wait 18
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+pad 1 100 255 0
+wait 6
+pad 1 400 255 0
+wait 11
+pad 1 0 255 0
+wait 8
+pad 1 0 128 255
+wait 20
+pad 1 400 0 255
+wait 29
+pad 1 800 128 255
+wait 26
+pad 1 0 255 255
+wait 9
+pad 1 400 0 128
+wait 28
+wait 4
+wait 2
+pad 1 20 0 0
+wait 21
+pad 1 0 255 128
+wait 8
+pad 1 400 0 128
+wait 14
+pad 1 20 255 255
+wait 6
+pad 1 0 0 255
+wait 24
+pad 1 20 128 255
+wait 25
+pad 1 20 0 0
+wait 7
+pad 1 20 128 255
+wait 15
+pad 1 400 128 128
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+wait 5
+pad 1 20 128 128
+wait 9
+pad 1 200 128 0
+wait 6
+pad 1 0 128 255
+wait 29
+pad 1 800 128 128
+wait 27
+pad 1 40 0 0
+wait 21
+pad 1 400 0 128
+wait 12
+pad 1 100 128 128
+wait 23
+pad 1 200 255 255
+wait 6
+wait 4
+wait 2
+pad 1 400 0 255
+wait 21
+pad 1 200 0 255
+wait 14
+pad 1 20 0 0
+wait 28
+pad 1 0 255 255
+wait 24
+pad 1 0 255 128
+wait 21
+pad 1 800 255 0
+wait 26
+pad 1 100 128 255
+wait 13
+pad 1 0 0 0
+wait 27
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+pad 1 20 128 128
+wait 29
+pad 1 400 255 128
+wait 28
+pad 1 100 255 255
+wait 22
+pad 1 200 0 128
+wait 20
+pad 1 20 0 255
+wait 26
+pad 1 400 255 0
+wait 19
+pad 1 200 0 255
+wait 7
+pad 1 40 128 128
+wait 11
+pad 1 20 255 255
+wait 4
+wait 2
+wait 25
+pad 1 400 255 255
+wait 29
+pad 1 200 128 128
+wait 13
+pad 1 40 128 128
+wait 27
+pad 1 20 255 128
+wait 7
+pad 1 100 0 0
+wait 6
+pad 1 100 255 128
+wait 12
+pad 1 200 128 0
+wait 11
+pad 1 100 255 255
+wait 28
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+pad 1 200 0 128
+wait 30
+pad 1 800 255 128
+wait 6
+pad 1 40 128 0
+wait 27
+pad 1 100 128 255
+wait 26
+pad 1 400 255 0
+wait 16
+pad 1 40 255 128
+wait 14
+pad 1 40 255 255
+wait 27
+pad 1 400 0 0
+wait 8
+wait 4
+wait 2
+pad 1 40 128 128
+wait 19
+pad 1 0 255 0
+wait 29
+pad 1 800 255 0
+wait 5
+pad 1 800 255 255
+wait 18
+pad 1 200 255 128
+wait 12
+pad 1 200 255 255
+wait 4
+pad 1 800 0 128
+wait 20
+pad 1 0 255 128
+wait 21
+pad 1 20 128 128
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+wait 20
+pad 1 400 0 0
+wait 5
+pad 1 200 128 128
+wait 30
+pad 1 400 255 255
+wait 18
+pad 1 800 255 0
+wait 30
+pad 1 100 0 0
+wait 29
+pad 1 200 255 0
+wait 25
+pad 1 40 0 0
+wait 22
+pad 1 100 128 128
+wait 13
+wait 4
+wait 2
+pad 1 800 0 0
+wait 13
+pad 1 0 128 255
+wait 27
+pad 1 800 128 255
+wait 20
+pad 1 100 0 255
+wait 18
+pad 1 800 128 255
+wait 29
+pad 1 400 0 255
+wait 12
+pad 1 400 128 128
+wait 17
+pad 1 0 0 0
+wait 21
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+pad 1 800 0 0
+wait 21
+pad 1 400 0 0
+wait 23
+pad 1 0 255 255
+wait 9
+pad 1 100 255 0
+wait 14
+pad 1 200 128 0
+wait 23
+pad 1 40 0 0
+wait 30
+pad 1 400 0 0
+wait 30
+pad 1 100 0 128
+wait 11
+pad 1 200 0 128
+wait 4
+wait 2
+wait 20
+pad 1 100 128 128
+wait 30
+pad 1 100 255 0
+wait 30
+pad 1 20 255 255
+wait 28
+pad 1 0 255 128
+wait 5
+pad 1 100 255 0
+wait 23
+pad 1 0 0 128
+wait 8
+pad 1 0 0 0
+wait 18
+pad 1 100 0 255
+wait 8
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+pad 1 40 128 128
+wait 8
+pad 1 800 255 255
+wait 5
+pad 1 0 128 0
+wait 8
+pad 1 800 128 128
+wait 8
+pad 1 40 255 255
+wait 13
+pad 1 0 128 0
+wait 21
+pad 1 800 128 128
+wait 14
+pad 1 100 128 0
+wait 13
+wait 4
+wait 2
+pad 1 100 255 255
+wait 13
+pad 1 200 255 255
+wait 27
+pad 1 200 255 128
+wait 27
+pad 1 200 0 255
+wait 9
+pad 1 800 255 128
+wait 8
+pad 1 200 0 0
+wait 14
+pad 1 400 255 0
+wait 22
+pad 1 200 128 128
+wait 30
+pad 1 800 0 255
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+wait 26
+pad 1 40 0 128
+wait 20
+pad 1 800 0 0
+wait 14
+pad 1 40 128 0
+wait 23
+pad 1 0 255 255
+wait 29
+pad 1 200 255 128
+wait 21
+pad 1 400 255 128
+wait 15
+pad 1 20 0 255
+wait 21
+pad 1 100 0 0
+wait 4
+wait 4
+wait 2
+pad 1 400 128 128
+wait 15
+pad 1 20 0 128
+wait 20
+pad 1 400 128 255
+wait 24
+pad 1 200 255 128
+wait 11
+pad 1 400 128 128
+wait 30
+pad 1 100 0 128
+wait 13
+pad 1 20 255 0
+wait 9
+pad 1 0 128 0
+wait 21
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+pad 1 800 128 128
+wait 20
+pad 1 100 0 0
+wait 4
+pad 1 100 128 128
+wait 4
+pad 1 40 0 255
+wait 27
+pad 1 200 255 128
+wait 8
+pad 1 200 255 128
+wait 19
+pad 1 20 255 0
+wait 18
+pad 1 400 128 128
+wait 15
+pad 1 0 255 128
+wait 4
+wait 2
+wait 26
+pad 1 20 0 255
+wait 22
+pad 1 400 255 128
+wait 6
+pad 1 40 128 128
+wait 10
+pad 1 800 128 255
+wait 9
+pad 1 200 0 0
+wait 29
+pad 1 0 255 255
+wait 9
+pad 1 40 0 255
+wait 28
+pad 1 200 128 255
+wait 21
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+mark g3
+rel 1
+wait 60
+mark pause_g3
+wait 306
+mark unpause_g3
+wait 126
+pad 1 100 255 0
+wait 28
+pad 1 800 128 128
+wait 25
+pad 1 400 0 128
+wait 22
+pad 1 400 255 0
+wait 13
+pad 1 200 128 128
+wait 15
+pad 1 20 128 0
+wait 11
+pad 1 40 255 128
+wait 19
+pad 1 400 128 0
+wait 20
+wait 4
+wait 2
+pad 1 800 255 128
+wait 19
+pad 1 200 0 255
+wait 27
+pad 1 800 255 255
+wait 10
+pad 1 200 255 128
+wait 22
+pad 1 100 128 255
+wait 14
+pad 1 40 0 255
+wait 6
+pad 1 800 255 0
+wait 29
+pad 1 40 255 128
+wait 11
+pad 1 100 255 255
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+wait 30
+pad 1 40 128 255
+wait 19
+pad 1 400 0 255
+wait 6
+pad 1 800 128 255
+wait 4
+pad 1 40 128 0
+wait 28
+pad 1 20 0 0
+wait 13
+pad 1 40 255 128
+wait 17
+pad 1 20 128 128
+wait 26
+pad 1 20 0 255
+wait 26
+wait 4
+wait 2
+pad 1 40 128 0
+wait 13
+pad 1 0 128 255
+wait 23
+pad 1 40 255 128
+wait 17
+pad 1 200 128 255
+wait 21
+pad 1 200 255 0
+wait 5
+pad 1 20 0 128
+wait 18
+pad 1 200 0 255
+wait 14
+pad 1 20 128 255
+wait 13
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+pad 1 100 255 0
+wait 30
+pad 1 200 255 128
+wait 13
+pad 1 200 128 255
+wait 10
+pad 1 40 0 0
+wait 14
+pad 1 20 255 255
+wait 19
+pad 1 400 255 128
+wait 25
+pad 1 800 128 0
+wait 12
+pad 1 40 255 255
+wait 13
+pad 1 200 128 255
+wait 4
+wait 2
+wait 7
+pad 1 20 255 0
+wait 15
+pad 1 20 128 0
+wait 13
+pad 1 400 128 0
+wait 29
+pad 1 40 255 128
+wait 8
+pad 1 400 0 0
+wait 8
+pad 1 400 0 0
+wait 19
+pad 1 200 255 128
+wait 23
+pad 1 800 255 128
+wait 7
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+pad 1 0 128 255
+wait 30
+pad 1 200 255 0
+wait 4
+pad 1 40 0 0
+wait 24
+pad 1 100 0 0
+wait 29
+pad 1 200 0 255
+wait 14
+pad 1 400 0 255
+wait 17
+pad 1 800 255 128
+wait 25
+pad 1 100 0 0
+wait 12
+wait 4
+wait 2
+pad 1 40 128 128
+wait 23
+pad 1 400 128 128
+wait 27
+pad 1 20 255 128
+wait 16
+pad 1 100 255 128
+wait 15
+pad 1 200 128 0
+wait 23
+pad 1 20 128 0
+wait 27
+pad 1 400 0 0
+wait 6
+pad 1 800 255 0
+wait 16
+pad 1 400 0 0
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+wait 15
+pad 1 400 0 0
+wait 15
+pad 1 100 0 128
+wait 14
+pad 1 100 0 0
+wait 18
+pad 1 800 0 0
+wait 15
+pad 1 20 128 128
+wait 6
+pad 1 0 0 128
+wait 20
+pad 1 400 0 255
+wait 15
+pad 1 400 0 0
+wait 12
+wait 4
+wait 2
+pad 1 100 0 255
+wait 19
+pad 1 200 255 128
+wait 24
+pad 1 0 0 128
+wait 7
+pad 1 20 0 255
+wait 14
+pad 1 0 255 255
+wait 11
+pad 1 400 0 255
+wait 6
+pad 1 200 0 0
+wait 23
+pad 1 200 128 128
+wait 11
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+pad 1 200 255 255
+wait 27
+pad 1 0 0 0
+wait 15
+pad 1 20 255 255
+wait 11
+pad 1 40 255 128
+wait 10
+pad 1 20 255 128
+wait 26
+pad 1 100 255 255
+wait 19
+pad 1 800 128 128
+wait 30
+pad 1 40 0 0
+wait 14
+pad 1 0 255 0
+wait 4
+wait 2
+wait 20
+pad 1 800 255 128
+wait 16
+pad 1 100 0 128
+wait 13
+pad 1 100 0 0
+wait 19
+pad 1 200 128 128
+wait 15
+pad 1 40 0 128
+wait 18
+pad 1 40 255 255
+wait 30
+pad 1 100 0 255
+wait 8
+pad 1 40 0 255
+wait 27
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+pad 1 0 255 128
+wait 9
+pad 1 20 255 128
+wait 29
+pad 1 100 255 255
+wait 27
+pad 1 800 255 128
+wait 13
+pad 1 20 0 128
+wait 21
+pad 1 40 255 0
+wait 19
+pad 1 800 0 0
+wait 10
+pad 1 100 255 255
+wait 19
+wait 4
+wait 2
+pad 1 400 128 0
+wait 17
+pad 1 400 255 0
+wait 19
+pad 1 400 0 128
+wait 14
+pad 1 400 0 128
+wait 26
+pad 1 200 255 255
+wait 30
+pad 1 400 128 128
+wait 5
+pad 1 40 0 0
+wait 26
+pad 1 0 0 255
+wait 30
+pad 1 100 0 255
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+wait 10
+pad 1 100 0 0
+wait 22
+pad 1 40 255 128
+wait 20
+pad 1 20 255 0
+wait 27
+pad 1 200 0 0
+wait 11
+pad 1 200 128 0
+wait 22
+pad 1 200 255 0
+wait 23
+pad 1 100 0 128
+wait 4
+pad 1 800 128 255
+wait 7
+wait 4
+wait 2
+pad 1 0 0 0
+wait 11
+pad 1 800 255 128
+wait 24
+pad 1 100 0 255
+wait 20
+pad 1 100 128 128
+wait 16
+pad 1 100 0 128
+wait 12
+pad 1 400 0 255
+wait 21
+pad 1 20 0 0
+wait 6
+pad 1 800 255 128
+wait 7
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+pad 1 20 255 128
+wait 15
+pad 1 100 128 128
+wait 9
+pad 1 800 255 255
+wait 27
+pad 1 20 0 0
+wait 23
+pad 1 0 128 0
+wait 8
+pad 1 100 128 255
+wait 19
+pad 1 200 255 128
+wait 24
+pad 1 40 128 128
+wait 22
+pad 1 200 255 128
+wait 4
+wait 2
+wait 13
+pad 1 20 0 0
+wait 9
+pad 1 0 255 128
+wait 19
+pad 1 100 0 128
+wait 22
+pad 1 0 0 255
+wait 20
+pad 1 0 128 128
+wait 15
+pad 1 200 255 255
+wait 4
+pad 1 200 0 0
+wait 10
+pad 1 800 128 255
+wait 27
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+pad 1 20 0 0
+wait 21
+pad 1 800 255 255
+wait 21
+pad 1 400 0 255
+wait 15
+pad 1 20 128 128
+wait 22
+pad 1 0 128 128
+wait 6
+pad 1 100 128 0
+wait 17
+pad 1 40 255 128
+wait 7
+pad 1 20 255 128
+wait 15
+wait 4
+wait 2
+pad 1 100 255 128
+wait 5
+pad 1 100 255 128
+wait 24
+pad 1 200 128 0
+wait 13
+pad 1 400 0 255
+wait 5
+pad 1 0 128 128
+wait 9
+pad 1 0 0 255
+wait 16
+pad 1 40 0 128
+wait 16
+pad 1 400 128 0
+wait 29
+pad 1 200 255 128
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+wait 10
+pad 1 800 255 255
+wait 8
+pad 1 40 128 0
+wait 28
+pad 1 20 255 128
+wait 5
+pad 1 0 0 0
+wait 7
+pad 1 200 255 0
+wait 18
+pad 1 100 0 0
+wait 11
+pad 1 40 0 255
+wait 20
+pad 1 400 0 255
+wait 22
+wait 4
+wait 2
+pad 1 100 0 128
+wait 19
+pad 1 20 128 128
+wait 27
+pad 1 40 128 128
+wait 27
+pad 1 400 255 255
+wait 20
+pad 1 100 0 0
+wait 16
+pad 1 200 0 0
+wait 10
+pad 1 800 128 0
+wait 14
+pad 1 800 128 0
+wait 26
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+pad 1 400 128 255
+wait 5
+pad 1 800 0 255
+wait 23
+pad 1 100 0 255
+wait 25
+pad 1 20 255 128
+wait 29
+pad 1 400 0 128
+wait 13
+pad 1 20 255 0
+wait 8
+pad 1 800 255 128
+wait 14
+pad 1 100 0 255
+wait 16
+pad 1 100 0 128
+wait 4
+wait 2
+wait 21
+pad 1 400 128 0
+wait 17
+pad 1 400 255 128
+wait 29
+pad 1 20 128 0
+wait 14
+pad 1 100 128 128
+wait 14
+pad 1 200 0 255
+wait 11
+pad 1 20 255 255
+wait 10
+pad 1 0 255 0
+wait 29
+pad 1 0 0 128
+wait 22
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+pad 1 100 128 255
+wait 7
+pad 1 0 128 128
+wait 4
+pad 1 400 255 0
+wait 29
+pad 1 100 0 128
+wait 9
+pad 1 100 255 255
+wait 6
+pad 1 200 255 0
+wait 13
+pad 1 20 255 255
+wait 16
+pad 1 800 0 255
+wait 17
+wait 4
+wait 2
+pad 1 100 128 255
+wait 21
+pad 1 400 128 0
+wait 28
+pad 1 20 128 0
+wait 5
+pad 1 40 0 128
+wait 14
+pad 1 400 255 0
+wait 15
+pad 1 100 0 255
+wait 15
+pad 1 0 255 128
+wait 24
+pad 1 40 255 128
+wait 4
+pad 1 20 255 255
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+wait 8
+pad 1 200 255 0
+wait 29
+pad 1 200 128 0
+wait 22
+pad 1 0 128 128
+wait 13
+pad 1 800 255 255
+wait 20
+pad 1 100 255 0
+wait 18
+pad 1 0 128 128
+wait 4
+pad 1 0 255 0
+wait 13
+pad 1 800 255 255
+wait 15
+wait 4
+wait 2
+pad 1 800 0 0
+wait 12
+pad 1 0 0 128
+wait 20
+pad 1 200 0 255
+wait 25
+pad 1 800 255 128
+wait 7
+pad 1 0 255 128
+wait 13
+pad 1 100 0 0
+wait 6
+pad 1 40 128 255
+wait 21
+pad 1 40 0 0
+wait 26
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+pad 1 800 0 128
+wait 10
+pad 1 0 128 255
+wait 12
+pad 1 40 128 128
+wait 28
+pad 1 40 0 0
+wait 5
+pad 1 0 255 255
+wait 30
+pad 1 200 255 128
+wait 11
+pad 1 100 255 255
+wait 22
+pad 1 400 0 128
+wait 25
+pad 1 40 128 128
+wait 4
+wait 2
+wait 17
+pad 1 400 0 255
+wait 14
+pad 1 800 255 0
+wait 6
+pad 1 100 255 0
+wait 16
+pad 1 800 128 128
+wait 23
+pad 1 40 0 0
+wait 25
+pad 1 400 255 255
+wait 23
+pad 1 800 255 255
+wait 20
+pad 1 100 128 128
+wait 20
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+mark g4
+pad 1 100 128 0
+wait 5
+pad 1 100 128 128
+wait 9
+pad 1 800 128 128
+wait 8
+pad 1 800 255 128
+wait 21
+pad 1 400 255 0
+wait 6
+pad 1 800 255 128
+wait 22
+pad 1 20 0 0
+wait 4
+pad 1 0 0 0
+wait 24
+wait 4
+wait 2
+pad 1 800 128 0
+wait 8
+pad 1 100 255 128
+wait 4
+pad 1 200 128 255
+wait 13
+pad 1 800 128 255
+wait 13
+pad 1 400 128 255
+wait 13
+pad 1 100 0 255
+wait 26
+pad 1 200 255 128
+wait 10
+pad 1 800 0 255
+wait 9
+pad 1 40 0 128
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+wait 16
+pad 1 40 255 0
+wait 17
+pad 1 400 255 0
+wait 7
+pad 1 20 255 128
+wait 12
+pad 1 40 0 128
+wait 30
+pad 1 400 255 128
+wait 21
+pad 1 400 255 128
+wait 17
+pad 1 200 128 128
+wait 9
+pad 1 0 255 0
+wait 14
+wait 4
+wait 2
+pad 1 20 255 0
+wait 14
+pad 1 40 255 128
+wait 24
+pad 1 100 255 0
+wait 27
+pad 1 800 255 255
+wait 30
+pad 1 0 0 128
+wait 30
+pad 1 20 255 255
+wait 22
+pad 1 400 255 0
+wait 23
+pad 1 400 255 0
+wait 17
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+pad 1 100 0 255
+wait 21
+pad 1 400 128 128
+wait 17
+pad 1 0 0 0
+wait 22
+pad 1 200 128 128
+wait 26
+pad 1 800 255 255
+wait 15
+pad 1 20 128 0
+wait 25
+pad 1 40 128 0
+wait 20
+pad 1 200 0 128
+wait 20
+pad 1 100 128 0
+wait 4
+wait 2
+wait 13
+pad 1 40 128 0
+wait 4
+pad 1 100 0 255
+wait 10
+pad 1 200 0 255
+wait 30
+pad 1 40 128 0
+wait 10
+pad 1 20 255 0
+wait 20
+pad 1 400 0 0
+wait 25
+pad 1 0 128 128
+wait 24
+pad 1 100 255 0
+wait 26
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+pad 1 20 0 255
+wait 28
+pad 1 40 128 0
+wait 23
+pad 1 400 128 128
+wait 10
+pad 1 20 0 128
+wait 17
+pad 1 0 255 255
+wait 5
+pad 1 20 255 0
+wait 5
+pad 1 0 128 255
+wait 29
+pad 1 200 255 255
+wait 22
+wait 4
+wait 2
+pad 1 400 0 255
+wait 21
+pad 1 0 128 0
+wait 24
+pad 1 100 0 255
+wait 18
+pad 1 800 128 0
+wait 8
+pad 1 400 0 0
+wait 27
+pad 1 100 128 128
+wait 18
+pad 1 200 0 128
+wait 27
+pad 1 0 255 255
+wait 19
+pad 1 100 0 255
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+wait 20
+pad 1 100 255 0
+wait 23
+pad 1 100 128 0
+wait 26
+pad 1 200 0 255
+wait 16
+pad 1 0 128 255
+wait 19
+pad 1 800 255 0
+wait 10
+pad 1 0 128 0
+wait 18
+pad 1 20 128 128
+wait 26
+pad 1 20 255 128
+wait 20
+wait 4
+wait 2
+pad 1 40 0 128
+wait 11
+pad 1 40 128 0
+wait 9
+pad 1 20 0 128
+wait 30
+pad 1 400 128 128
+wait 10
+pad 1 0 0 128
+wait 4
+pad 1 200 255 0
+wait 16
+pad 1 0 255 255
+wait 13
+pad 1 400 128 255
+wait 14
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+pad 1 100 0 0
+wait 26
+pad 1 100 128 128
+wait 11
+pad 1 200 128 255
+wait 21
+pad 1 800 255 255
+wait 24
+pad 1 40 128 0
+wait 10
+pad 1 200 0 128
+wait 28
+pad 1 100 128 0
+wait 20
+pad 1 40 0 0
+wait 25
+pad 1 800 0 255
+wait 4
+wait 2
+wait 28
+pad 1 20 255 255
+wait 18
+pad 1 40 128 0
+wait 21
+pad 1 100 0 0
+wait 27
+pad 1 20 255 128
+wait 7
+pad 1 20 0 0
+wait 9
+pad 1 200 128 0
+wait 4
+pad 1 400 0 128
+wait 30
+pad 1 200 0 255
+wait 14
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+pad 1 40 128 0
+wait 29
+pad 1 400 255 255
+wait 28
+pad 1 200 0 255
+wait 21
+pad 1 100 255 0
+wait 11
+pad 1 200 255 0
+wait 15
+pad 1 20 128 0
+wait 5
+pad 1 800 128 255
+wait 5
+pad 1 800 0 128
+wait 19
+wait 4
+wait 2
+pad 1 40 255 255
+wait 5
+pad 1 40 128 255
+wait 26
+pad 1 100 0 0
+wait 5
+pad 1 400 255 128
+wait 26
+pad 1 0 0 255
+wait 18
+pad 1 800 255 128
+wait 23
+pad 1 0 0 0
+wait 24
+pad 1 40 128 0
+wait 15
+pad 1 400 0 128
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+wait 4
+pad 1 100 255 0
+wait 6
+pad 1 100 128 128
+wait 7
+pad 1 800 128 128
+wait 18
+pad 1 0 128 255
+wait 19
+pad 1 0 128 0
+wait 6
+pad 1 40 0 128
+wait 6
+pad 1 40 255 0
+wait 9
+pad 1 40 255 128
+wait 27
+wait 4
+wait 2
+pad 1 100 128 128
+wait 9
+pad 1 400 128 255
+wait 11
+pad 1 800 0 128
+wait 21
+pad 1 100 128 0
+wait 18
+pad 1 20 0 255
+wait 14
+pad 1 0 0 0
+wait 30
+pad 1 100 0 0
+wait 30
+pad 1 800 0 255
+wait 30
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+pad 1 400 255 255
+wait 8
+pad 1 100 128 255
+wait 20
+pad 1 0 255 0
+wait 29
+pad 1 20 128 255
+wait 24
+pad 1 20 255 0
+wait 14
+pad 1 0 128 0
+wait 4
+pad 1 800 128 0
+wait 17
+pad 1 800 255 255
+wait 30
+pad 1 0 128 255
+wait 4
+wait 2
+wait 5
+pad 1 0 128 128
+wait 30
+pad 1 20 0 255
+wait 23
+pad 1 200 255 0
+wait 24
+pad 1 800 0 128
+wait 15
+pad 1 200 255 0
+wait 19
+pad 1 800 255 255
+wait 30
+pad 1 800 128 0
+wait 29
+pad 1 400 128 128
+wait 24
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+pad 1 0 255 0
+wait 5
+pad 1 40 255 0
+wait 4
+pad 1 400 255 128
+wait 13
+pad 1 0 128 128
+wait 28
+pad 1 800 128 0
+wait 9
+pad 1 0 255 255
+wait 28
+pad 1 100 0 128
+wait 4
+pad 1 20 255 128
+wait 11
+wait 4
+wait 2
+pad 1 40 0 0
+wait 29
+pad 1 40 128 128
+wait 22
+pad 1 20 0 255
+wait 21
+pad 1 800 0 128
+wait 20
+pad 1 40 255 128
+wait 15
+pad 1 0 255 0
+wait 20
+pad 1 40 0 128
+wait 7
+pad 1 0 128 0
+wait 27
+pad 1 200 255 0
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+wait 12
+pad 1 40 128 128
+wait 12
+pad 1 0 255 255
+wait 11
+pad 1 800 128 128
+wait 21
+pad 1 100 128 128
+wait 16
+pad 1 400 255 0
+wait 8
+pad 1 200 255 128
+wait 24
+pad 1 20 0 128
+wait 5
+pad 1 20 255 0
+wait 30
+wait 4
+wait 2
+pad 1 100 128 255
+wait 12
+pad 1 400 0 128
+wait 10
+pad 1 20 255 0
+wait 27
+pad 1 40 128 128
+wait 9
+pad 1 20 255 0
+wait 23
+pad 1 0 255 0
+wait 28
+pad 1 100 128 0
+wait 27
+pad 1 400 255 0
+wait 5
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+pad 1 200 128 255
+wait 18
+pad 1 40 255 255
+wait 14
+pad 1 100 128 0
+wait 26
+pad 1 800 255 128
+wait 14
+pad 1 100 128 255
+wait 7
+pad 1 800 255 0
+wait 23
+pad 1 400 0 255
+wait 21
+pad 1 0 255 255
+wait 12
+pad 1 800 0 128
+wait 4
+wait 2
+wait 30
+pad 1 40 255 255
+wait 25
+pad 1 0 0 255
+wait 13
+pad 1 800 0 128
+wait 11
+pad 1 20 0 0
+wait 7
+pad 1 100 0 255
+wait 16
+pad 1 20 128 128
+wait 29
+pad 1 400 128 255
+wait 22
+pad 1 200 128 128
+wait 10
+padc 1 0 128 128 128 255
+wait 4
+rel 1
+wait 2
+pad 1 20 0 128
+wait 14
+pad 1 0 0 128
+wait 9
+pad 1 100 0 128
+wait 5
+pad 1 40 255 128
+wait 27
+pad 1 800 0 0
+wait 14
+pad 1 200 255 0
+wait 21
+pad 1 200 128 0
+wait 22
+pad 1 20 0 0
+wait 12
+wait 4
+wait 2
+pad 1 100 0 0
+wait 10
+pad 1 20 0 128
+wait 20
+pad 1 0 0 128
+wait 20
+pad 1 100 255 255
+wait 5
+pad 1 200 128 0
+wait 28
+pad 1 20 128 0
+wait 16
+pad 1 400 0 255
+wait 8
+pad 1 400 128 255
+wait 18
+pad 1 200 255 0
+padc 1 0 128 128 128 0
+wait 4
+rel 1
+wait 2
+wait 11
+pad 1 20 128 255
+wait 19
+pad 1 400 255 128
+wait 25
+pad 1 0 0 128
+wait 17
+pad 1 40 255 128
+wait 7
+pad 1 400 128 255
+wait 26
+pad 1 100 255 128
+wait 28
+pad 1 20 255 255
+wait 19
+pad 1 400 128 128
+wait 9
+wait 4
+wait 2
+pad 1 800 0 128
+wait 26
+pad 1 800 128 128
+wait 24
+pad 1 40 255 255
+wait 22
+pad 1 400 0 128
+wait 6
+pad 1 40 128 255
+wait 30
+pad 1 0 255 255
+wait 30
+pad 1 0 255 0
+wait 5
+pad 1 100 128 128
+wait 25
+padc 1 0 128 128 255 128
+wait 4
+rel 1
+wait 2
+pad 1 200 0 0
+wait 28
+pad 1 200 255 255
+wait 25
+pad 1 100 0 255
+wait 16
+pad 1 20 128 255
+wait 6
+pad 1 100 255 128
+wait 15
+pad 1 20 0 255
+wait 7
+pad 1 20 0 128
+wait 5
+pad 1 40 128 255
+wait 19
+pad 1 0 255 128
+wait 4
+wait 2
+wait 12
+pad 1 200 128 128
+wait 9
+pad 1 40 128 0
+wait 13
+pad 1 0 255 0
+wait 22
+pad 1 100 255 128
+wait 26
+pad 1 200 0 0
+wait 27
+pad 1 0 0 255
+wait 29
+pad 1 0 128 128
+wait 8
+pad 1 400 0 0
+wait 14
+padc 1 0 128 128 0 128
+wait 4
+rel 1
+wait 2
+mark g5
+mark end
+quit

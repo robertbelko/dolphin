@@ -1,4 +1,4 @@
-/* rbtag v5 (rollback): keeps the game's system memory apart from the rewindable game memory.
+/* rbtag v6 (rollback; v6 = point 7, 26 October 2026): keeps the game's system memory apart from the rewindable game memory.
    1. Tag: heap blocks allocated with a system name get bit 0x0080 in the block header flags (u16 at header + 2;
       bits 0-5 = heap index, 0x0100 / 0x0400 / 0xC000 used by the allocator, 0x0040 / 0x0080 unused), so the rollback
       Dolphin skips them in its per-frame snapshot. Post-allocation debug hook (word 0x8040BD64, called with an info
@@ -23,12 +23,18 @@
       frame is confirmed, dropped after a rewind to an earlier frame (the re-simulation frees it again). Without this
       a re-simulated frame frees the same sound block twice and the sound library corrupts its heap.
    3. Deferred frees: while a fight is running, frees of tagged main-heap blocks are queued (0x8049B400, not part of the
-      rollback state) and done after the fight, so a rewind never resurrects a block the system code already freed. */
+      rollback state) and done after the fight, so a rewind never resurrects a block the system code already freed.
+   7. (v6) Delayed frees of tagged main-heap blocks by the main thread while rollback runs (W_ACT = 1): logged with the
+      logic frame in a list that IS part of the rollback state (0x8049C000: count + up to 255 (block, frame) pairs) and
+      done MLDELAY logic frames later, at the main thread's first allocation of that frame - the same logic point on
+      every machine, so the main heap stays identical, and a rewind restores the list together with the heap. With
+      rollback on in the menus the point-3 queue never emptied (the "fight" never ended) and the main heap ran out
+      (lab: 2.3 MB file buffer at 0x801A3148 got 0, the decompressor wrote to address 0). Full list -> point 3. */
 typedef unsigned int u32; typedef unsigned short u16; typedef unsigned char u8;
 #define HOOK (*(volatile u32*)0x8040BD64)
 #define PREV (*(volatile u32*)0x8049A400)
 #define SYSIDX (*(volatile u32*)0x8049A404)
-#define FIGHT (*(volatile u32*)0x803F1000)
+#define FIGHT (*(volatile u32*)0x8049B5F4)   /* v6: Dolphin's "rollback running" word W_FIGHTW (v5 read the fight loop state 0x803F1000 and Dolphin redirected it) */
 #define DQ ((volatile u32*)0x8049B400)   /* [0] count, [1..63] pointers */
 #define DQMAX 63
 #define SYSSZ 0x100000
@@ -55,6 +61,9 @@ u32 orig_rel(u32 obj);
 #define ACQ ((volatile u32*)0x8049B600)   /* pairs (object, frame) */
 #define REL ((volatile u32*)0x8049B900)
 #define LOGMAX 96
+#define ML ((volatile u32*)0x8049C000)   /* [0] count, then (block, logic frame) pairs; part of the rollback state */
+#define MLMAX 255
+#define MLDELAY 12                       /* > the rollback window (7 frames) */
 #define COUNTER (*(volatile u32*)0x80440C24)
 #define CUR_THREAD (*(volatile u32*)0x800000E4)
 #define MAIN_THREAD 0x80432D10
@@ -75,7 +84,7 @@ __attribute__((section(".text.0boot"))) u32 rbtag_boot(void)
     DQ[0] = 0;
     SYSIDX = 0;
     W_ACT = 0; W_FRAME = 0; W_RB = 0; ACQ_N = 0; REL_N = 0; FRL_N = 0; IN_SETTLE = 0; W_CONF = 0;
-    *(volatile u32*)0x8049A408 = 0x52425435;   /* "RBT5": rollback Dolphin checks this */
+    *(volatile u32*)0x8049A408 = 0x52425436;   /* "RBT6": rollback Dolphin checks this */
     const u32 r = ((u32(*)(void))0x8049A100)();     /* rbstate's boot code (creates SndHeap: tagged now) */
     const u32 idx = ((u32(*)(void))0x8024A014)();
     const u32 blk = ((u32(*)(const char*, u32, u32))0x8001F174)(sysname, SYSSZ, 0x80000000);
@@ -129,9 +138,25 @@ static void flush(void)
     }
 }
 
+/* point 7: do the logged frees that are MLDELAY logic frames old (all of them when rollback is off) */
+static void ml_run(int all)
+{
+    const u32 n = ML[0];
+    u32 k = 0;
+    for (u32 i = 0; i < n; i++)
+    {
+        const u32 p = ML[1 + 2 * i], f = ML[2 + 2 * i];
+        if (all || f + MLDELAY <= COUNTER) orig_free(p);
+        else { ML[1 + 2 * k] = p; ML[2 + 2 * k] = f; k++; }
+    }
+    ML[0] = k;
+}
+
 /* replaces the three calls of the heap allocation core 0x80249884 */
 u32 rb_alloc(u32 name, u32 size, u32 align, u32 ofs, u32 flags, u32 mode)
 {
+    if (CUR_THREAD == MAIN_THREAD && ML[0] && ML[0] <= MLMAX)
+        ml_run(FIGHT != 1 || !W_ACT);
     if (FIGHT != 1)
     {
         if (DQ[0]) flush();
@@ -170,6 +195,15 @@ void rb_free(u32 p)
         const u16 magic = *(volatile u16*)(p - 16), fl = *(volatile u16*)(p - 14);
         if (magic == 0x424D && (fl & 0x80) && (fl & 0x3F) == 0)
         {
+            if (W_ACT && CUR_THREAD == MAIN_THREAD && ML[0] < MLMAX)
+            {
+                const u32 n = ML[0];
+                for (u32 i = 0; i < n; i++) if (ML[1 + 2 * i] == p) return;
+                ML[1 + 2 * n] = p;
+                ML[2 + 2 * n] = COUNTER;
+                ML[0] = n + 1;
+                return;
+            }
             const u32 m = OSDisableInterrupts();
             u32 n = DQ[0], dup = 0;
             for (u32 i = 1; i <= n; i++) if (DQ[i] == p) dup = 1;
