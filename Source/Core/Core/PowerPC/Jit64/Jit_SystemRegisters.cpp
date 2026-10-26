@@ -10,6 +10,7 @@
 #include "Common/x64Emitter.h"
 
 #include "Core/CoreTiming.h"
+#include "Core/FFNYRollback.h"
 #include "Core/HW/ProcessorInterface.h"
 #include "Core/PowerPC/Jit64/RegCache/JitRegCache.h"
 #include "Core/PowerPC/Jit64Common/Jit64PowerPCState.h"
@@ -357,6 +358,18 @@ void Jit64::mfspr(UGeckoInstruction inst)
     SHR(64, rdx, Imm8(3));
     ADD(64, rax, rdx);
     MOV(64, PPCSTATE_SPR(SPR_TL), rax);
+    if (FFNYRollback::g_virtual_tb)
+    {
+      // FFNY rollback in the menus: the main thread's clock follows the logic frames (see JitTimeBase)
+      BitSet32 regs = CallerSavedRegistersInUse();
+      regs[RAX] = false;
+      regs[RCX] = false;
+      regs[RDX] = false;
+      ABI_PushRegistersAndAdjustStack(regs, 0);
+      ABI_CallFunction(FFNYRollback::JitTimeBase);
+      ABI_PopRegistersAndAdjustStack(regs, 0);
+      MOV(64, PPCSTATE_SPR(SPR_TL), rax);
+    }
 
     if (CanMergeNextInstructions(1))
     {

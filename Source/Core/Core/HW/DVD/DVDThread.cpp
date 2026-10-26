@@ -218,6 +218,10 @@ void DVDThread::StartReadInternal(bool copy_to_ram, u32 output_address, u64 dvd_
   request.time_started_ticks = core_timing.GetTicks();
   request.realtime_started_us = Common::Timer::NowUs();
 
+  if (std::getenv("FFNY_RB_FSDEBUG"))
+    fprintf(stderr, "FSSTART id %llu off %llx len %x to %08x ticks %llu in %lld thread %08x\n", (unsigned long long)id,
+            (unsigned long long)dvd_offset, length, output_address, (unsigned long long)core_timing.GetTicks(),
+            (long long)ticks_until_completion, m_system.GetMemory().Read_U32(0x800000E4));
   m_dvd_thread.Push(std::move(request));
   core_timing.ScheduleEvent(ticks_until_completion, m_finish_read, id);
   m_pending_ids.push_back(id);

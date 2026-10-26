@@ -28,7 +28,7 @@ namespace HLE
 static std::map<u32, u32> s_hooked_addresses;
 
 // clang-format off
-constexpr std::array<Hook, 84> os_patches{{
+constexpr std::array<Hook, 87> os_patches{{
     // Placeholder, os_patches[0] is the "non-existent function" index
     {"FAKE_TO_SKIP_0",               HLE_Misc::UnimplementedFunction,       HookType::Replace, HookFlag::Generic},
 
@@ -69,6 +69,7 @@ constexpr std::array<Hook, 84> os_patches{{
     {"FFNYRollbackRender",           FFNYRollback::HookRender,              HookType::Start,   HookFlag::Fixed},
     {"FFNYRollbackMatch",            FFNYRollback::HookMatchUpdate,         HookType::Start,   HookFlag::Fixed},
     {"FFNYRollbackFsWait",           FFNYRollback::HookFsWait,              HookType::Start,   HookFlag::Fixed},
+    {"FFNYRollbackFsKick",           FFNYRollback::HookFsKick,              HookType::Start,   HookFlag::Fixed},
     {"FFNYRollbackSysAlloc",         FFNYRollback::HookSysAlloc,            HookType::Start,   HookFlag::Fixed},
     {"FFNYRollbackCount0", FFNYRollback::HookCountN<0>, HookType::Start, HookFlag::Fixed},
     {"FFNYRollbackCount1", FFNYRollback::HookCountN<1>, HookType::Start, HookFlag::Fixed},
@@ -111,7 +112,9 @@ constexpr std::array<Hook, 84> os_patches{{
     {"FFNYRollbackSndPost",          FFNYRollback::HookSndPost,             HookType::Replace, HookFlag::Fixed},
     {"FFNYRollbackSndService",       FFNYRollback::HookSndService,          HookType::Replace, HookFlag::Fixed},
     {"FFNYRollbackSndMusic",         FFNYRollback::HookSndMusic,            HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackSndExtra",         FFNYRollback::HookSndExtra,            HookType::Replace, HookFlag::Fixed},
     {"FFNYSndTrAccept",              FFNYRollback::HookSndTrAccept,         HookType::Start,   HookFlag::Fixed},
+    {"FFNYSndTrMusRes",              FFNYRollback::HookSndTrMusRes,         HookType::Start,   HookFlag::Fixed},
     {"FFNYSndTrStart",               FFNYRollback::HookSndTrStart,          HookType::Start,   HookFlag::Fixed},
     {"FFNYSndTrEvict",               FFNYRollback::HookSndTrEvict,          HookType::Start,   HookFlag::Fixed},
     {"FFNYRollbackBankGuard",        FFNYRollback::HookBankGuard,           HookType::Replace, HookFlag::Fixed},

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/PowerPC/Interpreter/Interpreter.h"
+#include "Core/FFNYRollback.h"
 
 #include "Common/Assert.h"
 #include "Common/CommonTypes.h"
@@ -255,6 +256,8 @@ void Interpreter::mfspr(Interpreter& interpreter, UGeckoInstruction inst)
   case SPR_TU:
     interpreter.m_system.GetPowerPC().WriteFullTimeBaseValue(
         interpreter.m_system.GetSystemTimers().GetFakeTimeBase());
+    if (FFNYRollback::g_virtual_tb)
+      interpreter.m_system.GetPowerPC().WriteFullTimeBaseValue(FFNYRollback::JitTimeBase());
     break;
 
   case SPR_WPAR:

@@ -60,6 +60,12 @@
 
 namespace FFNYRollback
 {
+// lab: decided at process start (before the JIT compiles anything); netplay would set it before the game boots
+bool g_virtual_tb = std::getenv("FFNY_RB_ALWAYS") != nullptr && std::getenv("FFNY_RB_NOVTB") == nullptr;
+u64 s_vtb_anchor = 0;
+u32 s_vtb_frame0 = 0, s_vtb_steps = 0;
+bool s_vtb_mode = false;
+
 void DumpDraws(u32 from, u32 to);
 bool s_heapcheck = false;  // lab: FFNY_RB_HEAPCHECK
 u32 s_probe_addr = 0;  // lab: FFNY_RB_PROBE=hexaddr -> log r3 and its heap block at that function (once per r3)
@@ -973,6 +979,8 @@ bool s_rbtag_redirected = false;
 // disabled); the file-system thread object is 0x804099A0, its message queue 0x8040BCB8
 constexpr u32 OS_RECV_SLEEP = 0x80274EB0, FS_THREAD = 0x804099A0, FS_QUEUE = 0x8040BCB8;
 u32 s_fs_instant = 0;  // reads finished at once in this fight
+u32 s_fs_not_main = 0;  // waits of requests from other threads (streams): left to normal timing
+std::unordered_map<u32, u32> s_fs_req_thread;  // file-system request node -> thread that queued it
 constexpr u32 ADDR_MATCH_UPDATE = 0x80096C04;  // match update (state machine at match +0x302A0; fight step 0x80098014)
 bool s_match_hook = false;
 bool s_left_match = false;  // for the fight-over line
@@ -1103,6 +1111,7 @@ std::string CallChain(const u8* ram, u32 sp, int max)
 void StartFight(u8* ram, u32 tick_obj, u32 f)
 {
   s_active = true;
+  s_vtb_anchor = 0;
   s_snd_q.clear();
   s_snd_held = s_snd_sent = s_snd_dropped = 0;
   Wr32(ram, W_CONF, f - 1);
@@ -1734,7 +1743,10 @@ void OnVIField(Core::System& system)
     s_rbtag_redirected = true;
   }
   if (Rd32(ram, OS_RECV_SLEEP) == 0x48002839)  // bl 0x802776E8
+  {
     HLE::Patch(system, OS_RECV_SLEEP, "FFNYRollbackFsWait");
+    HLE::Patch(system, 0x80244408, "FFNYRollbackFsKick");
+  }
   if (const char* c = std::getenv("FFNY_RB_COUNT"))
   {
     std::stringstream ss(c);
@@ -1761,6 +1773,8 @@ void OnVIField(Core::System& system)
   }
   // sound calls held back until their frame is confirmed (see HookSndPost)
   s_snd_trace = std::getenv("FFNY_RB_SNDTRACE") != nullptr;
+  s_vtb_mode = std::getenv("FFNY_RB_ALWAYS") != nullptr && std::getenv("FFNY_RB_NOVTB") == nullptr;
+
   s_snd_hold_on = std::getenv("FFNY_RB_NOSNDHOLD") == nullptr;
   if (Rd32(ram, SND_POST) == 0x9421FF60 && Rd32(ram, SND_SERVICE) == 0x9421FFF0 && (s_snd_hold_on || s_snd_trace))
   {
@@ -1771,11 +1785,15 @@ void OnVIField(Core::System& system)
   s_music_hold = s_snd_hold_on && std::getenv("FFNY_RB_NOMUSICHOLD") == nullptr;
   if (Rd32(ram, SND_MUSIC) == 0x9421FFF8 && (s_music_hold || s_snd_trace))
     HLE::Patch(system, SND_MUSIC, "FFNYRollbackSndMusic");
+  for (const u32 a : {0x80011164u})
+    if ((Rd32(ram, a) >> 16) == 0x9421 && (s_music_hold || s_snd_trace))
+      HLE::Patch(system, a, "FFNYRollbackSndExtra");
   if (s_snd_trace)
   {
     HLE::Patch(system, 0x801D3198, "FFNYSndTrAccept");  // r3 = 0x801D2F08's result, *(r31) = event key
     HLE::Patch(system, 0x801D5B2C, "FFNYSndTrStart");   // r3 = request slot started by the service
     HLE::Patch(system, 0x801D347C, "FFNYSndTrEvict");   // r3 = request slot discarded
+    HLE::Patch(system, 0x80011124, "FFNYSndTrMusRes");  // r3 = MPF post-event result of the music cue send
   }
   if (std::getenv("FFNY_RB_NOSYSFREE") == nullptr)
   {
@@ -2228,6 +2246,24 @@ void HookRender(const Core::CPUThreadGuard& guard)
   s_phase = 'R';
 }
 
+// 0x80244408 (HookType::Start): a file-system request is queued / started (r3 = request node) by the thread that
+// wants the data
+void HookFsKick(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  const u8* ram = system.GetMemory().GetRAM();
+  u32 thread = Rd32(ram, 0x800000E4);
+  if (thread == FS_THREAD)
+  {
+    // a follow-up request made by the file-system thread itself (in the callback of the request it is serving):
+    // it belongs to whoever made that request
+    const auto it = s_fs_req_thread.find(Rd32(ram, 0x804018D4));
+    if (it != s_fs_req_thread.end())
+      thread = it->second;
+  }
+  s_fs_req_thread[u32(system.GetPPCState().gpr[3])] = thread;
+}
+
 void HookFsWait(const Core::CPUThreadGuard& guard)
 {
   // HookType::Start at OS_RECV_SLEEP: a thread is about to sleep in OSReceiveMessage (r31 = queue). When it is the
@@ -2240,8 +2276,21 @@ void HookFsWait(const Core::CPUThreadGuard& guard)
   const u8* ram = system.GetMemory().GetRAM();
   if (system.GetPPCState().gpr[31] != FS_QUEUE || Rd32(ram, 0x800000E4) != FS_THREAD)
     return;
+  // only reads of requests the game logic (main thread) made: the music / speech streams also read through the
+  // file-system thread (requests from the audio thread); finishing those at once broke the audio thread at song
+  // changes (lab 26 October, rollback on in the menus: crash at 0x801E03FC when the menu song made way for the
+  // loading song)
+  const u32 node = Rd32(ram, 0x804018D4);
+  const auto it = s_fs_req_thread.find(node);
+  const u32 requester = it == s_fs_req_thread.end() ? 0 : it->second;
   if (std::getenv("FFNY_RB_FSDEBUG"))
-    fprintf(stderr, "FSWAIT queue count %u state %u\n", Rd32(ram, FS_QUEUE + 0x1C), Rd32(ram, 0x80401940));
+    fprintf(stderr, "FSWAIT queue count %u state %u node %08x requester %08x\n", Rd32(ram, FS_QUEUE + 0x1C),
+            Rd32(ram, 0x80401940), node, requester);
+  if (requester != 0x80432D10)
+  {
+    s_fs_not_main++;
+    return;
+  }
   system.GetDVDThread().FinishPendingReadsNow();
   s_fs_instant++;
 }
@@ -2653,6 +2702,13 @@ static void CountCall(const Core::CPUThreadGuard& guard, int i)
     return;
   s_call_counts[s_count_addr[i]][s_resim_target != 0 ? 1 : 0]++;
   s_call_sites[{s_count_addr[i], system.GetPPCState().spr[SPR_LR]}]++;
+  static const bool trace_all = std::getenv("FFNY_RB_COUNT_TRACE") != nullptr;
+  if (trace_all)
+  {
+    const auto& ppc = system.GetPPCState();
+    fprintf(stderr, "CALL %08x ctr %u %c %c r3 %08x r4 %08x r5 %08x lr %08x\n", s_count_addr[i], Rd32(ram, ADDR_COUNTER),
+            s_resim_target != 0 ? 'r' : 'f', s_phase, ppc.gpr[3], ppc.gpr[4], ppc.gpr[5], ppc.spr[SPR_LR]);
+  }
 }
 template <int I>
 void HookCountN(const Core::CPUThreadGuard& guard)
@@ -3008,6 +3064,13 @@ void HookSndTrAccept(const Core::CPUThreadGuard& guard)
   const auto& ppc = system.GetPPCState();
   SndTr(ppc.gpr[3] ? "ACCEPT" : "REJECT", ram, ppc, Rd32(ram, ppc.gpr[31]));
 }
+void HookSndTrMusRes(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  u8* ram = system.GetMemory().GetRAM();
+  const auto& ppc = system.GetPPCState();
+  SndTr("MUSRES", ram, ppc, Rd32(ram, 0x80440AD0));
+}
 void HookSndTrStart(const Core::CPUThreadGuard& guard)
 {
   auto& system = guard.GetSystem();
@@ -3027,11 +3090,11 @@ static void SndHook(const Core::CPUThreadGuard& guard, u32 fn)
   auto& system = guard.GetSystem();
   auto& ppc = system.GetPPCState();
   u8* ram = system.GetMemory().GetRAM();
-  const bool hold = (fn == SND_MUSIC ? s_music_hold : s_snd_hold_on) && s_active && !s_snd_sending && (s_phase == 'U' || s_phase == 'T') &&
+  const bool hold = ((fn == SND_POST || fn == SND_SERVICE) ? s_snd_hold_on : s_music_hold) && s_active && !s_snd_sending && (s_phase == 'U' || s_phase == 'T') &&
                     Rd32(ram, 0x800000E4) == 0x80432D10 && !(fn == SND_POST && ppc.gpr[4] > 6);
   if (s_snd_trace)
     SndTr(fn == SND_POST    ? (hold ? "post-HOLD" : s_snd_sending ? "post-SEND" : "post")
-          : fn == SND_MUSIC ? (hold ? "mus-HOLD" : s_snd_sending ? "mus-SEND" : "mus")
+          : fn != SND_SERVICE ? (hold ? "mus-HOLD" : s_snd_sending ? "mus-SEND" : "mus")
                             : (hold ? "serv-HOLD" : s_snd_sending ? "serv-SEND" : "serv"),
           ram, ppc, 0);
   if (!hold)
@@ -3065,9 +3128,43 @@ void HookSndService(const Core::CPUThreadGuard& guard)
   SndHook(guard, SND_SERVICE);
 }
 
+
+// The time base the game reads (mftb). While rollback runs in the menus, the main thread gets anchor + 1/60 s per logic
+// frame (+1 tick per read inside a frame, reset at every update start): the menus (Apt Flash player 0x801A3F24 /
+// 0x801A4010, the timer at 0x8015BB4C, ...) take their timing from mftb, so a re-simulated frame read a later real
+// time than its first run (lab 26 October: 0x804404BC / 0x8044040C differed from the first stress frame on). The
+// anchor is the real time base when rollback starts: in lockstep netplay it is the same on every machine.
+u64 JitTimeBase()
+{
+  auto& system = Core::System::GetInstance();
+  auto& ppc = system.GetPPCState();
+  u64 real;
+  memcpy(&real, &ppc.spr[SPR_TL], 8);
+  if (!s_active || !s_vtb_mode)
+    return real;
+  const u8* ram = system.GetMemory().GetRAM();
+  if (!ram || Rd32(ram, 0x800000E4) != 0x80432D10)
+    return real;
+  const u32 f = Rd32(ram, ADDR_COUNTER);
+  if (!s_vtb_anchor)
+  {
+    s_vtb_anchor = real;
+    s_vtb_frame0 = f;
+  }
+  return s_vtb_anchor + u64(s32(f - s_vtb_frame0)) * 675000 + (++s_vtb_steps);
+}
+
 void HookSndMusic(const Core::CPUThreadGuard& guard)
 {
   SndHook(guard, SND_MUSIC);
+}
+
+// more music-library wrappers held like the music cues (no return value the game keeps): 0x80011164 = music volume
+// (0x801D8C14(-1, vol); a re-simulated call crashed in the library's stream callbacks on the title screen, lab
+// 26 October, rollback in the menus)
+void HookSndExtra(const Core::CPUThreadGuard& guard)
+{
+  SndHook(guard, 0x80011164);
 }
 
 void HookPreUpdate(const Core::CPUThreadGuard& guard)
@@ -3075,6 +3172,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   auto& system = guard.GetSystem();
   auto& ppc = system.GetPPCState();
   u8* ram = system.GetMemory().GetRAM();
+  s_vtb_steps = 0;
   if (s_snd_sending)
   {
     // a held sound call returned here: the next one, or go on where the PRE hook left off
@@ -3122,7 +3220,14 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   // loop state stays 1 through the KO scene, results and rematch screen (Robert, 23 / 24 October); those must run in
   // lockstep after the resync, not in rollback (the rematch choice went different ways on the two machines).
   s_left_match = !in_match;
-  const bool fight = in_match && Rd32(ram, ADDR_FIGHT) == 1 && !(Rd32(ram, ADDR_FIGHT_FLAGS) & FIGHT_DECIDED);
+  bool fight = in_match && Rd32(ram, ADDR_FIGHT) == 1 && !(Rd32(ram, ADDR_FIGHT_FLAGS) & FIGHT_DECIDED);
+  // lab: FFNY_RB_ALWAYS=F -> rollback runs everywhere (menus, loading, fights) from logic frame F on
+  static const u32 s_always = std::getenv("FFNY_RB_ALWAYS") ? u32(std::atoi(std::getenv("FFNY_RB_ALWAYS"))) : 0;
+  if (s_always && f >= s_always)
+  {
+    fight = true;
+    s_left_match = false;
+  }
 
   if (!s_active)
   {

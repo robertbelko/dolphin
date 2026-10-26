@@ -82,10 +82,17 @@ void HookRng(const Core::CPUThreadGuard& guard);     // generator 2 entry 0x800B
 void HookRng1(const Core::CPUThreadGuard& guard);    // generator 1 entry 0x8001FC88
 void HookRender(const Core::CPUThreadGuard& guard);
 void HookMatchUpdate(const Core::CPUThreadGuard& guard);
+void HookFsKick(const Core::CPUThreadGuard& guard);  // 0x80244408: file-system request queued (r3 = node)
 void HookFsWait(const Core::CPUThreadGuard& guard);
 void HookSndPost(const Core::CPUThreadGuard& guard);
-void HookSndMusic(const Core::CPUThreadGuard& guard);  // 0x80011108 music event send
+// rollback in the menus: the game's main thread reads a clock that follows the logic frames (Jit64 / interpreter
+// mftb call JitTimeBase while g_virtual_tb is set; set before the JIT compiles, or the JIT cache is cleared)
+extern bool g_virtual_tb;
+u64 JitTimeBase();
+void HookSndMusic(const Core::CPUThreadGuard& guard);
+void HookSndExtra(const Core::CPUThreadGuard& guard);  // more music wrappers, held the same way  // 0x80011108 music event send
 void HookSndTrAccept(const Core::CPUThreadGuard& guard);  // lab sound trace
+void HookSndTrMusRes(const Core::CPUThreadGuard& guard);
 void HookSndTrStart(const Core::CPUThreadGuard& guard);
 void HookSndTrEvict(const Core::CPUThreadGuard& guard);
 void HookSndService(const Core::CPUThreadGuard& guard);
