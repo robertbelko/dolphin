@@ -1153,6 +1153,7 @@ bool s_rbtag_redirected = false;
 // OSReceiveMessage 0x80274E5C puts the receiving thread to sleep at 0x80274EB0 (bl OSSleepThread 0x802776E8, interrupts
 // disabled); the file-system thread object is 0x804099A0, its message queue 0x8040BCB8
 constexpr u32 OS_RECV_SLEEP = 0x80274EB0, FS_THREAD = 0x804099A0, FS_QUEUE = 0x8040BCB8;
+constexpr u32 AUDIO_THREAD = 0x803E23C8;  // the music / speech streams' reads come from it
 u32 s_fs_instant = 0;  // reads finished at once in this fight
 u32 s_fs_not_main = 0;  // waits of requests from other threads (streams): left to normal timing
 std::unordered_map<u32, u32> s_fs_req_thread;  // file-system request node -> thread that queued it
@@ -2533,7 +2534,9 @@ void HookFsKick(const Core::CPUThreadGuard& guard)
     const u8* r2 = system.GetMemory().GetRAM();
     const u32 cur = Rd32(r2, 0x804018D4);
     const auto it2 = s_fs_req_thread.find(cur);
-    if (cur && (it2 == s_fs_req_thread.end() || it2->second != 0x80432D10))
+    // only the audio thread's stream reads: hurrying the fight loader's (0x806D8AE0) reads hung the fight loading
+    // (lab, counter stuck at 9061 even without rollbacks); the loader is a worker thread (lockstep while busy)
+    if (cur && it2 != s_fs_req_thread.end() && it2->second == AUDIO_THREAD)
     {
       system.GetDVDThread().FinishPendingReadsNow();
       s_fs_hurried++;
@@ -2566,8 +2569,8 @@ void HookFsWait(const Core::CPUThreadGuard& guard)
   static const u32 extra_req = std::getenv("FFNY_RB_FSEXTRA") ? u32(std::strtoul(std::getenv("FFNY_RB_FSEXTRA"), nullptr, 16)) : 0;
   if (requester == 0x80432D10)
     s_fs_main_queued = false;  // the file system serves the logic's request now
-  else if (s_fs_main_queued)
-    s_fs_hurried++;  // a read in the way of a waiting request of the logic (see HookFsKick)
+  else if (s_fs_main_queued && requester == AUDIO_THREAD)
+    s_fs_hurried++;  // a stream read in the way of a waiting request of the logic (see HookFsKick)
   else if (!(extra_req && requester == extra_req))
   {
     s_fs_not_main++;
@@ -3823,8 +3826,12 @@ static void LearnIdleWaits(const u8* ram)
 }
 static u32 BusyWorker(const u8* ram)
 {
+  // busy = asleep on something else than its idle queue (waiting for a file read, the card ...): in the middle of a
+  // job. Ready (1: woken, not yet run - the workers have a lower priority than the main thread) is not: the memory-card
+  // worker 0x806D5A34 is woken every few frames and answers at once when the main thread sleeps; a job that has to wait
+  // for hardware shows up as busy at the next update start, and the lockstep rule then protects the frames before too.
   for (const auto& [t, w] : s_idle_wait)
-    if ((Rd32(ram, t + 0x2C8) >> 16) != 4 || Rd32(ram, t + 0x2DC) != w)
+    if ((Rd32(ram, t + 0x2C8) >> 16) == 4 && Rd32(ram, t + 0x2DC) != w)
       return t;
   return 0;
 }
@@ -3916,14 +3923,21 @@ void HookAsyncSend(const Core::CPUThreadGuard& guard)
     for (const auto& [t, w] : s_idle_wait)
       if (w == q + 8)
       {
+        // Most of these are calls that the logic waits for in the same frame (the worker answers on a queue the
+        // main thread waits on: 920 in the bench's menus), so no barrier here - a frame in which a worker is still busy
+        // at the next update start is protected by the lockstep rule (lab switch FFNY_RB_ASYNCBARRIER=1: barrier anyway)
+        static const bool barrier = std::getenv("FFNY_RB_ASYNCBARRIER") != nullptr;
         const u32 f = Rd32(ram, W_FRAME);
-        s_async_last = std::max(s_async_last, f);
-        s_async_last_thread = t;
         s_async_barriers++;
-        if (BarrierWait(system, ram, f, "message to a worker thread"))
+        if (barrier)
         {
-          s_async_aborts++;
-          return;
+          s_async_last = std::max(s_async_last, f);
+          s_async_last_thread = t;
+          if (BarrierWait(system, ram, f, "message to a worker thread"))
+          {
+            s_async_aborts++;
+            return;
+          }
         }
         break;
       }
@@ -4005,6 +4019,46 @@ FFNY_CARD_INST(0) FFNY_CARD_INST(1) FFNY_CARD_INST(2) FFNY_CARD_INST(3) FFNY_CAR
 FFNY_CARD_INST(7) FFNY_CARD_INST(8) FFNY_CARD_INST(9) FFNY_CARD_INST(10) FFNY_CARD_INST(11) FFNY_CARD_INST(12)
 FFNY_CARD_INST(13) FFNY_CARD_INST(14) FFNY_CARD_INST(15) FFNY_CARD_INST(16) FFNY_CARD_INST(17) FFNY_CARD_INST(18)
 #undef FFNY_CARD_INST
+
+// lab: FFNY_RB_INPUTREPLAY=file (lines "port frame bytes...", written by FFNY_RB_INPUTLOG): replace a pad record
+static void ReplayInput(int p, u32 frame, Record& rec)
+{
+  static std::map<std::pair<int, u32>, Record> replay;
+  static bool loaded = false;
+  if (!loaded)
+  {
+    loaded = true;
+    if (const char* rf = std::getenv("FFNY_RB_INPUTREPLAY"))
+      if (FILE* fr = fopen(rf, "r"))
+      {
+        char line[1024];
+        while (fgets(line, sizeof line, fr))
+        {
+          int pp = 0, n = 0;
+          unsigned fr2 = 0;
+          if (sscanf(line, "%d %u%n", &pp, &fr2, &n) < 2)
+            continue;
+          Record r{};
+          const char* q = line + n;
+          for (u32 k = 0; k < REC_SIZE; k++)
+          {
+            while (*q == ' ')
+              q++;
+            unsigned b = 0;
+            if (sscanf(q, "%2x", &b) != 1)
+              break;
+            r[k] = u8(b);
+            q += 2;
+          }
+          replay[{pp, fr2}] = r;
+        }
+        fclose(fr);
+        fprintf(stderr, "FFNYRB lab: %zu replayed inputs\n", replay.size());
+      }
+  }
+  if (auto it = replay.find({p, frame}); it != replay.end())
+    rec = it->second;
+}
 
 void HookPreUpdate(const Core::CPUThreadGuard& guard)
 {
@@ -4217,41 +4271,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       memcpy(fi.rec.data(), ram + ((tick_obj + SNAP_OFS + REC_OFS + p * REC_SIZE) & 0x01FFFFFF),
              REC_SIZE);
       // lab: FFNY_RB_INPUTREPLAY=file (written by FFNY_RB_INPUTLOG) -> the local inputs of those frames come from it
-      static std::map<std::pair<int, u32>, Record> replay;
-      static bool replay_loaded = false;
-      if (!replay_loaded)
-      {
-        replay_loaded = true;
-        if (const char* rf = std::getenv("FFNY_RB_INPUTREPLAY"))
-          if (FILE* fr = fopen(rf, "r"))
-          {
-            char line[1024];
-            while (fgets(line, sizeof line, fr))
-            {
-              int pp = 0;
-              unsigned fr2 = 0, n = 0;
-              if (sscanf(line, "%d %u%n", &pp, &fr2, (int*)&n) < 2)
-                continue;
-              Record r{};
-              const char* q = line + n;
-              for (u32 k = 0; k < REC_SIZE; k++)
-              {
-                while (*q == ' ')
-                  q++;
-                unsigned b = 0;
-                if (sscanf(q, "%2x", &b) != 1)
-                  break;
-                r[k] = u8(b);
-                q += 2;
-              }
-              replay[{pp, fr2}] = r;
-            }
-            fclose(fr);
-            fprintf(stderr, "FFNYRB lab: %zu replayed inputs\n", replay.size());
-          }
-      }
-      if (auto it = replay.find({p, tf}); it != replay.end())
-        fi.rec = it->second;
+      ReplayInput(p, tf, fi.rec);
       s_confirmed[p] = tf;
       SendInputs(p, tf);
       static FILE* il = std::getenv("FFNY_RB_INPUTLOG") ? fopen(std::getenv("FFNY_RB_INPUTLOG"), "w") : nullptr;
@@ -4269,6 +4289,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       // lab loopback: pad 1's real input of this tick is delivered as remote input s_loop frames later
       Record r;
       memcpy(r.data(), ram + ((tick_obj + SNAP_OFS + REC_OFS + 1 * REC_SIZE) & 0x01FFFFFF), REC_SIZE);
+      ReplayInput(1, f + s_settings.input_delay, r);
       s_loop_q.push_back({f + s_settings.input_delay, r});
       while (!s_loop_q.empty() && s_loop_q.front().first + s_loop <= f + s_settings.input_delay)
       {
@@ -4290,7 +4311,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
             per += fmt::format(" {:08x}:{}", CARD_FUNCS[i], s_card_fn_calls[i]);
         fprintf(stderr, "FFNYRB memory card calls per function:%s; device commands %u\n", per.c_str(), g_card_activity);
       }
-      fprintf(stderr, "FFNYRB worker threads: %zu known, busy at %u update starts (last frame %u, thread %08x), %u wake-up barriers, %u frames abandoned\n",
+      fprintf(stderr, "FFNYRB worker threads: %zu known, busy at %u update starts (last frame %u, thread %08x), %u messages to them, %u frames abandoned\n",
               s_idle_wait.size(), s_async_busy_frames, s_async_last, s_async_last_thread, s_async_barriers, s_async_aborts);
       fprintf(stderr, "FFNYRB logic counter stalls: %u (last at frame %u)\n", s_stalls, s_stall_guard);
       fprintf(stderr, "FFNYRB music cues: %u not sent again in re-simulations, %u sent by re-simulations\n", s_music_deduped, s_music_resent);
@@ -4340,6 +4361,22 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       s_async_last = std::max(s_async_last, f);
       s_async_last_thread = bt;
       s_async_busy_frames++;
+      if (s_log && s_async_busy_frames % 25 == 1)
+      {
+        // lab: where the busy worker is (its saved context and call chain)
+        u32 sp = Rd32(ram, bt + 4);
+        std::string ch;
+        for (int k = 0; k < 10 && (sp & 0xFE000000) == 0x80000000; k++)
+        {
+          const u32 nsp = Rd32(ram, sp);
+          if ((nsp & 0xFE000000) != 0x80000000)
+            break;
+          ch += fmt::format(" {:08x}", Rd32(ram, nsp + 4));
+          sp = nsp;
+        }
+        fprintf(stderr, "FFNYRB worker %08x busy at frame %u: state %u waits %08x pc %08x lr %08x chain%s\n", bt, f,
+                Rd32(ram, bt + 0x2C8) >> 16, Rd32(ram, bt + 0x2DC), Rd32(ram, bt + 0x198), Rd32(ram, bt + 0x84), ch.c_str());
+      }
     }
   }
   if (g_card_activity != s_card_seen)
