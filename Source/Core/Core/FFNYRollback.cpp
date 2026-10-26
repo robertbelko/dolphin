@@ -473,6 +473,7 @@ u32 CheckHeap(const u8* ram)
   return 0;
 }
 
+u32 Fnv(const u8* p, size_t n, u32 h);
 void SaveState(Core::System& system, u32 frame)
 {
   const auto t0 = std::chrono::steady_clock::now();
@@ -576,6 +577,43 @@ void SaveState(Core::System& system, u32 frame)
       memcpy(s.vdata.data() + vo, vmem + lo, hi - lo);
       vo += hi - lo;
     }
+    // lab: FFNY_RB_HASHLOG=file -> hash of every first-run state (compare a no-rewind run with a stress run);
+    // FFNY_RB_STATEDUMP=frame,file -> that frame's state (ranges + data) to a file
+    if (!resaved)
+    {
+      static FILE* hl = std::getenv("FFNY_RB_HASHLOG") ? fopen(std::getenv("FFNY_RB_HASHLOG"), "w") : nullptr;
+      if (hl)
+      {
+        u32 h = Fnv(s.data.data(), s.data.size(), 2166136261u);
+        h = Fnv(reinterpret_cast<const u8*>(s.ranges.data()), s.ranges.size() * 8, h);
+        fprintf(hl, "%u %08x %zu %08x\n", frame, h, s.ranges.size(), Fnv(s.vdata.data(), s.vdata.size(), 2166136261u));
+        fflush(hl);
+      }
+      static u32 dump_at = 0, dump_stride = 1;
+      static std::string dump_file;
+      if (const char* d = std::getenv("FFNY_RB_STATEDUMP"); d && dump_file.empty())
+      {
+        dump_at = u32(std::atoi(d));
+        dump_file = strchr(d, ',') ? strchr(d, ',') + 1 : "dump.bin";
+        if (const char* st = std::getenv("FFNY_RB_STATEDUMP_STRIDE"))
+          dump_stride = std::max(1, std::atoi(st));
+      }
+      if (dump_at && frame >= dump_at && frame < dump_at + 40 * dump_stride && (frame - dump_at) % dump_stride == 0)
+      {
+        if (FILE* df = fopen((dump_file + "." + std::to_string(frame)).c_str(), "wb"))
+        {
+          const u32 n = u32(s.ranges.size());
+          fwrite(&n, 4, 1, df);
+          fwrite(s.ranges.data(), 8, n, df);
+          fwrite(s.data.data(), 1, s.data.size(), df);
+          fclose(df);
+        }
+      }
+    }
+    if (frame == 2600 || frame == 3000)
+      fprintf(stderr, "FFNYRB AFPOOL frame %u: array %08x count %u free head %08x gen %08x; array block header %08x %08x\n",
+              frame, Rd32(ram, 0x8043FBB8), Rd32(ram, 0x804405A0), Rd32(ram, 0x804405A4), Rd32(ram, 0x804405AC),
+              Rd32(ram, Rd32(ram, 0x8043FBB8) - 16), Rd32(ram, Rd32(ram, 0x8043FBB8) - 12));
     static u32 shown_at = 0;
     if (vmem && (frame >= shown_at + 300 || frame == 3280))
     {
@@ -1114,6 +1152,13 @@ constexpr u32 OS_RECV_SLEEP = 0x80274EB0, FS_THREAD = 0x804099A0, FS_QUEUE = 0x8
 u32 s_fs_instant = 0;  // reads finished at once in this fight
 u32 s_fs_not_main = 0;  // waits of requests from other threads (streams): left to normal timing
 std::unordered_map<u32, u32> s_fs_req_thread;  // file-system request node -> thread that queued it
+bool s_fs_main_queued = false;  // a request of the game logic waits behind another thread's
+u32 s_fs_hurried = 0;  // reads of other threads finished at once because of that
+const bool s_fs_hurry_off = std::getenv("FFNY_RB_NOFSHURRY") != nullptr;
+constexpr u32 W_AFCTR = 0x8049CFF0;  // bigspace, rewound (rbtag's lists end at 0x8049C800)
+constexpr u32 AF_ARRAY = 0x8043FBB8, AF_COUNT = 0x804405A0, AF_FREE = 0x804405A4;
+constexpr u32 AF_SETID = 0x80244DD0, AF_FIND = 0x80244E00, AF_RELEASE = 0x80244E48;
+bool s_af_on = false;  // deterministic async file ids (HookAfSetId)
 constexpr u32 ADDR_MATCH_UPDATE = 0x80096C04;  // match update (state machine at match +0x302A0; fight step 0x80098014)
 bool s_match_hook = false;
 bool s_left_match = false;  // for the fight-over line
@@ -1890,6 +1935,21 @@ void OnVIField(Core::System& system)
     HLE::Patch(system, OS_RECV_SLEEP, "FFNYRollbackFsWait");
     HLE::Patch(system, 0x80244408, "FFNYRollbackFsKick");
   }
+  // deterministic file ids (see HookAfSetId)
+  s_af_on = std::getenv("FFNY_RB_NOAFID") == nullptr && Rd32(ram, AF_SETID) == 0x812D8DCC &&
+            Rd32(ram, AF_FIND) == 0x7C6A1B78 && Rd32(ram, AF_RELEASE) == 0x9421FFF0;
+  if (s_af_on)
+  {
+    HLE::Patch(system, AF_SETID, "FFNYRollbackAfSetId");
+    HLE::Patch(system, AF_FIND, "FFNYRollbackAfFind");
+    HLE::Patch(system, AF_RELEASE, "FFNYRollbackAfRelease");
+    if (Rd32(ram, 0x802450D8) == 0x7C0803A6 && Rd32(ram, 0x8049CFE0) == 0)
+    {
+      u8* w = memory.GetRAM();
+      memcpy(w + (0x8049CFE0 & 0x01FFFFFF), "LOADBUF", 8);
+      HLE::Patch(system, 0x802450D8, "FFNYRollbackAfBufAlloc");
+    }
+  }
   if (const char* c = std::getenv("FFNY_RB_COUNT"))
   {
     std::stringstream ss(c);
@@ -2270,8 +2330,23 @@ bool OnMemCheck(Core::System& system, u32 addr, u64 value, u32 pc, bool write)
   if (n++ > 200000)
     return true;
   auto& ppc = system.GetPPCState();
-  fprintf(stderr, "MEMW frame %u%s phase %c thread %08x pc %08x lr %08x %08x <- %08x\n", Rd32(ram, ADDR_COUNTER),
-          s_resim_target ? " resim" : "", s_phase, Rd32(ram, 0x800000E4), pc, ppc.spr[SPR_LR], addr, u32(value));
+  char chain[200] = {};
+  {
+    u32 sp = ppc.gpr[1];
+    size_t o = 0;
+    for (int k = 0; k < 10 && (sp & 0xFE000000) == 0x80000000; k++)
+    {
+      const u32 nsp = Rd32(ram, sp);
+      if ((nsp & 0xFE000000) != 0x80000000)
+        break;
+      o += snprintf(chain + o, sizeof chain - o, " %08x", Rd32(ram, nsp + 4));
+      sp = nsp;
+      if (o > 180)
+        break;
+    }
+  }
+  fprintf(stderr, "MEMW frame %u%s phase %c thread %08x pc %08x lr %08x %08x <- %08x chain%s\n", Rd32(ram, ADDR_COUNTER),
+          s_resim_target ? " resim" : "", s_phase, Rd32(ram, 0x800000E4), pc, ppc.spr[SPR_LR], addr, u32(value), chain);
   return true;
 }
 
@@ -2405,6 +2480,22 @@ void HookFsKick(const Core::CPUThreadGuard& guard)
       thread = it->second;
   }
   s_fs_req_thread[u32(system.GetPPCState().gpr[3])] = thread;
+  // the game logic asks for a file while the file system still serves another thread's request (the music / speech
+  // stream's reads take emulated disc time): the logic's request would wait behind it for a number of frames that
+  // depends on the audio timing - another frame in a re-simulation, another frame on the other machine. The reads in
+  // the way are finished at once (HookFsWait) until the file system gets to the logic's request.
+  if (thread == 0x80432D10 && InstantDiscReads() && !s_fs_hurry_off)
+  {
+    s_fs_main_queued = true;
+    const u8* r2 = system.GetMemory().GetRAM();
+    const u32 cur = Rd32(r2, 0x804018D4);
+    const auto it2 = s_fs_req_thread.find(cur);
+    if (cur && (it2 == s_fs_req_thread.end() || it2->second != 0x80432D10))
+    {
+      system.GetDVDThread().FinishPendingReadsNow();
+      s_fs_hurried++;
+    }
+  }
 }
 
 void HookFsWait(const Core::CPUThreadGuard& guard)
@@ -2430,13 +2521,252 @@ void HookFsWait(const Core::CPUThreadGuard& guard)
     fprintf(stderr, "FSWAIT queue count %u state %u node %08x requester %08x\n", Rd32(ram, FS_QUEUE + 0x1C),
             Rd32(ram, 0x80401940), node, requester);
   static const u32 extra_req = std::getenv("FFNY_RB_FSEXTRA") ? u32(std::strtoul(std::getenv("FFNY_RB_FSEXTRA"), nullptr, 16)) : 0;
-  if (requester != 0x80432D10 && !(extra_req && requester == extra_req))
+  if (requester == 0x80432D10)
+    s_fs_main_queued = false;  // the file system serves the logic's request now
+  else if (s_fs_main_queued)
+    s_fs_hurried++;  // a read in the way of a waiting request of the logic (see HookFsKick)
+  else if (!(extra_req && requester == extra_req))
   {
     s_fs_not_main++;
     return;
   }
   system.GetDVDThread().FinishPendingReadsNow();
   s_fs_instant++;
+}
+
+// ---- Deterministic file ids for rewound game code (menu rollback, 26 October) ----
+// FFNY's async file objects (EA ASYNCFILE: pool of 0x30-byte objects, array *(0x8043FBB8), count 0x804405A0, free
+// list head / tail 0x804405A4 / 0x804405A8 (a FIFO: freed objects go to the tail), generation 0x804405AC) live in
+// system memory that rollback does not rewind. Open = 0x80245334 (the file system allocates the buffer) /
+// 0x802453E4 (caller's buffer, used by 0x8000F064); both give the object its id with 0x80244DD0 (generation + 0x100,
+// or'd with the pool index) and return it. Every other call finds the object by id with 0x80244E00 (set callback
+// 0x80245494, done? 0x80245510, result + release 0x80245578, cancel 0x8024569C); 0x80244E48 returns an object to
+// the pool. With instant disc reads a load of the main thread is finished before the open returns.
+// Without help a re-simulated open got another id (generation not rewound, and the FIFO hands out another object)
+// that the game keeps in rewound memory (loader slots 0x80350520, music 0x804393AC, Apt 0x81018A80): the re-simulated
+// state differed, the first run's object leaked, and a release made in a thrown-away frame was missing afterwards.
+// Now an open made by the game logic during rollback gets a VIRTUAL id 0xA5ccccHH (c = a counter in rewound memory,
+// W_AFCTR, so every machine and every re-simulation hands out the same ids in the same order; H = a hash byte of the
+// path, for the logs); the object stores it, the lookup finds such ids by scanning the pool. A release by the game
+// logic is only noted (the object stays as it is) and done for real once its frame can no longer be rolled back;
+// a rewind takes back the releases of the thrown-away frames and returns the objects they opened to the pool.
+struct AfEntry
+{
+  u32 obj, id, open_frame, freed_frame;  // freed_frame 0xFFFFFFFF = in use
+};
+std::vector<AfEntry> s_af;
+u32 s_af_opened = 0, s_af_orphans = 0, s_af_unfreed = 0, s_af_freed = 0, s_af_busy_orphans = 0;
+
+static bool AfVirtual(u32 id)
+{
+  return (id >> 24) == 0xA5;
+}
+
+// the object goes back to the pool (0x80244E48 + 0x80244D08 without the file system's own free of a cancelled,
+// self-allocated buffer: only reached for objects of thrown-away frames, whose buffer the rewind took back anyway)
+static void AfRealFree(u8* ram, u32 obj)
+{
+  const u32 arr = Rd32(ram, AF_ARRAY);
+  const u32 idx = (obj - arr) / 0x30;
+  if (Rd32(ram, obj + 0x1C) != 0)
+  {
+    // still busy (not a main-thread load?): cancel it; the completion returns it to the pool (0x80244EB4)
+    Wr32(ram, obj + 0x10, 1);
+    Wr32(ram, obj + 0xC, 0);
+    Wr32(ram, obj + 0, idx);
+    s_af_busy_orphans++;
+    return;
+  }
+  Wr32(ram, obj + 0, idx);
+  Wr32(ram, obj + 0x1C, 0);
+  if (Rd32(ram, AF_FREE) == 0)
+    Wr32(ram, AF_FREE, obj);
+  else
+    Wr32(ram, Rd32(ram, AF_FREE + 4) + 4, obj);
+  Wr32(ram, AF_FREE + 4, obj);
+  Wr32(ram, obj + 4, 0);
+  s_af_freed++;
+}
+
+// pool mutex 0x80401914 held by another thread? (then the pool is left alone this frame)
+static bool AfPoolLocked(const u8* ram)
+{
+  return Rd32(ram, 0x80401914 + 8) != 0 && Rd32(ram, 0x80401914 + 8) != 0x80432D10;
+}
+
+// PRE: releases of frames that can no longer be rolled back are done for real
+static void AfConfirm(u8* ram, u32 upto)
+{
+  if (s_af.empty() || AfPoolLocked(ram))
+    return;
+  for (size_t i = 0; i < s_af.size();)
+  {
+    const AfEntry& e = s_af[i];
+    if (e.freed_frame != 0xFFFFFFFF && e.freed_frame <= upto)
+    {
+      if (Rd32(ram, e.obj) == e.id)
+        AfRealFree(ram, e.obj);
+      s_af.erase(s_af.begin() + i);
+    }
+    else if (e.freed_frame == 0xFFFFFFFF && e.open_frame <= upto && s_af.size() > 64)
+      s_af.erase(s_af.begin() + i);  // long-lived, confirmed: no rewind can take its open back any more
+    else
+      i++;
+  }
+}
+
+// a rewind to frame s: frames >= s are thrown away
+static void AfRewind(u8* ram, u32 s)
+{
+  for (size_t i = 0; i < s_af.size();)
+  {
+    AfEntry& e = s_af[i];
+    if (e.open_frame >= s)
+    {
+      if (Rd32(ram, e.obj) == e.id)
+        AfRealFree(ram, e.obj);
+      s_af_orphans++;
+      s_af.erase(s_af.begin() + i);
+      continue;
+    }
+    if (e.freed_frame != 0xFFFFFFFF && e.freed_frame >= s)
+    {
+      e.freed_frame = 0xFFFFFFFF;
+      s_af_unfreed++;
+    }
+    i++;
+  }
+}
+
+// rollback ends: every noted release is done (the frames are all confirmed by then, or the host's state replaces ours)
+static void AfEnd(u8* ram)
+{
+  for (const AfEntry& e : s_af)
+    if (e.freed_frame != 0xFFFFFFFF && Rd32(ram, e.obj) == e.id)
+      AfRealFree(ram, e.obj);
+  s_af.clear();
+}
+
+static bool AfLogicCall(const u8* ram)
+{
+  return s_active && s_af_on && s_phase == 'U' && Rd32(ram, 0x800000E4) == 0x80432D10;
+}
+
+// 0x80244DD0 (Replace; r3 = object): give the new object its id
+void HookAfSetId(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  if (AfLogicCall(ram))
+  {
+    const u32 obj = ppc.gpr[3];
+    // the path: r29 in 0x80245334, r28 in 0x802453E4
+    const u32 lr = ppc.spr[SPR_LR];
+    const u32 path = lr == 0x80245368 ? ppc.gpr[29] : lr == 0x8024541C ? ppc.gpr[28] : 0;
+    u32 h = 0;
+    if ((path & 0xFE000000) == 0x80000000)
+      for (u32 k = 0; k < 128; k++)
+      {
+        const u8 c = ram[(path + k) & 0x01FFFFFF];
+        if (!c)
+          break;
+        h = h * 31 + c;
+      }
+    const u32 c = (Rd32(ram, W_AFCTR) + 1) & 0xFFFF;
+    Wr32(ram, W_AFCTR, c);
+    const u32 id = 0xA5000000 | (c << 8) | ((h ^ (h >> 8) ^ (h >> 16)) & 0xFF);
+    Wr32(ram, obj, id);
+    const u32 f = Rd32(ram, W_FRAME);
+    s_af.push_back({obj, id, f, 0xFFFFFFFF});
+    s_af_opened++;
+    if (s_log)
+    {
+      char name[64] = {};
+      for (u32 k = 0; k < 63 && path; k++)
+        if (!(name[k] = char(ram[(path + k) & 0x01FFFFFF])))
+          break;
+      fprintf(stderr, "FFNYRB AFOPEN frame %u%s: %08x obj %08x %s\n", f, s_resim_target ? " (resim)" : "", id, obj, name);
+    }
+    ppc.npc = lr;
+    return;
+  }
+  ppc.gpr[9] = Rd32(ram, 0x804405AC);  // lwz r9,-29236(r13)
+  ppc.npc = AF_SETID + 4;
+}
+
+// 0x802450D8 (Replace: mtspr lr,r0 before the call of the file system's buffer allocator *(0x80401904); r3 = name
+// "ASYNCFILEBUF", r31 = object). rbtag counts that name as system memory: tagged (left out of the rollback state) and,
+// while rollback runs, put in the not rewound SysHeap. A buffer of a virtual-id load (the game logic's, finished
+// inside its frame) is game data like any other: it gets an untagged name.
+constexpr u32 AF_BUFALLOC = 0x802450D8, AF_BUFNAME = 0x8049CFE0;
+void HookAfBufAlloc(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  if (AfVirtual(Rd32(ram, ppc.gpr[31])))
+    ppc.gpr[3] = AF_BUFNAME;
+  ppc.spr[SPR_LR] = ppc.gpr[0];
+  ppc.npc = AF_BUFALLOC + 4;
+}
+
+// 0x80244E00 (Replace; r3 = id -> object or 0)
+void HookAfFind(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u32 id = ppc.gpr[3];
+  if (AfVirtual(id))
+  {
+    const u8* ram = system.GetMemory().GetRAM();
+    const u32 arr = Rd32(ram, AF_ARRAY), n = std::min<u32>(Rd32(ram, AF_COUNT), 256);
+    u32 found = 0;
+    for (u32 i = 0; i < n && !found; i++)
+      if (Rd32(ram, arr + i * 0x30) == id)
+        found = arr + i * 0x30;
+    ppc.gpr[3] = found;
+    ppc.npc = ppc.spr[SPR_LR];
+    return;
+  }
+  ppc.gpr[10] = id;  // mr r10,r3
+  ppc.npc = AF_FIND + 4;
+}
+
+// 0x80244E48 (Replace; r3 = object): back to the pool
+void HookAfRelease(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  const u32 obj = ppc.gpr[3];
+  const u32 id = Rd32(ram, obj);
+  if (AfVirtual(id))
+  {
+    auto it = std::find_if(s_af.begin(), s_af.end(), [&](const AfEntry& e) { return e.obj == obj && e.id == id; });
+    if (AfLogicCall(ram))
+    {
+      // noted only; done once the frame is confirmed (AfConfirm) or taken back by a rewind (AfRewind)
+      const u32 f = Rd32(ram, W_FRAME);
+      if (it == s_af.end())
+        s_af.push_back({obj, id, 0, f});
+      else
+        it->freed_frame = f;
+      if (s_log)
+        fprintf(stderr, "FFNYRB AFREL frame %u%s: %08x (noted)\n", f, s_resim_target ? " (resim)" : "", id);
+      ppc.npc = ppc.spr[SPR_LR];
+      return;
+    }
+    if (it != s_af.end())
+      s_af.erase(it);
+    // the pool code takes the index from the id's low byte
+    Wr32(ram, obj, (obj - Rd32(ram, AF_ARRAY)) / 0x30);
+  }
+  // stwu r1,-16(r1)
+  const u32 sp = ppc.gpr[1];
+  Wr32(ram, sp - 16, sp);
+  ppc.gpr[1] = sp - 16;
+  ppc.npc = AF_RELEASE + 4;
 }
 
 // The match update 0x80096C04 runs once per logic update while the game is in fight mode (every match state: fight,
@@ -2842,11 +3172,20 @@ static void CountCall(const Core::CPUThreadGuard& guard, int i)
     return;
   auto& system = guard.GetSystem();
   const u8* ram = system.GetMemory().GetRAM();
+  static const bool trace_all = std::getenv("FFNY_RB_COUNT_TRACE") != nullptr;
+  static const bool any_thread = std::getenv("FFNY_RB_COUNT_ANYTHREAD") != nullptr;
   if (Rd32(ram, 0x800000E4) != 0x80432D10)
+  {
+    if (trace_all && any_thread)
+    {
+      const auto& ppc = system.GetPPCState();
+      fprintf(stderr, "CALL %08x ctr %u thread %08x r3 %08x r4 %08x r5 %08x lr %08x\n", s_count_addr[i],
+              Rd32(ram, ADDR_COUNTER), Rd32(ram, 0x800000E4), ppc.gpr[3], ppc.gpr[4], ppc.gpr[5], ppc.spr[SPR_LR]);
+    }
     return;
+  }
   s_call_counts[s_count_addr[i]][s_resim_target != 0 ? 1 : 0]++;
   s_call_sites[{s_count_addr[i], system.GetPPCState().spr[SPR_LR]}]++;
-  static const bool trace_all = std::getenv("FFNY_RB_COUNT_TRACE") != nullptr;
   if (trace_all)
   {
     const auto& ppc = system.GetPPCState();
@@ -2948,8 +3287,16 @@ void HookSysAlloc(const Core::CPUThreadGuard& guard)
   {
     static u32 n = 0;
     if (n++ < 400)
-      fprintf(stderr, "FFNYRB LAB sysalloc %08x size %u thread %08x frame %u (W_FRAME %u, resim %d)\n", p,
-              Rd32(ram, info + 0x1C), thread, Rd32(ram, ADDR_COUNTER), Rd32(ram, W_FRAME), s_resim_target != 0);
+    {
+      char nm[40] = {};
+      const u32 na = Rd32(ram, info);
+      for (u32 k = 0; k < 39 && (na & 0xFE000000) == 0x80000000; k++)
+        if (!(nm[k] = char(ram[(na + k) & 0x01FFFFFF])))
+          break;
+      fprintf(stderr, "FFNYRB LAB sysalloc %08x size %u thread %08x frame %u (W_FRAME %u, resim %d) %s lr %08x\n", p,
+              Rd32(ram, info + 0x1C), thread, Rd32(ram, ADDR_COUNTER), Rd32(ram, W_FRAME), s_resim_target != 0, nm,
+              system.GetPPCState().spr[SPR_LR]);
+    }
   }
 }
 
@@ -3016,6 +3363,10 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
   s_loader_undo.clear();
   s_snd_dropped += u32(s_snd_q.size());  // only left when the fight was ended early (they never got confirmed)
   s_snd_q.clear();
+  AfEnd(ram);
+  s_fs_main_queued = false;
+  fprintf(stderr, "FFNYRB file ids: %u virtual opens, %u objects of thrown-away frames returned (%u busy), %u releases taken back, %u done after confirmation; %u reads of other threads hurried for the logic\n",
+          s_af_opened, s_af_orphans, s_af_busy_orphans, s_af_unfreed, s_af_freed, s_fs_hurried);
   Wr32(ram, W_ACT, 0);  // rbtag: do the remaining deferred sound releases
   if (s_rbtag_redirected)
     Wr32(ram, W_FIGHTW, 0);  // rbtag: no more SysHeap routing / deferred frees; the queued frees are done at the next free
@@ -3304,7 +3655,11 @@ u64 JitTimeBase()
     s_vtb_anchor = real;
     s_vtb_frame0 = f;
   }
-  ++s_vtb_steps;
+  // reads with interrupts off (game callbacks run from interrupt handlers - DVD / audio / alarms - at moments that
+  // depend on emulated hardware timing, so a re-simulation has them elsewhere or not at all) do not move the count:
+  // otherwise every later read of the update got another value (lab: Apt's clock 0x804404BC off by 12 in re-simulations)
+  if (ppc.msr.EE)
+    ++s_vtb_steps;
   if (s_log && (s_vtb_steps == 50 || s_vtb_steps == 5000))
   {
     static u32 shown = 0;
@@ -3507,8 +3862,53 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       fi.have = true;
       memcpy(fi.rec.data(), ram + ((tick_obj + SNAP_OFS + REC_OFS + p * REC_SIZE) & 0x01FFFFFF),
              REC_SIZE);
+      // lab: FFNY_RB_INPUTREPLAY=file (written by FFNY_RB_INPUTLOG) -> the local inputs of those frames come from it
+      static std::map<std::pair<int, u32>, Record> replay;
+      static bool replay_loaded = false;
+      if (!replay_loaded)
+      {
+        replay_loaded = true;
+        if (const char* rf = std::getenv("FFNY_RB_INPUTREPLAY"))
+          if (FILE* fr = fopen(rf, "r"))
+          {
+            char line[1024];
+            while (fgets(line, sizeof line, fr))
+            {
+              int pp = 0;
+              unsigned fr2 = 0, n = 0;
+              if (sscanf(line, "%d %u%n", &pp, &fr2, (int*)&n) < 2)
+                continue;
+              Record r{};
+              const char* q = line + n;
+              for (u32 k = 0; k < REC_SIZE; k++)
+              {
+                while (*q == ' ')
+                  q++;
+                unsigned b = 0;
+                if (sscanf(q, "%2x", &b) != 1)
+                  break;
+                r[k] = u8(b);
+                q += 2;
+              }
+              replay[{pp, fr2}] = r;
+            }
+            fclose(fr);
+            fprintf(stderr, "FFNYRB lab: %zu replayed inputs\n", replay.size());
+          }
+      }
+      if (auto it = replay.find({p, tf}); it != replay.end())
+        fi.rec = it->second;
       s_confirmed[p] = tf;
       SendInputs(p, tf);
+      static FILE* il = std::getenv("FFNY_RB_INPUTLOG") ? fopen(std::getenv("FFNY_RB_INPUTLOG"), "w") : nullptr;
+      if (il)
+      {
+        fprintf(il, "%d %u", p, tf);
+        for (u32 k = 0; k < REC_SIZE; k++)
+          fprintf(il, "%s%02x", k % 4 ? "" : " ", fi.rec[k]);
+        fprintf(il, "\n");
+        fflush(il);
+      }
     }
     if (s_loop)
     {
@@ -3527,6 +3927,8 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       PrintStats(f);
       if (s_stress)
         fprintf(stderr, "FFNYRB stress: %u re-simulated frames compared, %u mismatches\n", s_stress_checked, s_stress_bad);
+      fprintf(stderr, "FFNYRB file ids: %u virtual opens, %u returned, %u releases taken back, %u done; %u reads hurried\n",
+              s_af_opened, s_af_orphans, s_af_unfreed, s_af_freed, s_fs_hurried);
     }
     StressCheck(ram, f, true);
     if (s_stress && f > s_start_frame + s_stress && f >= s_stress_from && fight)
@@ -3659,6 +4061,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
         FreeThrownSysAllocs(ram, s);
         DrainSysPending(ram);
         SndDropFrom(s);
+        AfRewind(ram, s);
         Wr32(ram, W_CONF, std::min(MinConfirmed(), s - 1));
         Wr32(ram, W_FRAME, s);
       }
@@ -3695,6 +4098,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     HashFrame(ram, f);
     s_hashed_upto = f;
   }
+  AfConfirm(ram, SndReadyUpTo(f));
   SndStartSends(ppc, SndReadyUpTo(f));
 }
 
