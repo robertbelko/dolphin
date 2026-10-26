@@ -122,8 +122,9 @@ static void Step()
     static u32 last_ctr = 0xFFFFFFFF;
     if (ctr_mode)
     {
+      // only frames never seen before: during a rollback re-simulation the counter goes back and forth
       const u32 c = FFNYBench_Read32(0x80440C24);
-      if (c == last_ctr)
+      if (last_ctr != 0xFFFFFFFF && c <= last_ctr)
         return;
       last_ctr = c;
     }
