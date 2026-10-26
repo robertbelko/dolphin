@@ -87,6 +87,7 @@ void HookSysAlloc(const Core::CPUThreadGuard& guard);  // rbtag's post-allocatio
 // 0x801D3074 sound event poster / 0x801D36B8 channel service: held back until the frame is confirmed
 void HookSndPost(const Core::CPUThreadGuard& guard);
 void HookSndService(const Core::CPUThreadGuard& guard);
+void HookSndMusic(const Core::CPUThreadGuard& guard);  // 0x80011108: music cue send, held the same way
 void HookFsRead(const Core::CPUThreadGuard& guard);  // 0x802491B8, read handed to the file-system thread  // 0x80096C04, the match update (fight mode only)
 void HookProbe(const Core::CPUThreadGuard& guard);  // lab
 void HookSndRelease(const Core::CPUThreadGuard& guard);  // lab, 0x801F33E4

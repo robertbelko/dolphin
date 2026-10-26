@@ -184,6 +184,15 @@ u32 s_rng_from = 0, s_rng_to = 0;  // lab: FFNY_RB_RNGLOG=from:to -> log draws f
 char s_phase = '-';  // 'U' = inside a logic update (after PRE), 'T' = after the TICK hook, 'R' = render part of the loop
 // held-back sound calls (see HookSndPost)
 constexpr u32 SND_POST = 0x801D3074, SND_SERVICE = 0x801D36B8;
+// 0x80011108(ev) = the music module's MPF event send (called by 0x80031B54 after its checks) -> 0x801D70EC. Every
+// interactive-music cue (Blazin' music, chorus, back to the fight loop, fight end, pause, ...) goes through it.
+constexpr u32 SND_MUSIC = 0x80011108;
+bool s_snd_hold_on = true;  // FFNY_RB_NOSNDHOLD=1 -> nothing held
+bool s_music_hold = true;   // FFNY_RB_NOMUSICHOLD=1 -> music cues not held (speech requests still are)
+const char* SndModeName()
+{
+  return !s_snd_hold_on ? "off" : s_music_hold ? "on (speech + music)" : "on (speech only)";
+}
 struct SndCall
 {
   u32 frame, fn;
@@ -194,6 +203,7 @@ bool s_snd_defer = false;     // hooks installed
 bool s_snd_sending = false;   // a held call is being made right now (the hooks let it through)
 bool s_snd_end_after = false; // after the sends: end the fight (EndFight was due when they started)
 u32 s_snd_end_frame = 0;
+std::string s_snd_end_reason;  // EndFight's 'forced' text for the end after the sends
 SavedState s_snd_regs;        // registers to continue with after the sends (only the register part is used)
 u32 s_snd_regs_npc = 0;
 u32 s_snd_held = 0, s_snd_sent = 0, s_snd_dropped = 0;  // stats of the current fight
@@ -1660,13 +1670,23 @@ void OnVIField(Core::System& system)
   if (Rd32(ram, OS_RECV_SLEEP) == 0x48002839)  // bl 0x802776E8
     HLE::Patch(system, OS_RECV_SLEEP, "FFNYRollbackFsWait");
   // sound calls held back until their frame is confirmed (see HookSndPost)
-  if (Rd32(ram, SND_POST) == 0x9421FF60 && Rd32(ram, SND_SERVICE) == 0x9421FFF0 &&
-      std::getenv("FFNY_RB_NOSNDHOLD") == nullptr)
+  s_snd_hold_on = std::getenv("FFNY_RB_NOSNDHOLD") == nullptr;
+  s_music_hold = s_snd_hold_on && std::getenv("FFNY_RB_NOMUSICHOLD") == nullptr;
+  if (s_snd_hold_on && Rd32(ram, SND_POST) == 0x9421FF60 && Rd32(ram, SND_SERVICE) == 0x9421FFF0)
   {
     HLE::Patch(system, SND_POST, "FFNYRollbackSndPost");
     HLE::Patch(system, SND_SERVICE, "FFNYRollbackSndService");
     s_snd_defer = true;
   }
+  else
+  {
+    s_snd_hold_on = s_music_hold = false;
+  }
+  if (s_music_hold && Rd32(ram, SND_MUSIC) == 0x9421FFF8)  // stwu sp,-8(sp)
+    HLE::Patch(system, SND_MUSIC, "FFNYRollbackSndMusic");
+  else
+    s_music_hold = false;
+  Report(std::string("FFNY: sound hold ") + SndModeName());
   if (std::getenv("FFNY_RB_NOSYSFREE") == nullptr)
   {
     s_sys_alloc_hook = hook;
@@ -2593,7 +2613,8 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
                "rollback state %u (at most %u frames after the file system was busy)",
                s_fs_episodes, LOAD_TAIL, s_lockstep_tail, s_conv_out, s_conv_gap_max);
       line += e;
-      snprintf(e, sizeof e, "; sound events held %u, sent %u, dropped %u", s_snd_held, s_snd_sent, s_snd_dropped);
+      snprintf(e, sizeof e, "; sound events held %u, sent %u, dropped %u (hold %s)", s_snd_held, s_snd_sent,
+               s_snd_dropped, SndModeName());
       line += e;
       snprintf(e, sizeof e, "; reads finished at once %u; SysHeap blocks of thrown-away frames freed %u%s", s_fs_instant,
                s_sys_freed, s_sys_free_overflow ? (" (" + std::to_string(s_sys_free_overflow) + " left: free log full)").c_str() : "");
@@ -2696,13 +2717,24 @@ static bool SndStartSends(PowerPC::PowerPCState& ppc, u32 upto)
   return SndSendNext(ppc, upto);
 }
 
+// a fight that ends: make the held sound calls first, then end it (from the sends' return in the PRE hook)
+static bool SndFlushThenEnd(PowerPC::PowerPCState& ppc, u32 f, const std::string& reason)
+{
+  if (!SndStartSends(ppc, 0xFFFFFFFF))
+    return false;
+  s_snd_end_after = true;
+  s_snd_end_frame = f;
+  s_snd_end_reason = reason;
+  return true;
+}
+
 // main-thread call of the event poster / channel service: hold it back (fight updates) or let it through
 static void SndHook(const Core::CPUThreadGuard& guard, u32 fn)
 {
   auto& system = guard.GetSystem();
   auto& ppc = system.GetPPCState();
   u8* ram = system.GetMemory().GetRAM();
-  const bool hold = s_active && !s_snd_sending && (s_phase == 'U' || s_phase == 'T') &&
+  const bool hold = (fn == SND_MUSIC ? s_music_hold : s_snd_hold_on) && s_active && !s_snd_sending && (s_phase == 'U' || s_phase == 'T') &&
                     Rd32(ram, 0x800000E4) == 0x80432D10 && !(fn == SND_POST && ppc.gpr[4] > 6);
   if (!hold)
   {
@@ -2735,6 +2767,11 @@ void HookSndService(const Core::CPUThreadGuard& guard)
   SndHook(guard, SND_SERVICE);
 }
 
+void HookSndMusic(const Core::CPUThreadGuard& guard)
+{
+  SndHook(guard, SND_MUSIC);
+}
+
 void HookPreUpdate(const Core::CPUThreadGuard& guard)
 {
   auto& system = guard.GetSystem();
@@ -2751,7 +2788,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     if (s_snd_end_after)
     {
       s_snd_end_after = false;
-      EndFight(system, ram, s_snd_end_frame, "");
+      EndFight(system, ram, s_snd_end_frame, s_snd_end_reason);
     }
     return;
   }
@@ -2933,6 +2970,9 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       // October rollback was switched off here for the rest of the session and both machines went on unsynchronised;
       // now this machine ends the fight and waits for the host's state like after a normal fight.
       fprintf(stderr, "FFNYRB: no inputs from the other side for 10 s - fight ended here\n");
+      // the held sound calls of the frames this machine ran go out first (on the host they are the real timeline)
+      if (SndFlushThenEnd(ppc, f, "no inputs from the other side for 10 s"))
+        return;
       EndFight(system, ram, f, "no inputs from the other side for 10 s");
       return;
     }
@@ -2965,6 +3005,8 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   {
     // the host ends the fight for everyone: the machines did not reach the end of the fight at the same frame (e.g.
     // the post-KO screens went different ways). This machine's state does not matter: the host's replaces it.
+    if (SndFlushThenEnd(ppc, f, s_force_reason))
+      return;
     EndFight(system, ram, f, s_force_reason);
     return;
   }
@@ -3036,12 +3078,8 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   if (!fight)
   {
     // fight over and every input confirmed: back to normal netplay (the held sound calls go out first)
-    if (SndStartSends(ppc, 0xFFFFFFFF))
-    {
-      s_snd_end_after = true;
-      s_snd_end_frame = f;
+    if (SndFlushThenEnd(ppc, f, ""))
       return;
-    }
     EndFight(system, ram, f, "");
     return;
   }
