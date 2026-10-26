@@ -191,6 +191,17 @@ struct SndCall
 };
 std::deque<SndCall> s_snd_q;
 bool s_snd_defer = false;     // hooks installed
+// 0 = nothing held (FFNY_RB_NOSNDHOLD=1), 1 = only the event poster held (default), 2 = poster and 0x801D36B8 held
+// (FFNY_RB_SNDHOLDALL=1, the 3017204 behaviour). 0x801D36B8(ch) clears / stops sound channel ch (0x801D372C ->
+// 0x801D53A0 -> 0x801D3854 frees the channel's blocks); the game calls it right before or after the (not held) calls
+// that start new music / speech, so holding it alone made the clear land after the start (26 October: no fight
+// music after unpausing / after a Blazin', chorus cut short). A clear repeated by a re-simulation is harmless.
+int s_snd_mode = 1;
+const char* SndModeName()
+{
+  return s_snd_mode == 0 ? "off" : s_snd_mode == 1 ? "on for the event poster only" : "on for the poster and the channel clear";
+}
+
 bool s_snd_sending = false;   // a held call is being made right now (the hooks let it through)
 bool s_snd_end_after = false; // after the sends: end the fight (EndFight was due when they started)
 u32 s_snd_end_frame = 0;
@@ -1660,13 +1671,19 @@ void OnVIField(Core::System& system)
   if (Rd32(ram, OS_RECV_SLEEP) == 0x48002839)  // bl 0x802776E8
     HLE::Patch(system, OS_RECV_SLEEP, "FFNYRollbackFsWait");
   // sound calls held back until their frame is confirmed (see HookSndPost)
-  if (Rd32(ram, SND_POST) == 0x9421FF60 && Rd32(ram, SND_SERVICE) == 0x9421FFF0 &&
-      std::getenv("FFNY_RB_NOSNDHOLD") == nullptr)
+  s_snd_mode = std::getenv("FFNY_RB_NOSNDHOLD") ? 0 : std::getenv("FFNY_RB_SNDHOLDALL") ? 2 : 1;
+  if (s_snd_mode && Rd32(ram, SND_POST) == 0x9421FF60 && Rd32(ram, SND_SERVICE) == 0x9421FFF0)
   {
     HLE::Patch(system, SND_POST, "FFNYRollbackSndPost");
-    HLE::Patch(system, SND_SERVICE, "FFNYRollbackSndService");
+    if (s_snd_mode == 2)
+      HLE::Patch(system, SND_SERVICE, "FFNYRollbackSndService");
     s_snd_defer = true;
   }
+  else
+  {
+    s_snd_mode = 0;
+  }
+  Report(std::string("FFNY: sound hold ") + SndModeName());
   if (std::getenv("FFNY_RB_NOSYSFREE") == nullptr)
   {
     s_sys_alloc_hook = hook;
@@ -2593,7 +2610,8 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
                "rollback state %u (at most %u frames after the file system was busy)",
                s_fs_episodes, LOAD_TAIL, s_lockstep_tail, s_conv_out, s_conv_gap_max);
       line += e;
-      snprintf(e, sizeof e, "; sound events held %u, sent %u, dropped %u", s_snd_held, s_snd_sent, s_snd_dropped);
+      snprintf(e, sizeof e, "; sound events held %u, sent %u, dropped %u (hold %s)", s_snd_held, s_snd_sent,
+               s_snd_dropped, SndModeName());
       line += e;
       snprintf(e, sizeof e, "; reads finished at once %u; SysHeap blocks of thrown-away frames freed %u%s", s_fs_instant,
                s_sys_freed, s_sys_free_overflow ? (" (" + std::to_string(s_sys_free_overflow) + " left: free log full)").c_str() : "");
