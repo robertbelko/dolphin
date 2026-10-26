@@ -84,6 +84,10 @@ void HookRender(const Core::CPUThreadGuard& guard);
 void HookMatchUpdate(const Core::CPUThreadGuard& guard);
 void HookFsWait(const Core::CPUThreadGuard& guard);
 void HookSndPost(const Core::CPUThreadGuard& guard);
+void HookSndMusic(const Core::CPUThreadGuard& guard);  // 0x80011108 music event send
+void HookSndTrAccept(const Core::CPUThreadGuard& guard);  // lab sound trace
+void HookSndTrStart(const Core::CPUThreadGuard& guard);
+void HookSndTrEvict(const Core::CPUThreadGuard& guard);
 void HookSndService(const Core::CPUThreadGuard& guard);
 template <int I>
 void HookTraceN(const Core::CPUThreadGuard& guard);  // lab
