@@ -61,7 +61,13 @@
 namespace FFNYRollback
 {
 // lab: decided at process start (before the JIT compiles anything); netplay would set it before the game boots
-bool g_virtual_tb = std::getenv("FFNY_RB_ALWAYS") != nullptr && std::getenv("FFNY_RB_NOVTB") == nullptr;
+// FFNY_RB_MENUS=1 (27 October): rollback stays on after the first fight - KO scenes, results, rematch, menus,
+// loading and the next fights, with no resync in between (the lab's FFNY_RB_ALWAYS=frame does the same from a frame)
+bool s_menus = std::getenv("FFNY_RB_MENUS") != nullptr;
+bool s_menus_on = false;
+bool s_real_fight_now = false;  // set at every update start: the fight itself runs  // menus mode: rollback started (first fight) and stays on
+bool g_virtual_tb = (std::getenv("FFNY_RB_ALWAYS") != nullptr || std::getenv("FFNY_RB_MENUS") != nullptr) &&
+                    std::getenv("FFNY_RB_NOVTB") == nullptr;
 u64 s_vtb_anchor = 0;
 u32 s_vtb_frame0 = 0, s_vtb_steps = 0;
 bool s_vtb_mode = false;
@@ -163,6 +169,11 @@ u32 s_music_deduped = 0, s_music_resent = 0;
 bool s_music_hold_old = std::getenv("FFNY_RB_MUSICHOLD") != nullptr;  // lab: the 153a233 behaviour (held until confirmed)
 bool s_snd_defer = false;     // hooks installed
 bool s_snd_trace = false, s_snd_hold_on = true;  // lab: FFNY_RB_SNDTRACE; FFNY_RB_NOSNDHOLD
+const char* SndModeName()
+{
+  return !s_snd_hold_on ? "off" : s_music_hold_old ? "on (speech + music held until confirmed)" :
+                                  "on (speech held until confirmed; music cues sent at once, not repeated by re-simulations)";
+}
 bool s_snd_sending = false;   // a held call is being made right now (the hooks let it through)
 bool s_snd_end_after = false; // after the sends: end the fight (EndFight was due when they started)
 u32 s_snd_end_frame = 0;
@@ -1314,6 +1325,17 @@ std::string CallChain(const u8* ram, u32 sp, int max)
 void StartFight(u8* ram, u32 tick_obj, u32 f)
 {
   s_active = true;
+  if (s_menus && !s_menus_on)
+  {
+    // rollback in the menus needs rbtag v6 (frees of the menus' main-heap blocks kept in the rollback state)
+    if (Rd32(ram, 0x8049A408) == 0x52425436)
+    {
+      s_menus_on = true;
+      Report("FFNY: rollback stays on after this fight (menus mode)");
+    }
+    else
+      Report("FFNY: menus mode needs rbtag v6 in the DOL (rbtag_v6_install.py) - rollback in fights only");
+  }
   s_vtb_anchor = 0;
   s_snd_q.clear();
   s_snd_held = s_snd_sent = s_snd_dropped = 0;
@@ -2020,7 +2042,7 @@ void OnVIField(Core::System& system)
   }
   // sound calls held back until their frame is confirmed (see HookSndPost)
   s_snd_trace = std::getenv("FFNY_RB_SNDTRACE") != nullptr;
-  s_vtb_mode = std::getenv("FFNY_RB_ALWAYS") != nullptr && std::getenv("FFNY_RB_NOVTB") == nullptr;
+  s_vtb_mode = (std::getenv("FFNY_RB_ALWAYS") != nullptr || s_menus) && std::getenv("FFNY_RB_NOVTB") == nullptr;
 
   s_snd_hold_on = std::getenv("FFNY_RB_NOSNDHOLD") == nullptr;
   if (Rd32(ram, SND_POST) == 0x9421FF60 && Rd32(ram, SND_SERVICE) == 0x9421FFF0 && (s_snd_hold_on || s_snd_trace))
@@ -2042,6 +2064,9 @@ void OnVIField(Core::System& system)
     HLE::Patch(system, 0x801D347C, "FFNYSndTrEvict");   // r3 = request slot discarded
     HLE::Patch(system, 0x80011124, "FFNYSndTrMusRes");  // r3 = MPF post-event result of the music cue send
   }
+  if (!s_snd_defer)
+    s_snd_hold_on = s_music_hold = false;
+  Report(std::string("FFNY: sound hold ") + SndModeName());
   if (std::getenv("FFNY_RB_NOSYSFREE") == nullptr)
   {
     s_sys_alloc_hook = hook;
@@ -2130,7 +2155,12 @@ void HookLoader(const Core::CPUThreadGuard& guard)
         s_conv_gap_max = std::max(s_conv_gap_max, cf > s_fs_real_busy ? cf - s_fs_real_busy : 0);
       }
       s_conv_frame = std::max(s_conv_frame, cf);
-      s_fs_last_busy = std::max(s_fs_last_busy, s_conv_frame);
+      // With instant loads the data comes from a read that finished inside the logic frame that asked for it: a
+      // rewind before that frame reads it again, a rewind between the read and the conversion converts it again
+      // (loader fix: original bytes restored) - no lockstep needed (lab 25 October: stress rollbacks on every frame,
+      // no lockstep, whole fight to the KO: 0 mismatches, 0 empty-bank lookups)
+      if (!InstantDiscReads())
+        s_fs_last_busy = std::max(s_fs_last_busy, s_conv_frame);
     }
   }
   if (s_log)
@@ -3406,6 +3436,7 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
   // The other side may still lack our last frames (lost packets) and waits for them: send them once more, reliably.
   ResendInputs(true);
   s_active = false;
+  s_menus_on = false;  // a forced end (disconnect, the host ended it): the next fight starts menus mode again
   system.GetCoreTiming().SetFrozen(false);
   s_loader_undo.clear();
   s_snd_dropped += u32(s_snd_q.size());  // only left when the fight was ended early (they never got confirmed)
@@ -3440,13 +3471,14 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
              s_rb_across_conv, s_bank_guard, s_lockstep_frames, s_lockstep_us / 1e6);
     std::string line = std::string(b) + c;
     {
-      char e[200];
+      char e[320];
       snprintf(e, sizeof e,
                "; load episodes %u, lockstep frames only for the %u-frame tail %u, conversions of data outside the "
                "rollback state %u (at most %u frames after the file system was busy)",
                s_fs_episodes, LOAD_TAIL, s_lockstep_tail, s_conv_out, s_conv_gap_max);
       line += e;
-      snprintf(e, sizeof e, "; sound events held %u, sent %u, dropped %u", s_snd_held, s_snd_sent, s_snd_dropped);
+      snprintf(e, sizeof e, "; sound events held %u, sent %u, dropped %u (hold %s); music cues not repeated %u",
+               s_snd_held, s_snd_sent, s_snd_dropped, SndModeName(), s_music_deduped);
       line += e;
       snprintf(e, sizeof e, "; reads finished at once %u; SysHeap blocks of thrown-away frames freed %u%s", s_fs_instant,
                s_sys_freed, s_sys_free_overflow ? (" (" + std::to_string(s_sys_free_overflow) + " left: free log full)").c_str() : "");
@@ -3923,13 +3955,17 @@ void HookAsyncSend(const Core::CPUThreadGuard& guard)
     for (const auto& [t, w] : s_idle_wait)
       if (w == q + 8)
       {
-        // Most of these are calls that the logic waits for in the same frame (the worker answers on a queue the
-        // main thread waits on: 920 in the bench's menus), so no barrier here - a frame in which a worker is still busy
-        // at the next update start is protected by the lockstep rule (lab switch FFNY_RB_ASYNCBARRIER=1: barrier anyway)
-        static const bool barrier = std::getenv("FFNY_RB_ASYNCBARRIER") != nullptr;
+        // A barrier outside the running fight: a job started by a frame with a mispredicted input would be started
+        // again by the re-simulation (lab stress run: the fight loader's job at 9060 crashed the front end at 9061 when a
+        // rollback went back across it). Most messages are calls the logic waits for in the same frame (the card
+        // worker: ~1 per 7 frames in the menus), so with inputs not yet known this costs a short wait in the menus. In
+        // the running fight (~1 message per 10 frames, calls only) no barrier, so rollback keeps its feel there.
+        // Lab: FFNY_RB_NOASYNCBARRIER.
+        static const bool no_barrier = std::getenv("FFNY_RB_NOASYNCBARRIER") != nullptr;
+        const bool in_fight = s_real_fight_now;
         const u32 f = Rd32(ram, W_FRAME);
         s_async_barriers++;
-        if (barrier)
+        if (!no_barrier && !in_fight)
         {
           s_async_last = std::max(s_async_last, f);
           s_async_last_thread = t;
@@ -4129,9 +4165,10 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   // lockstep after the resync, not in rollback (the rematch choice went different ways on the two machines).
   s_left_match = !in_match;
   bool fight = in_match && Rd32(ram, ADDR_FIGHT) == 1 && !(Rd32(ram, ADDR_FIGHT_FLAGS) & FIGHT_DECIDED);
+  s_real_fight_now = fight;  // the fight itself is running (not the menus / KO scenes / loading of menus mode)
   // lab: FFNY_RB_ALWAYS=F -> rollback runs everywhere (menus, loading, fights) from logic frame F on
   static const u32 s_always = std::getenv("FFNY_RB_ALWAYS") ? u32(std::atoi(std::getenv("FFNY_RB_ALWAYS"))) : 0;
-  if (s_always && f >= s_always)
+  if ((s_always && f >= s_always) || s_menus_on)
   {
     fight = true;
     s_left_match = false;
@@ -4416,6 +4453,13 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       return;
     }
     waited = true;
+    if (s_loop && need)
+    {
+      // lab loopback in lockstep: the "other side" would send these anyway
+      for (const auto& q : s_loop_q)
+        OnRemoteInput(1, q.first, q.second.data());
+      s_loop_q.clear();
+    }
     std::this_thread::sleep_for(std::chrono::microseconds(250));
     Pump();
     // a lost message must not stall us: resend what the other side lacks every 8 ms while waiting
@@ -4450,6 +4494,9 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     return;
   }
 
+  if (s_mispredict_from != 0xFFFFFFFF && s_stress && (CardLocked(std::max(s_mispredict_from, s_start_frame)) ||
+                                                      std::max(s_mispredict_from, s_start_frame) <= s_stall_guard))
+    s_mispredict_from = 0xFFFFFFFF;  // lab stress: frames that ran in lockstep are never mispredicted
   if (s_mispredict_from != 0xFFFFFFFF)
   {
     const u32 s = std::max(s_mispredict_from, s_start_frame);
@@ -4475,7 +4522,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       if (s_conv_frame >= s)
       {
         s_rb_across_conv++;  // the game converted a loaded file in a frame that is now thrown away
-        if (!s_conv_warned)
+        if (!s_conv_warned && !InstantDiscReads())  // with instant loads the re-simulation converts it again
         {
           s_conv_warned = true;
           Report("FFNY WARNING: rollback " + std::to_string(f) + "->" + std::to_string(s) +
