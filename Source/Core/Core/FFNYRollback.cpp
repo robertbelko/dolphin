@@ -1745,7 +1745,14 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
     else
       Report("FFNY: menus mode needs rbtag v6 in the DOL (rbtag_v6_install.py) - rollback in fights only");
   }
-  s_vtb_anchor = 0;
+  // The frame clock (menus mode / lab always mode) starts here, from the time base both machines share at this moment
+  // (before the first rollback fight they ran in Dolphin's lockstep netplay, cycle for cycle). Before 27 October the
+  // anchor was the real time base at the first frame-clock read - in menus mode that is after the first fight (or at
+  // the first pause), when the machines' emulated times already differ: every clock read in the menus then differed
+  // by a constant on the two machines (Apt's clock 0x804404BC; random generators seeded from it at the next fight's
+  // set-up, 0x80396BB8 and the array at 0x803F92D0 -> fighter 2 differed 4 frames into the next fight).
+  s_vtb_anchor = Core::System::GetInstance().GetPowerPC().ReadFullTimeBaseValue();
+  s_vtb_frame0 = f;
   s_snd_q.clear();
   s_snd_held = s_snd_sent = s_snd_dropped = 0;
   Wr32(ram, W_CONF, f - 1);
