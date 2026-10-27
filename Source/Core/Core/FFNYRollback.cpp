@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -66,6 +67,23 @@ namespace FFNYRollback
 bool s_menus = std::getenv("FFNY_RB_MENUS") != nullptr;
 bool s_menus_on = false;
 bool s_real_fight_now = false;  // set at every update start: the fight itself runs  // menus mode: rollback started (first fight) and stays on
+// menus mode (27 October, Robert's first test: ~70 % speed in the KO scenes, results, pause and menus): outside the
+// running fight every frame waits for all inputs (lockstep), and lockstep runs at most (input delay of both players)
+// frames per round trip - with the rollback delay of 2 and 100 ms ping that is ~4 of the 6 frames needed. There the
+// local inputs now get the netplay pad buffer as their delay (like Dolphin's own netplay menus before the first
+// fight); the running fight keeps the rollback delay. Set by netplay (SetMenuDelay); lab: FFNY_RB_MENUDELAY=N.
+std::atomic<u32> s_menu_delay{0};
+constexpr u32 MAX_MENU_DELAY = 40;  // frames (the input ring holds 128)
+u32 s_cur_delay = 0;                // delay used for the newest captured frame (for the log)
+// menus mode: fights are marked at confirmed frames (HashFrame), for the per-fight summary, counters and checks
+bool s_fight_raw_prev = false;
+u32 s_fight_no = 0, s_fight_from = 0;
+// watchdog (27 October: one machine stopped for good ~6 s into the next round, and closing Dolphin then froze):
+// a thread that notices when the game has not reached its next update for a while and says where the CPU thread is
+std::atomic<u64> s_pre_count{0};
+std::atomic<const char*> s_wait_where{nullptr};
+std::atomic<bool> s_resync_waiting{false};
+std::atomic<s64> s_resync_since_ms{0};
 bool g_virtual_tb = (std::getenv("FFNY_RB_ALWAYS") != nullptr || std::getenv("FFNY_RB_MENUS") != nullptr) &&
                     std::getenv("FFNY_RB_NOVTB") == nullptr;
 u64 s_vtb_anchor = 0;
@@ -199,6 +217,7 @@ u32 s_time_base = 0, s_time_dt = 0;  // game timing object 0x8035D618: +8 VI cou
 u32 s_frames = 0, s_rollbacks = 0, s_resim_frames = 0, s_max_depth = 0, s_waits = 0;
 u64 s_wait_us = 0, s_save_us = 0, s_load_us = 0;
 u32 s_desyncs = 0, s_hash_checked = 0;
+u32 s_desyncs_fight = 0;  // desyncs since this fight started (the chat gets the first 3 of every fight)
 bool s_log = false;
 u32 s_stress = 0;
 u32 s_loop = 0;  // lab: pad 1 is played locally but its inputs arrive as "remote" inputs s_loop frames late
@@ -843,6 +862,7 @@ static void DesyncDump(u32 f)
 }
 std::vector<std::array<u32, 3>> s_lab_pokes;  // frame, address, value
 std::mutex s_lab_pokes_mutex;
+static void OnRemoteStateCheck(const std::vector<u8>& m);
 void Pump()
 {
   if (!s_transport)
@@ -917,6 +937,10 @@ void Pump()
       for (u32 i = 0; i < count; i++)
         OnRemoteInput(port, first + i, &m[7 + i * REC_SIZE]);
     }
+    else if (m.size() >= 9 && m[0] == 'C')
+    {
+      OnRemoteStateCheck(m);  // the other machine's full-state check (see StateCheck)
+    }
     else if (m.size() >= 9 && m[0] == 'H')
     {
       const u32 f = Get32(&m[1]), h = Get32(&m[5]);
@@ -937,14 +961,15 @@ void Pump()
         if (it->second != h)
         {
           s_desyncs++;
+      s_desyncs_fight++;
           fprintf(stderr, "FFNYRB DESYNC at frame %u (local %08x remote %08x)\n", f, it->second, h);
           DesyncDump(f);
-          if (s_desyncs <= 3)
+          if (s_desyncs_fight <= 3)
             OSD::AddMessage("FFNY rollback: DESYNC detected at frame " + std::to_string(f), 8000,
                             OSD::Color::RED);
           auto lp = s_local_parts.find(f);
           auto rp = s_remote_parts.find(f);
-          if (s_desyncs <= 3 && lp != s_local_parts.end() && rp != s_remote_parts.end() && s_ram)
+          if (s_desyncs_fight <= 3 && lp != s_local_parts.end() && rp != s_remote_parts.end() && s_ram)
             CompareParts(f, lp->second, rp->second, s_ram);
         }
       }
@@ -1092,8 +1117,10 @@ void CompareParts(u32 f, const std::array<u32, NPARTS>& local, const std::array<
   Report("FFNY DESYNC at frame " + std::to_string(f) + ": " + which + " differ. Mine now: " + FightSummary(ram));
 }
 
+static void MenusFightMarks(const u8* ram, u32 f);
 void HashFrame(const u8* ram, u32 f)
 {
+  MenusFightMarks(ram, f);
   // lab: FFNY_RB_CONFDUMP=from,to,file -> MEM1 (24 MB raw) of the confirmed frames from..to (compare two machines)
   {
     static u32 cd_from = 0, cd_to = 0;
@@ -1151,12 +1178,13 @@ void HashFrame(const u8* ram, u32 f)
     if (it->second != h)
     {
       s_desyncs++;
+      s_desyncs_fight++;
       fprintf(stderr, "FFNYRB DESYNC at frame %u (local %08x remote %08x)\n", f, h, it->second);
       DesyncDump(f);
-      if (s_desyncs <= 3)
+      if (s_desyncs_fight <= 3)
         OSD::AddMessage("FFNY rollback: DESYNC detected at frame " + std::to_string(f), 8000,
                         OSD::Color::RED);
-      if (s_desyncs <= 3)
+      if (s_desyncs_fight <= 3)
         if (auto rp = s_remote_parts.find(f); rp != s_remote_parts.end())
           CompareParts(f, parts, rp->second, ram);
     }
@@ -1424,6 +1452,285 @@ std::string CallChain(const u8* ram, u32 sp, int max)
   return out.empty() ? "-" : out;
 }
 
+// ---- Menus mode: per-fight marks and full-state checks (27 October) ----
+// The desync check of every frame covers the fighters, the RNGs and the frame counter only. Without the resync after a
+// fight, anything else that differs between the machines (game memory of the menus, the music module, heaps) stays.
+// At the start of every fight and every 10 s outside the fights, both machines hash their whole rollback state (the
+// same memory a rewind restores, plus the menus' VMEM heap) in 64 KB pieces and compare them: the log names the
+// pieces that differ (the chat says how many).
+// input delay for the frame captured now: the rollback delay in the running fight, the netplay pad buffer outside it
+// in menus mode (every frame there runs in lockstep; see s_menu_delay)
+static u32 CaptureDelay()
+{
+  const u32 d = s_settings.input_delay;
+  static const char* md = std::getenv("FFNY_RB_MENUDELAY");
+  static const bool menu_rollback = std::getenv("FFNY_RB_MENUROLLBACK") != nullptr;
+  if (!s_menus_on || s_real_fight_now || menu_rollback)
+    return d;
+  const u32 want = md ? u32(std::atoi(md)) : s_menu_delay.load();
+  return std::clamp<u32>(want, d, std::max(d, MAX_MENU_DELAY));
+}
+
+u32 s_mark_frame = 0;  // frame of the newest fight start / end mark
+struct ChunkCheck
+{
+  std::string what;
+  std::vector<std::array<u32, 3>> chunks;  // address, length, hash
+};
+std::map<u32, ChunkCheck> s_chk_local;
+std::map<u32, std::vector<std::array<u32, 3>>> s_chk_remote;
+u32 s_chk_reports = 0;
+
+static u32 HashBytes(const u8* p, size_t n)
+{
+  u64 h = 0x84222325CBF29CE4ull;
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8)
+  {
+    u64 w;
+    memcpy(&w, p + i, 8);
+    h = (h ^ w) * 0x9E3779B97F4A7C15ull;
+    h ^= h >> 29;
+  }
+  for (; i < n; i++)
+    h = (h ^ p[i]) * 0x100000001B3ull;
+  return u32(h ^ (h >> 32));
+}
+
+static u32 MenuDelayNow()
+{
+  const bool keep = s_real_fight_now;
+  s_real_fight_now = false;
+  const u32 d = CaptureDelay();
+  s_real_fight_now = keep;
+  return d;
+}
+
+static const char* ChunkLabel(u32 addr, u32 len)
+{
+  auto in = [&](u32 a) { return a >= addr && a < addr + len; };
+  if (in(0x8043FAC8))
+    return " (Apt draw ring: render side)";
+  if (in(0x80653C00))
+    return " (GX texture objects: render side)";
+  if (in(0x806D8E4C))
+    return " (front-end FPS meter: render side)";
+  if (in(0x80440AD0) || in(0x804372A4) || in(0x80440B38))
+    return " (music module)";
+  if (addr >= 0x803F1144 && addr < 0x803F1144 + 4 * 0x12F8)
+    return " (fighters)";
+  if (addr >= VMEM_BASE)
+    return " (VMEM: front-end heap)";
+  return "";
+}
+
+static void CompareStateCheck(u32 f)
+{
+  auto l = s_chk_local.find(f);
+  auto r = s_chk_remote.find(f);
+  if (l == s_chk_local.end() || r == s_chk_remote.end())
+    return;
+  std::map<std::pair<u32, u32>, u32> theirs;
+  for (const auto& c : r->second)
+    theirs[{c[0], c[1]}] = c[2];
+  u32 differ = 0, only_mine = 0, compared = 0;
+  u64 differ_bytes = 0;
+  std::string list;
+  for (const auto& c : l->second.chunks)
+  {
+    auto it = theirs.find({c[0], c[1]});
+    if (it == theirs.end())
+    {
+      only_mine++;
+      continue;
+    }
+    compared++;
+    if (it->second != c[2])
+    {
+      differ++;
+      differ_bytes += c[1];
+      if (differ <= 40)
+        list += fmt::format("{}{:08x}+{:x}{}", list.empty() ? "" : ", ", c[0], c[1], ChunkLabel(c[0], c[1]));
+    }
+    theirs.erase(it);
+  }
+  const u32 only_theirs = u32(theirs.size());
+  std::string line;
+  if (!differ && !only_mine && !only_theirs)
+    line = fmt::format("FFNY state check at frame {} ({}): whole rollback state equal on both machines ({} pieces)", f,
+                       l->second.what, compared);
+  else
+    line = fmt::format("FFNY state check at frame {} ({}): {} of {} pieces DIFFER ({} KB){}{}; memory layout: {} pieces "
+                       "only here, {} only on the other machine",
+                       f, l->second.what, differ, compared, differ_bytes / 1024, list.empty() ? "" : ": ", list,
+                       only_mine, only_theirs);
+  LogLine(line);
+  fprintf(stderr, "FFNYRB %s\n", line.c_str());
+  // the chat: the machine playing port 1 speaks for both (the other one only logs); at most 8 lines per session
+  if (s_report_cb && (s_settings.local_ports & 1) && s_chk_reports++ < 8)
+  {
+    if (!differ && !only_mine && !only_theirs)
+      s_report_cb(line);
+    else
+      s_report_cb(fmt::format("FFNY state check at frame {} ({}): {} of {} memory pieces differ between the machines, "
+                              "layout differs in {} - details in Logs/FFNY_rollback.log",
+                              f, l->second.what, differ, compared, only_mine + only_theirs));
+  }
+  s_chk_local.erase(l);
+  s_chk_remote.erase(r);
+}
+
+static void OnRemoteStateCheck(const std::vector<u8>& m)
+{
+  const u32 f = Get32(&m[1]), n = Get32(&m[5]);
+  if (m.size() < 9 + size_t(n) * 12)
+    return;
+  std::vector<std::array<u32, 3>> v(n);
+  for (u32 i = 0; i < n; i++)
+    v[i] = {Get32(&m[9 + 12 * i]), Get32(&m[13 + 12 * i]), Get32(&m[17 + 12 * i])};
+  s_chk_remote[f] = std::move(v);
+  while (s_chk_remote.size() > 8)
+    s_chk_remote.erase(s_chk_remote.begin());
+  CompareStateCheck(f);
+}
+
+static void StateCheck(const u8* ram, u32 f, const char* what)
+{
+  if (!s_transport || std::getenv("FFNY_RB_NOSTATECHECK"))
+    return;
+  auto& memory = Core::System::GetInstance().GetMemory();
+  std::vector<std::pair<u32, u32>> ranges;
+  BuildRanges(ram, memory.GetRamSizeReal(), ranges);
+  // not compared: the main thread's stack (dead space below the stack pointer holds whatever the last calls left) and
+  // the GPU fence counter (render driven)
+  const u32 st_hi = Rd32(ram, 0x80432D10 + 0x304) & 0x01FFFFFF, st_lo = Rd32(ram, 0x80432D10 + 0x308) & 0x01FFFFFF;
+  std::vector<std::pair<u32, u32>> excl = {{0x002F4CB0, 0x002F4CB4}};
+  if (st_lo < st_hi && st_hi - st_lo < 0x100000)
+    excl.push_back({st_lo, st_hi});
+  ChunkCheck cc;
+  cc.what = what;
+  auto add = [&](const u8* base, u32 addr0, u32 lo, u32 hi) {
+    while (lo < hi)
+    {
+      const u32 end = std::min(hi, (lo | 0xFFFF) + 1);
+      cc.chunks.push_back({addr0 + lo, end - lo, HashBytes(base + lo, end - lo)});
+      lo = end;
+    }
+  };
+  for (auto [lo, hi] : ranges)
+  {
+    std::vector<std::pair<u32, u32>> parts = {{lo, hi}};
+    for (auto [xl, xh] : excl)
+    {
+      std::vector<std::pair<u32, u32>> next;
+      for (auto [a, b] : parts)
+      {
+        if (xh <= a || xl >= b)
+        {
+          next.push_back({a, b});
+          continue;
+        }
+        if (a < xl)
+          next.push_back({a, xl});
+        if (xh < b)
+          next.push_back({xh, b});
+      }
+      parts = std::move(next);
+    }
+    for (auto [a, b] : parts)
+      add(ram, 0x80000000u, a, b);
+  }
+  if (const u8* vmem = memory.GetFakeVMEM())
+  {
+    std::vector<std::pair<u32, u32>> vr;
+    BuildVRanges(ram, vmem, vr);
+    for (auto [lo, hi] : vr)
+      add(vmem, VMEM_BASE, lo, hi);
+  }
+  std::vector<u8> m;
+  m.reserve(9 + cc.chunks.size() * 12);
+  m.push_back('C');
+  Put32(m, f);
+  Put32(m, u32(cc.chunks.size()));
+  for (const auto& c : cc.chunks)
+    for (u32 v : c)
+      Put32(m, v);
+  s_transport->Send(m);
+  s_chk_local[f] = std::move(cc);
+  while (s_chk_local.size() > 8)
+    s_chk_local.erase(s_chk_local.begin());
+  CompareStateCheck(f);
+}
+
+// lab / diagnosis: FFNY_RB_EVDUMP=prefix -> MEM1 (and the VMEM heap) at every fight start / end mark of menus mode, to
+// prefix.FRAME.mem1 / .vmem (give each Dolphin its own prefix and compare the files of the same frame)
+static void EvDump(const u8* ram, u32 f)
+{
+  static const char* ev = std::getenv("FFNY_RB_EVDUMP");
+  static u32 n = 0;
+  if (!ev || n >= 16)
+    return;
+  n++;
+  if (FILE* df = fopen(fmt::format("{}.{}.mem1", ev, f).c_str(), "wb"))
+  {
+    fwrite(ram, 1, 0x01800000, df);
+    fclose(df);
+  }
+  if (const u8* vmem = Core::System::GetInstance().GetMemory().GetFakeVMEM())
+    if (FILE* df = fopen(fmt::format("{}.{}.vmem", ev, f).c_str(), "wb"))
+    {
+      fwrite(vmem, 1, 0x00A00000, df);
+      fclose(df);
+    }
+}
+
+static void MenusFightMarks(const u8* ram, u32 f)
+{
+  if (!s_menus_on || !s_active)
+    return;
+  const bool raw = Rd32(ram, ADDR_FIGHT) == 1 && !(Rd32(ram, ADDR_FIGHT_FLAGS) & FIGHT_DECIDED);
+  if (raw == s_fight_raw_prev)
+  {
+    // outside the fights (lockstep: every frame is hashed here, at the same frames on both machines): every 10 s
+    if (!raw && f % 600 == 0 && f >= s_mark_frame + 10)
+      StateCheck(ram, f, "between fights");
+    return;
+  }
+  s_fight_raw_prev = raw;
+  s_mark_frame = f;
+  std::string line;
+  if (!raw)
+  {
+    line = fmt::format("FFNY fight {} over at frame {} (menus mode: rollback stays on, no resync): {} rollbacks (max {} "
+                       "frames, {} frames re-simulated), {} waits for the other side ({:.1f} s), {} desyncs; lockstep "
+                       "frames {} ({:.1f} s waiting)",
+                       s_fight_no, f, s_rollbacks, s_max_depth, s_resim_frames, s_waits, s_wait_us / 1e6,
+                       s_desyncs_fight, s_lockstep_frames, s_lockstep_us / 1e6);
+  }
+  else
+  {
+    s_fight_no++;
+    line = fmt::format("FFNY fight {} starts at frame {} (menus mode). Since the last fight: {} frames, {} waits for the "
+                       "other side ({:.1f} s), input delay outside the fight {}, {} desyncs",
+                       s_fight_no, f, f - s_fight_from, s_waits, s_wait_us / 1e6, MenuDelayNow(), s_desyncs_fight);
+    // the new fight's files are usually still loading (as at the first fight, see StartFight)
+    s_fs_last_busy = std::max(s_fs_last_busy, f + START_LOCKSTEP - LOAD_TAIL);
+    s_reports = 0;
+    s_desyncs_fight = 0;
+  }
+  s_fight_from = f;
+  s_rollbacks = s_resim_frames = s_max_depth = s_waits = 0;
+  s_wait_us = 0;
+  s_lockstep_frames = 0;
+  s_lockstep_us = 0;
+  LogLine(line);
+  if (s_report_cb)
+    s_report_cb(line);
+  if (raw)
+    StateCheck(ram, f, "fight start");
+  EvDump(ram, f);
+}
+
 void StartFight(u8* ram, u32 tick_obj, u32 f)
 {
   s_active = true;
@@ -1513,6 +1820,14 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
         fi.have = true;
         fi.rec = s_base[p];
       }
+  for (int p = 0; p < 4; p++)
+    if (s_settings.local_ports >> p & 1)
+      s_confirmed[p] = f + s_settings.input_delay - 1;  // captured up to here (see the capture in HookPreUpdate)
+  s_cur_delay = s_settings.input_delay;
+  s_fight_raw_prev = true;
+  s_fight_no = 1;
+  s_fight_from = f;
+  s_desyncs_fight = 0;
   if (s_loop)
   {
     // lab loopback: pad 1 stands for the remote player; its first delay frames come from the fight start
@@ -1616,7 +1931,12 @@ void LogLine(const std::string& text)
   char ts[32];
   const std::time_t now = std::time(nullptr);
   std::strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", std::localtime(&now));
-  const std::string line = std::string("[") + ts + "] " + text + "\n";
+  // both Dolphins of a one-PC test write to the same file: say which player this machine plays
+  std::string who;
+  for (int p = 0; p < 4; p++)
+    if (s_settings.local_ports >> p & 1)
+      who += (who.empty() ? "P" : "+P") + std::to_string(p + 1);
+  const std::string line = std::string("[") + ts + "] " + (who.empty() ? "" : "[" + who + "] ") + text + "\n";
   f.WriteBytes(line.data(), line.size());
 }
 
@@ -1700,9 +2020,89 @@ void AutoPlayPad(GCPadStatus* pad, int local_pad)
 }
 
 
+std::thread s_watchdog;
+std::atomic<bool> s_watchdog_quit{false};
+
+static s64 NowMs()
+{
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+// Watchdog (27 October): Robert's second test session ended with one machine that stopped sending inputs ~6 s into
+// the next round and never answered the "end the fight" message, and Dolphin froze when he closed it. This thread
+// writes into the chat and the log when the game has not reached its next update for 6 s while emulation runs (or the
+// resync after a fight has not come for 20 s), with what the CPU thread is doing.
+static void WatchdogLoop()
+{
+  auto& system = Core::System::GetInstance();
+  u64 last = s_pre_count.load();
+  s64 since = NowMs();
+  bool reported = false, resync_reported = false;
+  while (!s_watchdog_quit)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    const s64 now = NowMs();
+    std::string text;
+    if (s_resync_waiting)
+    {
+      if (!resync_reported && now - s_resync_since_ms.load() > 20000)
+      {
+        resync_reported = true;
+        text = "FFNY WATCHDOG: the host's state after the fight has not arrived for 20 s (this machine is paused "
+               "waiting for it)";
+      }
+    }
+    else
+    {
+      resync_reported = false;
+    }
+    const u64 c = s_pre_count.load();
+    const bool watch = (s_active || s_menus_on) && Core::GetState(system) == Core::State::Running && !s_resync_waiting;
+    if (c != last || !watch)
+    {
+      last = c;
+      since = now;
+      reported = false;
+    }
+    else if (!reported && now - since > 6000)
+    {
+      reported = true;
+      const u8* ram = system.GetMemory().GetRAM();
+      auto& ppc = system.GetPPCState();
+      const char* where = s_wait_where.load();
+      text = fmt::format(
+          "FFNY WATCHDOG: the game has not reached its next update for 6 s (frame {}, rollback {}{}). CPU thread: {}{}; "
+          "emulated pc {:08x} lr {:08x}, OS thread {:08x}, calls {}",
+          Rd32(ram, ADDR_COUNTER), s_active ? "on" : "off", s_menus_on ? ", menus mode" : "",
+          where ? where : "in game code (not in a wait of the rollback layer)",
+          s_snd_sending ? ", sending held sound calls" : "", ppc.pc, ppc.spr[SPR_LR], Rd32(ram, 0x800000E4),
+          CallChain(ram, ppc.gpr[1], 10));
+    }
+    if (!text.empty())
+    {
+      fprintf(stderr, "FFNYRB %s\n", text.c_str());
+      LogLine(text);
+      if (auto cb = s_report_cb)
+        cb(text);
+    }
+  }
+}
+
 void Configure(const Settings& settings, Transport* transport)
 {
   s_settings = settings;
+  s_menus_on = false;
+  s_real_fight_now = false;
+  s_resync_waiting = false;
+  s_chk_local.clear();
+  s_chk_remote.clear();
+  s_chk_reports = 0;
+  if (settings.enabled && !s_watchdog.joinable())
+  {
+    s_watchdog_quit = false;
+    s_watchdog = std::thread(WatchdogLoop);
+  }
   s_transport = transport;
   s_active = false;
   s_log = std::getenv("FFNY_RB_LOG") != nullptr;
@@ -1727,6 +2127,13 @@ void SetFightEndCallback(std::function<void(Core::System&, u32 frame)> callback)
 
 void Shutdown()
 {
+  if (s_watchdog.joinable())
+  {
+    s_watchdog_quit = true;
+    s_watchdog.join();
+  }
+  s_menus_on = false;
+  s_resync_waiting = false;
   s_fight_end_cb = nullptr;
   s_report_cb = nullptr;
   s_settings.enabled = false;
@@ -1768,6 +2175,7 @@ void RequestForceEnd(const std::string& reason)
 void ClearForceEnd()
 {
   s_force_end = false;
+  s_resync_waiting = false;  // netplay calls this when the resync is done and everyone continues
 }
 
 std::string GetStatus()
@@ -3622,6 +4030,10 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
             s_rollbacks, s_max_depth, s_resim_frames, s_waits, s_lockstep_frames, s_fs_busy_frames, s_fs_done,
             s_rb_across_load, s_rb_across_conv, s_conv_out, s_fs_instant, s_bank_guard, s_desyncs);
   }
+  s_resync_since_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count();
+  s_resync_waiting = s_fight_end_cb != nullptr;
   OSD::AddMessage("FFNY rollback: fight over - " + std::to_string(s_rollbacks) + " rollbacks (max " +
                       std::to_string(s_max_depth) + " frames), " + std::to_string(s_desyncs) +
                       " desyncs; synchronising...",
@@ -4006,7 +4418,9 @@ static bool BarrierWait(Core::System& system, u8* ram, u32 f, const char* what)
     return false;
   const auto t0 = std::chrono::steady_clock::now();
   auto last_resend = t0;
-  while (MinConfirmed() < f && !s_force_end && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(10))
+  s_wait_where = "barrier before a call to a worker thread / the memory card: waiting for the other side's inputs";
+  while (MinConfirmed() < f && !s_force_end && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(10) &&
+         system.GetCPU().GetState() != CPU::State::PowerDown)
   {
     if (s_loop)
     {
@@ -4022,6 +4436,7 @@ static bool BarrierWait(Core::System& system, u8* ram, u32 f, const char* what)
       ResendInputs(false);
     }
   }
+  s_wait_where = nullptr;
   s_card_waits++;
   s_card_wait_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
   // A misprediction is NOT acted on here: rolling back from inside the call hung the game (lab, loopback lag: the
@@ -4107,7 +4522,9 @@ void HookCardBarrierN(const Core::CPUThreadGuard& guard)
       {
         const auto t0 = std::chrono::steady_clock::now();
         auto last_resend = t0;
-        while (MinConfirmed() < f && !s_force_end && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(10))
+        s_wait_where = "memory-card call: waiting for the other side's inputs";
+        while (MinConfirmed() < f && !s_force_end && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(10) &&
+               guard.GetSystem().GetCPU().GetState() != CPU::State::PowerDown)
         {
           if (s_loop)
           {
@@ -4124,6 +4541,7 @@ void HookCardBarrierN(const Core::CPUThreadGuard& guard)
             ResendInputs(false);
           }
         }
+        s_wait_where = nullptr;
         s_card_waits++;
         s_card_wait_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
         if (s_mispredict_from <= f)
@@ -4180,8 +4598,14 @@ static void ReplayInput(int p, u32 frame, Record& rec)
     rec = it->second;
 }
 
+void SetMenuDelay(u32 frames)
+{
+  s_menu_delay = frames;
+}
+
 void HookPreUpdate(const Core::CPUThreadGuard& guard)
 {
+  s_pre_count++;
   auto& system = guard.GetSystem();
   auto& ppc = system.GetPPCState();
   u8* ram = system.GetMemory().GetRAM();
@@ -4267,7 +4691,13 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       Report("FFNY: the host ended the fight for everyone (" + s_force_reason +
              "); this machine was not in a rollback fight - taking the host's state");
       if (s_fight_end_cb)
+      {
+        s_resync_since_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now().time_since_epoch())
+                               .count();
+        s_resync_waiting = true;
         s_fight_end_cb(system, f);
+      }
       return;
     }
     if (!fight)
@@ -4381,29 +4811,46 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
         }
       }
     }
+    // Every frame gets its local input exactly once. Before 27 October a stalled update (the same logic frame again
+    // while a fight loads - in menus mode that is under this layer) sampled the pad again for frame f + delay and sent
+    // it again; the other machine keeps the first copy it received, this one used the newest -> different inputs for
+    // one frame whenever the pad changed during the loading (Robert's test: desync 10-26 frames into the next fight,
+    // both times). Now a frame already captured is never captured again; a larger delay (fight -> menus) fills the
+    // frames in between with the current pad, a smaller one (menus -> fight) waits until f + delay is new again.
+    const u32 delay = CaptureDelay();
+    s_cur_delay = delay;
     for (int p = 0; p < 4; p++)
     {
       if (!(s_settings.local_ports >> p & 1))
         continue;
-      const u32 tf = f + s_settings.input_delay;
-      FrameInput& fi = s_input[p][tf % RING];
-      fi.frame = tf;
-      fi.have = true;
-      memcpy(fi.rec.data(), ram + ((tick_obj + SNAP_OFS + REC_OFS + p * REC_SIZE) & 0x01FFFFFF),
-             REC_SIZE);
-      // lab: FFNY_RB_INPUTREPLAY=file (written by FFNY_RB_INPUTLOG) -> the local inputs of those frames come from it
-      ReplayInput(p, tf, fi.rec);
+      const u32 tf = f + delay;
+      if (tf <= s_confirmed[p])
+      {
+        SendInputs(p, s_confirmed[p]);  // nothing new: still send (unacknowledged frames, our frame / lead for time sync)
+        continue;
+      }
+      Record rec;
+      memcpy(rec.data(), ram + ((tick_obj + SNAP_OFS + REC_OFS + p * REC_SIZE) & 0x01FFFFFF), REC_SIZE);
+      for (u32 t = s_confirmed[p] + 1; t <= tf; t++)
+      {
+        FrameInput& fi = s_input[p][t % RING];
+        fi.frame = t;
+        fi.have = true;
+        fi.rec = rec;
+        // lab: FFNY_RB_INPUTREPLAY=file (written by FFNY_RB_INPUTLOG) -> the local inputs of those frames come from it
+        ReplayInput(p, t, fi.rec);
+        static FILE* il = std::getenv("FFNY_RB_INPUTLOG") ? fopen(std::getenv("FFNY_RB_INPUTLOG"), "w") : nullptr;
+        if (il)
+        {
+          fprintf(il, "%d %u", p, t);
+          for (u32 k = 0; k < REC_SIZE; k++)
+            fprintf(il, "%s%02x", k % 4 ? "" : " ", fi.rec[k]);
+          fprintf(il, "\n");
+          fflush(il);
+        }
+      }
       s_confirmed[p] = tf;
       SendInputs(p, tf);
-      static FILE* il = std::getenv("FFNY_RB_INPUTLOG") ? fopen(std::getenv("FFNY_RB_INPUTLOG"), "w") : nullptr;
-      if (il)
-      {
-        fprintf(il, "%d %u", p, tf);
-        for (u32 k = 0; k < REC_SIZE; k++)
-          fprintf(il, "%s%02x", k % 4 ? "" : " ", fi.rec[k]);
-        fprintf(il, "\n");
-        fflush(il);
-      }
     }
     if (s_loop)
     {
@@ -4527,6 +4974,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     if (f > s_fs_last_busy && f > s_start_frame + START_LOCKSTEP)
       s_lockstep_tail++;  // only because of the tail: the file system is idle and no conversion is this recent
   }
+  s_wait_where = "waiting for the other side's inputs (start of an update)";
   while (true)
   {
     const u32 mc = MinConfirmed();
@@ -4537,6 +4985,8 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       break;
     if (s_force_end)
       break;  // the host ends the fight for everyone (below)
+    if (system.GetCPU().GetState() == CPU::State::PowerDown)
+      break;  // emulation is being stopped (closing Dolphin must not wait here)
     if (std::chrono::steady_clock::now() - wait_start > std::chrono::seconds(10))
     {
       // the other side stopped (its fight ended at another frame, it paused, or the connection is gone). Before 24
@@ -4567,6 +5017,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       ResendInputs(false);
     }
   }
+  s_wait_where = nullptr;
   if (waited)
   {
     // we were slowed down by the wait: keep that (no catch-up sprint that would put us ahead again)
