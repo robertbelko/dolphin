@@ -144,6 +144,7 @@ static void Step()
     }
     if (s.op == "pad") { s_ov[s.a & 3] = Make((unsigned)s.b, (unsigned)s.c, (unsigned)s.d); s_pc++; continue; }
     if (s.op == "padc") { s_ov[s.a & 3] = Make((unsigned)s.b, (unsigned)s.c, (unsigned)s.d); s_ov[s.a & 3].substickX = (u8)s.e; s_ov[s.a & 3].substickY = (u8)s.f; s_pc++; continue; }
+    if ((s.op == "poke" || s.op == "pokef") && getenv("FFNY_BENCH_POKESYNC")) { const u32 q = (u32)atoi(getenv("FFNY_BENCH_POKESYNC")); const u32 c = FFNYBench_Read32(0x80440C24); const u32 tf = (c / q + 1) * q; FFNYRollback::LabSchedulePoke((u32)s.a, (u32)s.b, tf); fprintf(stderr, "POKE %08lx = %08lx at frame %u (ctr %u)\n", s.a, s.b, tf, c); s_pc++; continue; }
     if (s.op == "poke" || s.op == "pokef") { FFNYBench_Write32((u32)s.a, (u32)s.b); fprintf(stderr, "POKE %08lx = %08lx (ctr %u)\n", s.a, s.b, FFNYBench_Read32(0x80440C24)); s_pc++; continue; }
     if (s.op == "peek") { fprintf(stderr, "PEEK %08lx:", s.a); for (long i = 0; i < s.b; i++) fprintf(stderr, " %08x", FFNYBench_Read32((u32)s.a + 4 * (u32)i)); fprintf(stderr, " (ctr %u)\n", FFNYBench_Read32(0x80440C24)); s_pc++; continue; }
     if (s.op == "rel") { s_ov[s.a & 3] = Make(0, 128, 128); s_pc++; continue; }
