@@ -165,7 +165,7 @@ struct SndCall
 };
 std::deque<SndCall> s_snd_q;
 std::deque<std::pair<SndCall, bool>> s_music_sent;  // music cues sent by first runs (+ matched in the current re-simulation)
-u32 s_music_deduped = 0, s_music_resent = 0;
+u32 s_music_deduped = 0, s_music_resent = 0, s_music_refused = 0;
 bool s_music_hold_old = std::getenv("FFNY_RB_MUSICHOLD") != nullptr;  // lab: the 153a233 behaviour (held until confirmed)
 bool s_snd_defer = false;     // hooks installed
 bool s_snd_trace = false, s_snd_hold_on = true;  // lab: FFNY_RB_SNDTRACE; FFNY_RB_NOSNDHOLD
@@ -826,6 +826,21 @@ const u8* s_ram = nullptr;  // emulated RAM (set by the hooks; for reports from 
 constexpr int NPARTS_FWD = 8;
 void CompareParts(u32 f, const std::array<u32, NPARTS_FWD>& local, const std::array<u32, NPARTS_FWD>& remote,
                   const u8* ram);
+std::array<std::vector<u8>, 64> s_hashed_copy;
+std::array<u32, 64> s_hashed_copy_frame{};
+static void DesyncDump(u32 f)
+{
+  static const char* dd = std::getenv("FFNY_RB_DESYNCDUMP");
+  static u32 n = 0;
+  if (!dd || n >= 6 || s_hashed_copy_frame[f % 64] != f)
+    return;
+  n++;
+  if (FILE* df = fopen((std::string(dd) + "." + std::to_string(f)).c_str(), "wb"))
+  {
+    fwrite(s_hashed_copy[f % 64].data(), 1, s_hashed_copy[f % 64].size(), df);
+    fclose(df);
+  }
+}
 void Pump()
 {
   if (!s_transport)
@@ -908,6 +923,7 @@ void Pump()
         {
           s_desyncs++;
           fprintf(stderr, "FFNYRB DESYNC at frame %u (local %08x remote %08x)\n", f, it->second, h);
+          DesyncDump(f);
           if (s_desyncs <= 3)
             OSD::AddMessage("FFNY rollback: DESYNC detected at frame " + std::to_string(f), 8000,
                             OSD::Color::RED);
@@ -1030,6 +1046,40 @@ void CompareParts(u32 f, const std::array<u32, NPARTS>& local, const std::array<
 
 void HashFrame(const u8* ram, u32 f)
 {
+  // lab: FFNY_RB_CONFDUMP=from,to,file -> MEM1 (24 MB raw) of the confirmed frames from..to (compare two machines)
+  {
+    static u32 cd_from = 0, cd_to = 0;
+    static std::string cd_file;
+    static bool cd_read = false;
+    if (!cd_read)
+    {
+      cd_read = true;
+      if (const char* c = std::getenv("FFNY_RB_CONFDUMP"))
+      {
+        char fn[512] = {};
+        if (sscanf(c, "%u,%u,%511s", &cd_from, &cd_to, fn) == 3)
+          cd_file = fn;
+      }
+    }
+    if (!cd_file.empty() && f >= cd_from && f <= cd_to)
+      if (FILE* df = fopen((cd_file + "." + std::to_string(f)).c_str(), "wb"))
+      {
+        fwrite(ram, 1, 0x01800000, df);
+        fclose(df);
+      }
+  }
+  // lab: FFNY_RB_DESYNCDUMP=prefix -> keep the hashed areas of the last 64 confirmed frames; on a desync they are
+  // written to prefix.FRAME (compare the two machines' files)
+  static const char* dd = std::getenv("FFNY_RB_DESYNCDUMP");
+  if (dd)
+  {
+    std::vector<u8>& c = s_hashed_copy[f % 64];
+    c.assign(ram + 0x3F1144, ram + 0x3F1144 + 4 * 0x12F8);
+    c.insert(c.end(), ram + 0x3F6AC8, ram + 0x3F6AC8 + 0x88);
+    c.insert(c.end(), ram + 0x35D588, ram + 0x35D588 + 0x18);
+    c.insert(c.end(), ram + 0x3BE03C, ram + 0x3BE03C + 0x88);
+    s_hashed_copy_frame[f % 64] = f;
+  }
   // fighters, fight RNG, both shared random generators, logic counter
   u32 h = 2166136261u;
   h = Fnv(ram + 0x3F1144, 4 * 0x12F8, h);
@@ -1054,6 +1104,7 @@ void HashFrame(const u8* ram, u32 f)
     {
       s_desyncs++;
       fprintf(stderr, "FFNYRB DESYNC at frame %u (local %08x remote %08x)\n", f, h, it->second);
+      DesyncDump(f);
       if (s_desyncs <= 3)
         OSD::AddMessage("FFNY rollback: DESYNC detected at frame " + std::to_string(f), 8000,
                         OSD::Color::RED);
@@ -2054,6 +2105,9 @@ void OnVIField(Core::System& system)
   s_music_hold = s_snd_hold_on && std::getenv("FFNY_RB_NOMUSICHOLD") == nullptr;
   if (Rd32(ram, SND_MUSIC) == 0x9421FFF8 && (s_music_hold || s_snd_trace))
     HLE::Patch(system, SND_MUSIC, "FFNYRollbackSndMusic");
+  if (Rd32(ram, SND_MUSIC) == 0x9421FFF8 && Rd32(ram, 0x8001112C) == 0x8001000C && s_music_hold && !s_music_hold_old &&
+      std::getenv("FFNY_RB_MUSICREALRESULT") == nullptr)
+    HLE::Patch(system, 0x8001112C, "FFNYRollbackSndMusicResult");
   for (const u32 a : {0x80011164u})
     if ((Rd32(ram, a) >> 16) == 0x9421 && (s_music_hold || s_snd_trace))
       HLE::Patch(system, a, "FFNYRollbackSndExtra");
@@ -3757,7 +3811,10 @@ u64 JitTimeBase()
   auto& ppc = system.GetPPCState();
   u64 real;
   memcpy(&real, &ppc.spr[SPR_TL], 8);
-  if (!s_active || !s_vtb_mode)
+  // not in the running fight: rollback fights ran with the real clock from the start (no desyncs in Robert's tests),
+  // and with the frame clock the lab's two machines desynced during Blazin's (lab switch FFNY_RB_VTBFIGHT=1: keep it)
+  static const bool vtb_fight = std::getenv("FFNY_RB_VTBFIGHT") != nullptr;
+  if (!s_active || !s_vtb_mode || (s_real_fight_now && !vtb_fight))
     return real;
   const u8* ram = system.GetMemory().GetRAM();
   // only inside the logic update: the main loop's tick() (0x800EC144) paces the loop with the clock, and a clock that
@@ -3790,6 +3847,25 @@ u64 JitTimeBase()
               ppc.spr[SPR_LR]);
   }
   return s_vtb_anchor + u64(s32(f - s_vtb_frame0)) * 675000 + s_vtb_steps;
+}
+
+// 0x8001112C (Replace; inside 0x80011108 after the post: r3 = 1 if the music player took the cue): while rollback runs
+// the logic always gets 1 ("taken"), as with the hold (153a233 returned 1 for every held cue). The real answer depends
+// on the audio thread's state, which is different on the other machine, and the music module acts on it - with the
+// real answer passed through the two lab machines desynced in the fight during Blazin's (12688: fighters 1 and 2).
+void HookSndMusicResult(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  if (s_active && Rd32(ram, 0x800000E4) == 0x80432D10)
+  {
+    if (ppc.gpr[3] != 1)
+      s_music_refused++;
+    ppc.gpr[3] = 1;
+  }
+  ppc.gpr[0] = Rd32(ram, ppc.gpr[1] + 12);  // lwz r0,12(r1)
+  ppc.npc = 0x8001112C + 4;
 }
 
 void HookSndMusic(const Core::CPUThreadGuard& guard)
@@ -3840,6 +3916,9 @@ constexpr u32 CARD_TAIL = 10;
 u32 s_card_last = 0, s_card_seen = 0, s_card_waits = 0, s_card_aborts = 0, s_card_resim_calls = 0, s_card_calls = 0;
 u64 s_card_wait_us = 0;
 u32 s_prev_first_f = 0, s_stall_guard = 0, s_stalls = 0;  // logic counter stalls (see HookPreUpdate)
+u32 s_barrier_late = 0;  // barrier calls that found a mispredicted input (handled at the next update start)
+u32 s_last_lock_frame = 0;  // newest frame that ran in lockstep (never rolled back)
+u32 s_menu_lock_frames = 0;
 std::array<u32, 19> s_card_fn_calls{};
 
 static bool CardLocked(u32 f)
@@ -3929,16 +4008,15 @@ static bool BarrierWait(Core::System& system, u8* ram, u32 f, const char* what)
   }
   s_card_waits++;
   s_card_wait_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+  // A misprediction is NOT acted on here: rolling back from inside the call hung the game (lab, loopback lag: the
+  // message went through EA's port wrapper 0x8024D1B4, which holds a lock that lives outside the rollback state, so
+  // after the rewind the main thread slept on it for ever). It waits for the next update start; outside the running
+  // fight that does not happen anyway (every frame there runs with all inputs known, see HookPreUpdate).
   if (s_mispredict_from <= f)
   {
-    const u32 s = std::max(s_mispredict_from, s_start_frame);
-    s_mispredict_from = 0xFFFFFFFF;
-    if (RollbackFromHook(system, ram, f, s))
-    {
-      if (s_log)
-        fprintf(stderr, "FFNYRB %s in frame %u with a mispredicted input: rollback to %u before it\n", what, f, s);
-      return true;
-    }
+    s_barrier_late++;
+    if (s_log)
+      fprintf(stderr, "FFNYRB %s in frame %u with a mispredicted input (rollback at the next update start)\n", what, f);
   }
   return false;
 }
@@ -4033,17 +4111,7 @@ void HookCardBarrierN(const Core::CPUThreadGuard& guard)
         s_card_waits++;
         s_card_wait_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
         if (s_mispredict_from <= f)
-        {
-          const u32 s = std::max(s_mispredict_from, s_start_frame);
-          s_mispredict_from = 0xFFFFFFFF;
-          if (RollbackFromHook(system, ram, f, s))
-          {
-            s_card_aborts++;
-            if (s_log)
-              fprintf(stderr, "FFNYRB card call in frame %u with a mispredicted input: rollback to %u before it\n", f, s);
-            return;
-          }
-        }
+          s_barrier_late++;  // see BarrierWait: no rollback from inside the call
       }
     }
   }
@@ -4350,8 +4418,9 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       }
       fprintf(stderr, "FFNYRB worker threads: %zu known, busy at %u update starts (last frame %u, thread %08x), %u messages to them, %u frames abandoned\n",
               s_idle_wait.size(), s_async_busy_frames, s_async_last, s_async_last_thread, s_async_barriers, s_async_aborts);
+      fprintf(stderr, "FFNYRB lockstep outside the fight: %u frames; barrier calls with a late misprediction %u\n", s_menu_lock_frames, s_barrier_late);
       fprintf(stderr, "FFNYRB logic counter stalls: %u (last at frame %u)\n", s_stalls, s_stall_guard);
-      fprintf(stderr, "FFNYRB music cues: %u not sent again in re-simulations, %u sent by re-simulations\n", s_music_deduped, s_music_resent);
+      fprintf(stderr, "FFNYRB music cues: %u not sent again in re-simulations, %u sent by re-simulations, %u refused by the player (the logic got 1)\n", s_music_deduped, s_music_resent, s_music_refused);
       fprintf(stderr, "FFNYRB memory card: %u calls, last activity frame %u, %u barrier waits (%.1f ms), %u frames abandoned, %u calls in re-simulations\n",
               s_card_calls, s_card_last, s_card_waits, s_card_wait_us / 1000.0, s_card_aborts, s_card_resim_calls);
       fprintf(stderr, "FFNYRB frozen time: %llu cycles of re-simulation not counted, %llu idle cycles let through\n",
@@ -4371,7 +4440,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     if (s_stress && f > s_start_frame + s_stress && f >= s_stress_from && fight && !stress_paused)
     {
       const u32 t = f - 1 - (std::rand() % s_stress);
-      if (!CardLocked(t) && t > s_stall_guard)  // card activity / counter stalls ran in lockstep: never mispredicted
+      if (!CardLocked(t) && t > s_stall_guard && t > s_last_lock_frame)  // lockstep frames are never mispredicted
         s_mispredict_from = t;
     }
   }
@@ -4422,8 +4491,19 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     if (s_card_on)
       s_card_last = std::max(s_card_last, f > 0 ? f - 1 : 0);
   }
-  const bool card_lock = fight && (CardLocked(f) || (s_stall_guard && f <= s_stall_guard + 1));
+  // Menus mode / lab always mode: outside the running fight every frame runs with all inputs known (like normal
+  // netplay there) - so the menus, KO scenes, results, rematch and loading are never rolled back and none of their
+  // asynchronous work (card, loader, worker threads, front-end loads) can be crossed by a rollback. Rollback (no
+  // waiting) only in the fight itself. Lab: FFNY_RB_MENUROLLBACK=1 lets the menus roll back too (the card / worker /
+  // stall rules below then do the protecting).
+  static const bool menu_rollback = std::getenv("FFNY_RB_MENUROLLBACK") != nullptr;
+  const bool menu_lock = fight && !s_real_fight_now && !menu_rollback && (s_menus_on || (s_always && f >= s_always));
+  if (menu_lock)
+    s_menu_lock_frames++;
+  const bool card_lock = fight && (CardLocked(f) || (s_stall_guard && f <= s_stall_guard + 1) || menu_lock);
   const bool lockstep = (s_settings.load_lockstep && fight && f <= s_fs_last_busy + LOAD_TAIL) || card_lock;
+  if (lockstep)
+    s_last_lock_frame = std::max(s_last_lock_frame, f);
   if (lockstep)
   {
     s_lockstep_frames++;
@@ -4495,7 +4575,8 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   }
 
   if (s_mispredict_from != 0xFFFFFFFF && s_stress && (CardLocked(std::max(s_mispredict_from, s_start_frame)) ||
-                                                      std::max(s_mispredict_from, s_start_frame) <= s_stall_guard))
+                                                      std::max(s_mispredict_from, s_start_frame) <= s_stall_guard ||
+                                                      std::max(s_mispredict_from, s_start_frame) <= s_last_lock_frame))
     s_mispredict_from = 0xFFFFFFFF;  // lab stress: frames that ran in lockstep are never mispredicted
   if (s_mispredict_from != 0xFFFFFFFF)
   {

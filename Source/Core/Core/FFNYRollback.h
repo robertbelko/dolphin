@@ -91,7 +91,8 @@ void HookAfBufAlloc(const Core::CPUThreadGuard& guard);  // 0x802450D8: buffer o
 template <int I>
 void HookCardBarrierN(const Core::CPUThreadGuard& guard);  // memory-card API entry points (see FFNYRollback.cpp)
 extern u32 g_card_activity;
-void HookAsyncSend(const Core::CPUThreadGuard& guard);  // OSSendMessage: the logic wakes a worker thread  // memory card device commands (EXI chip selects) so far
+void HookAsyncSend(const Core::CPUThreadGuard& guard);
+void HookSndMusicResult(const Core::CPUThreadGuard& guard);  // 0x8001112C: the music cue send's result  // OSSendMessage: the logic wakes a worker thread  // memory card device commands (EXI chip selects) so far
 void HookSndPost(const Core::CPUThreadGuard& guard);
 // rollback in the menus: the game's main thread reads a clock that follows the logic frames (Jit64 / interpreter
 // mftb call JitTimeBase while g_virtual_tb is set; set before the JIT compiles, or the JIT cache is cleared)
