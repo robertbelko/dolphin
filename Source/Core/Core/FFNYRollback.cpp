@@ -1519,7 +1519,7 @@ static const char* ChunkLabel(u32 addr, u32 len)
     return " (music module)";
   if (addr >= 0x803F1144 && addr < 0x803F1144 + 4 * 0x12F8)
     return " (fighters)";
-  if (addr >= VMEM_BASE)
+  if (addr >= VMEM_BASE && addr < 0x80000000u)
     return " (VMEM: front-end heap)";
   return "";
 }
