@@ -3998,41 +3998,6 @@ static u32 BusyWorker(const u8* ram)
   return 0;
 }
 
-// rollback to frame s from inside a hook in the middle of frame f (s <= f): as the PRE hook's rollback, then go on at
-// the start of update s
-static bool RollbackFromHook(Core::System& system, u8* ram, u32 f, u32 s)
-{
-  if (s > f || !LoadState(system, s))
-    return false;
-  auto& ppc = system.GetPPCState();
-  s_rollbacks++;
-  s_last_rb_from = f;
-  s_last_rb_to = s;
-  s_max_depth = std::max(s_max_depth, f - s);
-  // s < f: frames s .. f-1 are re-simulated and f runs as a first run again (its local input is already sent);
-  // s == f: just the start of f again, now with the right inputs
-  s_resim_target = s < f ? f : 0;
-  static const bool no_freeze = std::getenv("FFNY_RB_NOFREEZE") != nullptr;
-  if (s < f && !no_freeze)
-    system.GetCoreTiming().SetFrozen(true, u64(f - s) * FROZEN_BUDGET_PER_FRAME);
-  ppc.gpr[3] = ppc.gpr[26];
-  ppc.npc = ADDR_PRE + 4;
-  s_phase = 'U';
-  DrawFrameBegin(ram, s, s == f);
-  Inject(ram, ppc.gpr[28], s);
-  SaveState(system, s);
-  const u32 old = Rd32(ram, W_RB);
-  Wr32(ram, W_RB, old ? std::min(old, s + 1) : s + 1);
-  FreeThrownSysAllocs(ram, s);
-  DrainSysPending(ram);
-  SndDropFrom(s);
-  AfRewind(ram, s);
-  Wr32(ram, W_CONF, std::min(MinConfirmed(), s - 1));
-  Wr32(ram, W_FRAME, s);
-  if (s < f)
-    s_resim_frames++;
-  return true;
-}
 
 // wait until all inputs up to f are known; if one was mispredicted, roll back from here (true: rolled back)
 static bool BarrierWait(Core::System& system, u8* ram, u32 f, const char* what)
