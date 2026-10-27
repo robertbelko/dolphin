@@ -3842,6 +3842,18 @@ void HookTraceN(const Core::CPUThreadGuard& guard)
   fprintf(stderr, "TRACE %08x %u %c %08x %08x %08x %08x %08x %08x %08x %08x lr %08x\n", s_trace_addr[I],
           Rd32(ram, W_FRAME), s_resim_target != 0 ? 'r' : 'f', ppc.gpr[3], ppc.gpr[4], ppc.gpr[5], ppc.gpr[6],
           ppc.gpr[7], ppc.gpr[8], ppc.gpr[9], ppc.gpr[10], ppc.spr[SPR_LR]);
+  // lab (27 October): r27 as a string and the first words at r29 (Apt loader 0x801A3128: name, refpack source)
+  auto okp = [](u32 a) { return (a & 0xFE000000) == 0x80000000 && (a & 0x01FFFFFF) < 0x017FFF00; };
+  if (okp(ppc.gpr[27]) || okp(ppc.gpr[29]))
+  {
+    char str[48] = {};
+    if (okp(ppc.gpr[27]))
+      for (int i = 0; i < 47 && ram[(ppc.gpr[27] + i) & 0x01FFFFFF]; i++)
+        str[i] = char(ram[(ppc.gpr[27] + i) & 0x01FFFFFF]);
+    fprintf(stderr, "TRACE+ r27 \"%s\" r29 %08x: %08x %08x %08x r28 %08x r30 %08x\n", str, ppc.gpr[29],
+            okp(ppc.gpr[29]) ? Rd32(ram, ppc.gpr[29]) : 0, okp(ppc.gpr[29]) ? Rd32(ram, ppc.gpr[29] + 4) : 0,
+            okp(ppc.gpr[29]) ? Rd32(ram, ppc.gpr[29] + 8) : 0, ppc.gpr[28], ppc.gpr[30]);
+  }
 }
 template void HookTraceN<0>(const Core::CPUThreadGuard&);
 template void HookTraceN<1>(const Core::CPUThreadGuard&);
