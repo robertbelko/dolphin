@@ -1237,6 +1237,9 @@ std::unordered_map<u32, u32> s_fs_req_thread;  // file-system request node -> th
 bool s_fs_main_queued = false;  // a request of the game logic waits behind another thread's
 u32 s_fs_hurried = 0;  // reads of other threads finished at once because of that
 const bool s_fs_hurry_off = std::getenv("FFNY_RB_NOFSHURRY") != nullptr;
+// re-simulation cycles per re-simulated frame that may pass without emulated time (a logic frame takes ~0.7 M; a
+// frame's worth of CPU is 8.1 M)
+constexpr u64 FROZEN_BUDGET_PER_FRAME = 8000000;
 constexpr u32 W_AFCTR = 0x8049CFF0;  // bigspace, rewound (rbtag's lists end at 0x8049C800)
 constexpr u32 AF_ARRAY = 0x8043FBB8, AF_COUNT = 0x804405A0, AF_FREE = 0x804405A4;
 constexpr u32 AF_SETID = 0x80244DD0, AF_FIND = 0x80244E00, AF_RELEASE = 0x80244E48;
@@ -3978,7 +3981,7 @@ static bool RollbackFromHook(Core::System& system, u8* ram, u32 f, u32 s)
   s_resim_target = s < f ? f : 0;
   static const bool no_freeze = std::getenv("FFNY_RB_NOFREEZE") != nullptr;
   if (s < f && !no_freeze)
-    system.GetCoreTiming().SetFrozen(true);
+    system.GetCoreTiming().SetFrozen(true, u64(f - s) * FROZEN_BUDGET_PER_FRAME);
   ppc.gpr[3] = ppc.gpr[26];
   ppc.npc = ADDR_PRE + 4;
   s_phase = 'U';
@@ -4438,9 +4441,10 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       fprintf(stderr, "FFNYRB music cues: %u not sent again in re-simulations, %u sent by re-simulations, %u refused by the player (the logic got 1)\n", s_music_deduped, s_music_resent, s_music_refused);
       fprintf(stderr, "FFNYRB memory card: %u calls, last activity frame %u, %u barrier waits (%.1f ms), %u frames abandoned, %u calls in re-simulations\n",
               s_card_calls, s_card_last, s_card_waits, s_card_wait_us / 1000.0, s_card_aborts, s_card_resim_calls);
-      fprintf(stderr, "FFNYRB frozen time: %llu cycles of re-simulation not counted, %llu idle cycles let through\n",
+      fprintf(stderr, "FFNYRB frozen time: %llu cycles of re-simulation not counted, %llu idle cycles let through, %llu over the budget\n",
               (unsigned long long)system.GetCoreTiming().GetFrozenCycles(),
-              (unsigned long long)system.GetCoreTiming().GetFrozenIdleCycles());
+              (unsigned long long)system.GetCoreTiming().GetFrozenIdleCycles(),
+              (unsigned long long)system.GetCoreTiming().GetFrozenLeakCycles());
     }
     StressCheck(ram, f, true);
     static u32 pause_lo = 0, pause_hi = 0;
@@ -4638,7 +4642,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       // select). Frozen time keeps the hardware's view = the first runs only.
       static const bool no_freeze = std::getenv("FFNY_RB_NOFREEZE") != nullptr;
       if (!no_freeze)
-        system.GetCoreTiming().SetFrozen(true);
+        system.GetCoreTiming().SetFrozen(true, u64(f - s) * FROZEN_BUDGET_PER_FRAME);
       // we are frame s again (registers restored); do the replaced instruction again
       ppc.gpr[3] = ppc.gpr[26];
       ppc.npc = ADDR_PRE + 4;

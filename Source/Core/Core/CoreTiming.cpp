@@ -239,7 +239,7 @@ void CoreTimingManager::DoState(PointerWrap& p)
 u64 CoreTimingManager::GetTicks() const
 {
   u64 ticks = static_cast<u64>(m_globals.global_timer);
-  if (!m_is_global_timer_sane && !m_frozen)
+  if (!m_is_global_timer_sane && !(m_frozen && m_frozen_session < m_frozen_budget))
   {
     int downcount = DowncountToCycles(m_system.GetPPCState().downcount);
     ticks += m_globals.slice_length - downcount;
@@ -356,10 +356,15 @@ void CoreTimingManager::Advance()
   auto& ppc_state = power_pc.GetPPCState();
 
   int cyclesExecuted = m_globals.slice_length - DowncountToCycles(ppc_state.downcount);
-  if (m_frozen && !m_idle_in_frozen)
+  if (m_frozen && !m_idle_in_frozen && m_frozen_session < m_frozen_budget)
+  {
     m_frozen_cycles += cyclesExecuted;  // re-simulation: time stands still
+    m_frozen_session += cyclesExecuted;
+  }
   else
   {
+    if (m_frozen && !m_idle_in_frozen)
+      m_frozen_leak_cycles += cyclesExecuted;  // over the budget: let time pass
     if (m_frozen)
       m_frozen_idle_cycles += cyclesExecuted;  // every thread waits for the hardware: time has to pass
     m_globals.global_timer += cyclesExecuted;
