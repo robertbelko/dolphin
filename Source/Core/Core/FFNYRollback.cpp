@@ -841,6 +841,8 @@ static void DesyncDump(u32 f)
     fclose(df);
   }
 }
+std::vector<std::array<u32, 3>> s_lab_pokes;  // frame, address, value
+std::mutex s_lab_pokes_mutex;
 void Pump()
 {
   if (!s_transport)
@@ -891,6 +893,19 @@ void Pump()
         OnRemoteInput(port, first + i, rec);
         prev = rec;
       }
+    }
+    else if (m.size() >= 13 && m[0] == 'K')
+    {
+      // lab: a bench poke decided by the other machine (LabSchedulePokeInner)
+      auto g = [&](int o) { return (u32(m[o]) << 24) | (u32(m[o + 1]) << 16) | (u32(m[o + 2]) << 8) | m[o + 3]; };
+      const u32 tf = g(1);
+      {
+        std::lock_guard lk(s_lab_pokes_mutex);
+        s_lab_pokes.push_back({tf, g(5), g(9)});
+      }
+      if (s_ram && tf < Rd32(s_ram, ADDR_COUNTER))
+        s_mispredict_from = std::min(s_mispredict_from, tf);
+      fprintf(stderr, "FFNYRB lab poke %08x = %08x at frame %u (received)\n", g(5), g(9), tf);
     }
     else if (m.size() >= 7 && m[0] == 'I')
     {
@@ -964,11 +979,29 @@ const Record& InputFor(int port, u32 f)
 void Wr32(u8* ram, u32 a, u32 v);
 // lab: memory pokes of the bench script applied at an agreed logic frame (two-machine tests: the script reaches a poke
 // at different moments on the two machines; applied here, in every run of that frame, they are part of the timeline)
-std::vector<std::array<u32, 3>> s_lab_pokes;  // frame, address, value
-std::mutex s_lab_pokes_mutex;
 void LabSchedulePokeInner(u32 addr, u32 value, u32 frame)
 {
   std::lock_guard lk(s_lab_pokes_mutex);
+  if (s_transport && s_ram)
+  {
+    // two machines: the one with port 0 decides the frame (90 frames ahead) and sends it; the other one's script
+    // pokes are ignored (a late message rolls that machine back to the poke frame, see Pump)
+    if (!(s_settings.local_ports & 1))
+      return;
+    const u32 tf = Rd32(s_ram, ADDR_COUNTER) + 90;
+    s_lab_pokes.push_back({tf, addr, value});
+    std::vector<u8> m(13);
+    m[0] = 'K';
+    for (int i = 0; i < 4; i++)
+    {
+      m[1 + i] = u8(tf >> (24 - 8 * i));
+      m[5 + i] = u8(addr >> (24 - 8 * i));
+      m[9 + i] = u8(value >> (24 - 8 * i));
+    }
+    s_transport->Send(m);
+    fprintf(stderr, "FFNYRB lab poke %08x = %08x at frame %u (sent)\n", addr, value, tf);
+    return;
+  }
   s_lab_pokes.push_back({frame, addr, value});
 }
 void Inject(u8* ram, u32 tick_obj, u32 f)
