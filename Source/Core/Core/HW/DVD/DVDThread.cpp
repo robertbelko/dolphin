@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/HW/DVD/DVDThread.h"
+#include "Core/FFNYRollback.h"
 
+#include <cstdlib>
+#include <cstdio>
 #include <map>
 #include <memory>
 #include <optional>
@@ -215,6 +218,10 @@ void DVDThread::StartReadInternal(bool copy_to_ram, u32 output_address, u64 dvd_
   request.time_started_ticks = core_timing.GetTicks();
   request.realtime_started_us = Common::Timer::NowUs();
 
+  if (std::getenv("FFNY_RB_FSDEBUG"))
+    fprintf(stderr, "FSSTART id %llu off %llx len %x to %08x ticks %llu in %lld thread %08x\n", (unsigned long long)id,
+            (unsigned long long)dvd_offset, length, output_address, (unsigned long long)core_timing.GetTicks(),
+            (long long)ticks_until_completion, m_system.GetMemory().Read_U32(0x800000E4));
   m_dvd_thread.Push(std::move(request));
   core_timing.ScheduleEvent(ticks_until_completion, m_finish_read, id);
   m_pending_ids.push_back(id);
@@ -225,6 +232,10 @@ void DVDThread::FinishPendingReadsNow()
   if (m_pending_ids.empty())
     return;
   auto& core_timing = m_system.GetCoreTiming();
+  if (std::getenv("FFNY_RB_FSDEBUG"))
+    fprintf(stderr, "FSPULL ticks %llu pending %zu first %llu thread %08x\n", (unsigned long long)core_timing.GetTicks(),
+            m_pending_ids.size(), (unsigned long long)m_pending_ids[0],
+            m_system.GetMemory().Read_U32(0x800000E4));
   core_timing.RemoveAllEvents(m_finish_read);
   for (const u64 id : m_pending_ids)
     core_timing.ScheduleEvent(0, m_finish_read, id);
@@ -238,6 +249,10 @@ void DVDThread::GlobalFinishRead(Core::System& system, u64 id, s64 cycles_late)
 void DVDThread::FinishRead(u64 id, s64 cycles_late)
 {
   std::erase(m_pending_ids, id);
+  if (std::getenv("FFNY_RB_FSDEBUG"))
+    fprintf(stderr, "FSDONE id %llu ticks %llu late %lld thread %08x\n", (unsigned long long)id,
+            (unsigned long long)m_system.GetCoreTiming().GetTicks(), (long long)cycles_late,
+            m_system.GetMemory().Read_U32(0x800000E4));
   // We can't simply pop result_queue and always get the ReadResult
   // we want, because the DVD thread may add ReadResults to the queue
   // in a different order than we want to get them. What we do instead
@@ -296,6 +311,7 @@ void DVDThread::FinishRead(u64 id, s64 cycles_late)
     if (request.copy_to_ram)
     {
       auto& memory = m_system.GetMemory();
+      FFNYRollback::OnDiscDma(m_system, request.output_address, request.length);
       memory.CopyToEmu(request.output_address, buffer.data(), request.length);
     }
 

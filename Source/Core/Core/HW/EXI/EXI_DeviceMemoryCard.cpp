@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/HW/EXI/EXI_DeviceMemoryCard.h"
+#include "Core/FFNYRollback.h"
 
 #include <array>
 #include <functional>
@@ -277,6 +278,7 @@ void CEXIMemoryCard::CmdDoneLater(u64 cycles)
 
 void CEXIMemoryCard::SetCS(int cs)
 {
+  FFNYRollback::g_card_activity++;  // memory card in use (rollback: lockstep while it is)
   if (cs)  // not-selected to selected
   {
     m_position = 0;
