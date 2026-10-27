@@ -1938,6 +1938,7 @@ bool NetPlayClient::StartGame(const std::string& path)
       m_ffny_in.clear();
     }
     FFNYRollback::Configure(rb, rb.enabled ? &m_ffny_transport : nullptr);
+    FFNYRollback::SetMenuDelay(m_target_buffer_size);
     // debug reports (desync details, crashes): shown in this chat window and sent to the other players
     FFNYRollback::SetReportCallback([this](const std::string& text) {
       m_dialog->AppendChat(text);
@@ -2803,6 +2804,7 @@ const PadMappingArray& NetPlayClient::GetWiimoteMapping() const
 void NetPlayClient::AdjustPadBufferSize(const unsigned int size)
 {
   m_target_buffer_size = size;
+  FFNYRollback::SetMenuDelay(size);  // menus mode: lockstep outside the fights uses the pad buffer as input delay
   m_dialog->OnPadBufferChanged(size);
 }
 

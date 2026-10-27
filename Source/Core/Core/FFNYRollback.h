@@ -46,6 +46,9 @@ struct Settings
 
 // Called by netplay (or the lab environment variables) before / when the game starts.
 void Configure(const Settings& settings, Transport* transport);
+// Menus mode: input delay (frames) outside the running fight, where every frame runs in lockstep - netplay passes its
+// pad buffer (Dolphin's own netplay menus before the first fight use the same). The fight keeps Settings::input_delay.
+void SetMenuDelay(u32 frames);
 // Called on the CPU thread when a rollback fight is over (all inputs confirmed). Netplay pauses the
 // CPU there and resynchronises the whole emulator state from the host before menus continue.
 void SetFightEndCallback(std::function<void(Core::System&, u32 frame)> callback);
