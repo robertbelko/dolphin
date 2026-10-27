@@ -91,6 +91,7 @@ void HookAfBufAlloc(const Core::CPUThreadGuard& guard);  // 0x802450D8: buffer o
 template <int I>
 void HookCardBarrierN(const Core::CPUThreadGuard& guard);  // memory-card API entry points (see FFNYRollback.cpp)
 extern u32 g_card_activity;
+void LabSchedulePoke(u32 addr, u32 value, u32 frame);  // lab bench: poke at an agreed logic frame
 void HookAsyncSend(const Core::CPUThreadGuard& guard);
 void HookSndMusicResult(const Core::CPUThreadGuard& guard);  // 0x8001112C: the music cue send's result  // OSSendMessage: the logic wakes a worker thread  // memory card device commands (EXI chip selects) so far
 void HookSndPost(const Core::CPUThreadGuard& guard);

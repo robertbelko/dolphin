@@ -962,8 +962,23 @@ const Record& InputFor(int port, u32 f)
 }
 
 void Wr32(u8* ram, u32 a, u32 v);
+// lab: memory pokes of the bench script applied at an agreed logic frame (two-machine tests: the script reaches a poke
+// at different moments on the two machines; applied here, in every run of that frame, they are part of the timeline)
+std::vector<std::array<u32, 3>> s_lab_pokes;  // frame, address, value
+std::mutex s_lab_pokes_mutex;
+void LabSchedulePokeInner(u32 addr, u32 value, u32 frame)
+{
+  std::lock_guard lk(s_lab_pokes_mutex);
+  s_lab_pokes.push_back({frame, addr, value});
+}
 void Inject(u8* ram, u32 tick_obj, u32 f)
 {
+  {
+    std::lock_guard lk(s_lab_pokes_mutex);
+    for (const auto& p : s_lab_pokes)
+      if (p[0] == f)
+        Wr32(ram, p[1], p[2]);
+  }
   if (s_lab_mom_every && f > s_start_frame && (f - s_start_frame) % s_lab_mom_every == 0)
     for (u32 i = 0; i < 2; i++)
       Wr32(ram, 0x803F1144 + i * 0x12F8 + 0x364, 0x42C50000);  // 98.5
@@ -4748,5 +4763,13 @@ void HookUnhandledException(const Core::CPUThreadGuard& guard)
   const std::string p = FreeListProblem(ram);
   Report(std::string(b) + FightSummary(ram) + " | calls " + (ok ? CallChain(ram, Rd32(ram, ctx + 4), 6) : "-") +
          " | " + (p.empty() ? std::string("heap free lists ok") : "BROKEN " + p) + " | " + RbtagSummary(ram));
+}
+}  // namespace FFNYRollback
+
+namespace FFNYRollback
+{
+void LabSchedulePoke(u32 addr, u32 value, u32 frame)
+{
+  LabSchedulePokeInner(addr, value, frame);
 }
 }  // namespace FFNYRollback

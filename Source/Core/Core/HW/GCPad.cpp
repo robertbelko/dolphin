@@ -26,6 +26,7 @@ static void FFNYBench_Write32(u32 a, u32 v)
   const u32 o = a & 0x01FFFFFF;
   r[o] = u8(v >> 24); r[o + 1] = u8(v >> 16); r[o + 2] = u8(v >> 8); r[o + 3] = u8(v);
 }
+#include "Core/FFNYRollback.h"
 #include "/home/claude/lab/bench/FFNYBench.inc"
 namespace Pad
 {
