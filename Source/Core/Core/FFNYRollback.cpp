@@ -1481,6 +1481,8 @@ std::map<u32, ChunkCheck> s_chk_local;
 std::map<u32, std::vector<std::array<u32, 3>>> s_chk_remote;
 u32 s_chk_reports = 0;
 
+std::map<u32, std::array<u64, 2>> s_call_counts;
+std::map<std::pair<u32, u32>, u64> s_call_sites;
 static u32 HashBytes(const u8* p, size_t n)
 {
   u64 h = 0x84222325CBF29CE4ull;
@@ -1718,6 +1720,18 @@ static void MenusFightMarks(const u8* ram, u32 f)
     s_reports = 0;
     s_desyncs_fight = 0;
   }
+  // lab: FFNY_RB_COUNT results per fight in menus mode (EndFight does not run there)
+  for (const auto& [ca, cc] : s_call_counts)
+  {
+    std::string sites;
+    for (const auto& [k, n] : s_call_sites)
+      if (k.first == ca)
+        sites += fmt::format(" {:08x}x{}", k.second, n);
+    fprintf(stderr, "FFNYRB LAB calls %08x (%s at %u): first runs %llu, re-simulations %llu; callers%s\n", ca,
+            raw ? "fight start" : "fight end", f, (unsigned long long)cc[0], (unsigned long long)cc[1], sites.c_str());
+  }
+  s_call_counts.clear();
+  s_call_sites.clear();
   s_fight_from = f;
   s_rollbacks = s_resim_frames = s_max_depth = s_waits = 0;
   s_wait_us = 0;
@@ -3760,8 +3774,6 @@ void DrawFrameBegin(const u8* ram, u32 f, bool first)
 // it for everyone, or no inputs came for 10 s); its state is then replaced by the host's anyway.
 // lab: FFNY_RB_COUNT=addr,addr,... (up to 32) -> calls of those functions by the main thread during the fight,
 // first runs and re-simulations separately, with the most frequent callers (printed at the fight end)
-std::map<u32, std::array<u64, 2>> s_call_counts;
-std::map<std::pair<u32, u32>, u64> s_call_sites;
 static void CountCall(const Core::CPUThreadGuard& guard, int i)
 {
   if (!s_active)
