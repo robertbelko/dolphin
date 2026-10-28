@@ -94,6 +94,10 @@ u32 s_seed_reads = 0;  // seed reads since rollback started (reset in StartFight
 u32 s_apt_side = 0;    // Flash player clock reads by the loading-screen thread since rollback started (HookAptTbN)
 constexpr u32 SEED_TB_SITES[] = {0x80095F68, 0x800982C8, 0x80096364, 0x80096610, 0x8003253C};
 constexpr u32 APT_TB_SITES[] = {0x801A3F24, 0x801A3F80};  // menus Flash player clock (see HookAptTbN)
+// one loading-screen tick = 6.5 frames: its loop (sleep + wait for the retrace) takes 6-7 frames of real time per
+// pass (lab APTTB: 4.05M / 4.73M time base ticks); with 1 frame per pass the menus' transition movies, which also
+// run on this clock, ended ~200 frames later after every loading screen (lab kor1 vs kor2)
+constexpr u64 APT_SIDE_STEP = 4387500;
 
 void DumpDraws(u32 from, u32 to);
 bool s_heapcheck = false;  // lab: FFNY_RB_HEAPCHECK
@@ -4330,14 +4334,14 @@ void HookAptTbN(const Core::CPUThreadGuard& guard)
   u64 v = system.GetPowerPC().ReadFullTimeBaseValue();
   const u32 f = Rd32(ram, ADDR_COUNTER);
   // The loading screen's thread (0x806D8AE0, loop 0x800845F8: play the loading movie until it says it is done, sleep)
-  // runs while the main thread waits, so the logic frame does not move: each of its reads moves this clock on by one
-  // frame (with a frozen clock its movie never ends - lab: hung at the title screen's load), and the main thread's
+  // runs while the main thread waits, so the logic frame does not move: each of its ticks moves this clock on by
+  // APT_SIDE_STEP (with a frozen clock its movie never ends - lab: hung at the title screen's load), and the main thread's
   // reads stay after them.
   if (s_active && s_vtb_mode && s_vtb_anchor)
   {
     if (Rd32(ram, 0x800000E4) != 0x80432D10 && I == 1)
       ++s_apt_side;
-    v = s_vtb_anchor + u64(s32(f - s_vtb_frame0) + s32(s_apt_side)) * 675000 + 1;
+    v = s_vtb_anchor + u64(s32(f - s_vtb_frame0)) * 675000 + u64(s_apt_side) * APT_SIDE_STEP + 1;
   }
   ppc.gpr[(ins >> 21) & 31] = u32(v);  // mftbl
   ppc.npc = site + 4;
