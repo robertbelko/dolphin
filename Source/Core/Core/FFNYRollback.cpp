@@ -5078,6 +5078,16 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       s_lockstep_us += us;
   }
 
+  // Menus mode (28 October): rbtag's "fight" word decides whether frees of its tagged main-heap blocks by other
+  // threads are queued until the fight ends (point 3), whether system allocations go to SysHeap and whether the main
+  // thread's delayed frees wait (point 7). In menus mode the fight never ended, so the queue never emptied: in the lab
+  // two sound banks (1154 + 814 KB) and a 1 MB file buffer stayed queued, the main heap had 1.4 MB left, and quitting to
+  // the main menu crashed (mainMenu.big unpacks to 2 MB: the allocation got 0 and the decompressor wrote to address 0).
+  // Outside the running fight every frame runs with all inputs known, so nothing before it can be rolled back any
+  // more: there the word is 0 (frees done at once, the queue emptied, as between fights without menus mode).
+  if (s_menus_on && s_rbtag_redirected)
+    Wr32(ram, W_FIGHTW, (menu_lock && MinConfirmed() >= f) ? 0 : 1);
+
   if (s_force_end.exchange(false))
   {
     // the host ends the fight for everyone: the machines did not reach the end of the fight at the same frame (e.g.
