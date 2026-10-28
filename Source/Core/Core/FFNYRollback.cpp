@@ -89,6 +89,9 @@ bool g_virtual_tb = (std::getenv("FFNY_RB_ALWAYS") != nullptr || std::getenv("FF
 u64 s_vtb_anchor = 0;
 u32 s_vtb_frame0 = 0, s_vtb_steps = 0;
 bool s_vtb_mode = false;
+// match set-up seed reads (see HookSeedTbN)
+u32 s_seed_reads = 0;  // seed reads since rollback started (reset in StartFight)
+constexpr u32 SEED_TB_SITES[] = {0x80095F68, 0x800982C8, 0x80096364, 0x80096610, 0x8003253C};
 
 void DumpDraws(u32 from, u32 to);
 bool s_heapcheck = false;  // lab: FFNY_RB_HEAPCHECK
@@ -1753,6 +1756,7 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   // set-up, 0x80396BB8 and the array at 0x803F92D0 -> fighter 2 differed 4 frames into the next fight).
   s_vtb_anchor = Core::System::GetInstance().GetPowerPC().ReadFullTimeBaseValue();
   s_vtb_frame0 = f;
+  s_seed_reads = 0;
   s_snd_q.clear();
   s_snd_held = s_snd_sent = s_snd_dropped = 0;
   Wr32(ram, W_CONF, f - 1);
@@ -2574,6 +2578,9 @@ void OnVIField(Core::System& system)
   if (Rd32(ram, SND_MUSIC) == 0x9421FFF8 && Rd32(ram, 0x8001112C) == 0x8001000C && s_music_hold && !s_music_hold_old &&
       std::getenv("FFNY_RB_MUSICREALRESULT") == nullptr)
     HLE::Patch(system, 0x8001112C, "FFNYRollbackSndMusicResult");
+  for (u32 i = 0; i < 5; i++)
+    if ((Rd32(ram, SEED_TB_SITES[i]) & 0xFC1FFFFE) == 0x7C0C42E6 && std::getenv("FFNY_RB_NOSEEDTB") == nullptr)  // mftbl
+      HLE::Patch(system, SEED_TB_SITES[i], "FFNYRollbackSeedTb" + std::to_string(i));
   for (const u32 a : {0x80011164u})
     if ((Rd32(ram, a) >> 16) == 0x9421 && (s_music_hold || s_snd_trace))
       HLE::Patch(system, a, "FFNYRollbackSndExtra");
@@ -4275,6 +4282,36 @@ void HookSndService(const Core::CPUThreadGuard& guard)
 // 0x801A4010, the timer at 0x8015BB4C, ...) take their timing from mftb, so a re-simulated frame read a later real
 // time than its first run (lab 26 October: 0x804404BC / 0x8044040C differed from the first stress frame on). The
 // anchor is the real time base when rollback starts: in lockstep netplay it is the same on every machine.
+// Match set-up seeds (28 October, Robert: desync in random generator 2 right after a new match was set up from the
+// main menu, frame 9512 -> 9513; a rematch does not reseed). The game seeds its generators from inline mftbl reads:
+// 0x80095F68 (match object +0x2F8 = TBL * 12, next seed +0x2F4 = old +0x2F8 + 0x07714F95; generator 2 0x803BE03C is
+// seeded from those at 0x80095C5C), 0x800982C8 (match object +0x302FC generator), 0x80096364 / 0x80096610 (0x800DBA94)
+// and the audio module's 0x8003253C. They are not all read inside the logic update, where the frame clock applies,
+// so each machine used its own real time. While rollback runs these reads get the frame clock (anchor + 1/60 s per
+// logic frame) whatever phase they happen in.
+template <int I>
+void HookSeedTbN(const Core::CPUThreadGuard& guard)
+{
+  // The reads happen on the fight loader thread 0x806D8AE0 (lab), at moments that depend on its progress, so neither
+  // the real time nor the logic frame is the same on all machines; the order of the reads is (same game path). Each
+  // read gets anchor + n * a large odd step (n = the read's number since rollback started); a Replace hook at a fixed
+  // address (ppc.pc is not that address inside a JIT block).
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  const u32 site = SEED_TB_SITES[I], ins = Rd32(ram, site);
+  u64 v = system.GetPowerPC().ReadFullTimeBaseValue();
+  if (s_active && s_vtb_anchor)
+    v = s_vtb_anchor + u64(++s_seed_reads) * 0x9E3779B1ull;
+  ppc.gpr[(ins >> 21) & 31] = u32(v);  // mftbl
+  ppc.npc = site + 4;
+}
+template void HookSeedTbN<0>(const Core::CPUThreadGuard&);
+template void HookSeedTbN<1>(const Core::CPUThreadGuard&);
+template void HookSeedTbN<2>(const Core::CPUThreadGuard&);
+template void HookSeedTbN<3>(const Core::CPUThreadGuard&);
+template void HookSeedTbN<4>(const Core::CPUThreadGuard&);
+
 u64 JitTimeBase()
 {
   auto& system = Core::System::GetInstance();
