@@ -3854,18 +3854,33 @@ void HookTraceN(const Core::CPUThreadGuard& guard)
   fprintf(stderr, "TRACE %08x %u %c %08x %08x %08x %08x %08x %08x %08x %08x lr %08x\n", s_trace_addr[I],
           Rd32(ram, W_FRAME), s_resim_target != 0 ? 'r' : 'f', ppc.gpr[3], ppc.gpr[4], ppc.gpr[5], ppc.gpr[6],
           ppc.gpr[7], ppc.gpr[8], ppc.gpr[9], ppc.gpr[10], ppc.spr[SPR_LR]);
-  // lab (27 October): r27 as a string and the first words at r29 (Apt loader 0x801A3128: name, refpack source)
-  auto okp = [](u32 a) { return (a & 0xFE000000) == 0x80000000 && (a & 0x01FFFFFF) < 0x017FFF00; };
-  if (okp(ppc.gpr[27]) || okp(ppc.gpr[29]))
-  {
-    char str[48] = {};
-    if (okp(ppc.gpr[27]))
-      for (int i = 0; i < 47 && ram[(ppc.gpr[27] + i) & 0x01FFFFFF]; i++)
-        str[i] = char(ram[(ppc.gpr[27] + i) & 0x01FFFFFF]);
-    fprintf(stderr, "TRACE+ r27 \"%s\" r29 %08x: %08x %08x %08x r28 %08x r30 %08x\n", str, ppc.gpr[29],
-            okp(ppc.gpr[29]) ? Rd32(ram, ppc.gpr[29]) : 0, okp(ppc.gpr[29]) ? Rd32(ram, ppc.gpr[29] + 4) : 0,
-            okp(ppc.gpr[29]) ? Rd32(ram, ppc.gpr[29] + 8) : 0, ppc.gpr[28], ppc.gpr[30]);
-  }
+  // lab (28 October): strings at r3 / r27 and the first words at r3 / r29, from MEM1 or the fake VMEM
+  const u8* vmem = system.GetMemory().GetFakeVMEM();
+  auto rdv = [&](u32 a) -> u32 {
+    if ((a & 0xFE000000) == 0x80000000 && (a & 0x01FFFFFF) < 0x017FFFF0)
+      return Rd32(ram, a);
+    if (vmem && a >= VMEM_BASE && a < VMEM_BASE + VMEM_SIZE - 4)
+      return (u32(vmem[a - VMEM_BASE]) << 24) | (u32(vmem[a - VMEM_BASE + 1]) << 16) |
+             (u32(vmem[a - VMEM_BASE + 2]) << 8) | vmem[a - VMEM_BASE + 3];
+    return 0xDEADBEEF;
+  };
+  auto str = [&](u32 a) {
+    std::string out;
+    for (u32 i = 0; i < 48; i++)
+    {
+      const u32 w = rdv(a + (i & ~3u));
+      if (w == 0xDEADBEEF)
+        break;
+      const char c = char(w >> (24 - 8 * (i & 3)));
+      if (c < 32 || c > 126)
+        break;
+      out += c;
+    }
+    return out;
+  };
+  fprintf(stderr, "TRACE+ r3 \"%s\" [%08x %08x %08x] r27 \"%s\" r29 %08x [%08x %08x %08x]\n", str(ppc.gpr[3]).c_str(),
+          rdv(ppc.gpr[3]), rdv(ppc.gpr[3] + 4), rdv(ppc.gpr[3] + 8), str(ppc.gpr[27]).c_str(), ppc.gpr[29],
+          rdv(ppc.gpr[29]), rdv(ppc.gpr[29] + 4), rdv(ppc.gpr[29] + 8));
 }
 template void HookTraceN<0>(const Core::CPUThreadGuard&);
 template void HookTraceN<1>(const Core::CPUThreadGuard&);
