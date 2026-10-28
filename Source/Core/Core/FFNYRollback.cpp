@@ -5242,6 +5242,13 @@ void OnInvalidAccess(Core::System& system, u32 address, u32 pc, bool write)
     heap = " | " + (p.empty() ? std::string("heap free lists ok") : "BROKEN " + p) + " | " + RbtagSummary(ram);
   }
   Report(std::string(b) + (ram ? FightSummary(ram) : std::string()) + heap);
+  // lab: the first crash also gets an event dump (FFNY_RB_EVDUMP)
+  static bool dumped = false;
+  if (ram && !dumped)
+  {
+    dumped = true;
+    EvDump(ram, 1000000 + Rd32(ram, ADDR_COUNTER));
+  }
 }
 
 void HookUnhandledException(const Core::CPUThreadGuard& guard)
