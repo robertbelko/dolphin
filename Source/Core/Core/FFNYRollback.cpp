@@ -91,7 +91,9 @@ u32 s_vtb_frame0 = 0, s_vtb_steps = 0;
 bool s_vtb_mode = false;
 // match set-up seed reads (see HookSeedTbN)
 u32 s_seed_reads = 0;  // seed reads since rollback started (reset in StartFight)
+u32 s_apt_side = 0;    // Flash player clock reads by the loading-screen thread since rollback started (HookAptTbN)
 constexpr u32 SEED_TB_SITES[] = {0x80095F68, 0x800982C8, 0x80096364, 0x80096610, 0x8003253C};
+constexpr u32 APT_TB_SITES[] = {0x801A3F24, 0x801A3F80};  // menus Flash player clock (see HookAptTbN)
 
 void DumpDraws(u32 from, u32 to);
 bool s_heapcheck = false;  // lab: FFNY_RB_HEAPCHECK
@@ -1757,6 +1759,7 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_vtb_anchor = Core::System::GetInstance().GetPowerPC().ReadFullTimeBaseValue();
   s_vtb_frame0 = f;
   s_seed_reads = 0;
+  s_apt_side = 0;
   s_snd_q.clear();
   s_snd_held = s_snd_sent = s_snd_dropped = 0;
   Wr32(ram, W_CONF, f - 1);
@@ -2581,6 +2584,9 @@ void OnVIField(Core::System& system)
   for (u32 i = 0; i < 5; i++)
     if ((Rd32(ram, SEED_TB_SITES[i]) & 0xFC1FFFFE) == 0x7C0C42E6 && std::getenv("FFNY_RB_NOSEEDTB") == nullptr)  // mftbl
       HLE::Patch(system, SEED_TB_SITES[i], "FFNYRollbackSeedTb" + std::to_string(i));
+  for (u32 i = 0; i < 2; i++)
+    if ((Rd32(ram, APT_TB_SITES[i]) & 0xFC1FFFFE) == 0x7C0C42E6 && s_vtb_mode && std::getenv("FFNY_RB_NOAPTTB") == nullptr)
+      HLE::Patch(system, APT_TB_SITES[i], "FFNYRollbackAptTb" + std::to_string(i));
   for (const u32 a : {0x80011164u})
     if ((Rd32(ram, a) >> 16) == 0x9421 && (s_music_hold || s_snd_trace))
       HLE::Patch(system, a, "FFNYRollbackSndExtra");
@@ -4306,6 +4312,38 @@ void HookSeedTbN(const Core::CPUThreadGuard& guard)
   ppc.gpr[(ins >> 21) & 31] = u32(v);  // mftbl
   ppc.npc = site + 4;
 }
+// The menus' Flash player clock (0x801A3F18 reset: mftbl at 0x801A3F24; 0x801A3F60 tick: mftbl at 0x801A3F80; the tick's
+// millisecond count 0x804404D4 and its step 0x804404D8 drive the Apt movies' playheads 0x8044040C / 0x80433FC0..).
+// 28 October (Robert's A/B dumps, third match desynced): after the first fight the clock's base 0x804404C4 and both
+// millisecond counts were equal, before the second fight the counts differed by 84 ms (5 frames) while the time base
+// words were equal again - one reset between the fights had read a different time on each machine (the frame clock
+// applied only to the main thread's logic update; the loading screen's thread resets and ticks this clock too), and the
+// first tick after the next reset turns the stale count into a different step. Both reads get the frame clock (anchor
+// + 1/60 s per logic frame) whenever rollback runs, in any phase.
+template <int I>
+void HookAptTbN(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  const u32 site = APT_TB_SITES[I], ins = Rd32(ram, site);
+  u64 v = system.GetPowerPC().ReadFullTimeBaseValue();
+  const u32 f = Rd32(ram, ADDR_COUNTER);
+  // The loading screen's thread (0x806D8AE0, loop 0x800845F8: play the loading movie until it says it is done, sleep)
+  // runs while the main thread waits, so the logic frame does not move: each of its reads moves this clock on by one
+  // frame (with a frozen clock its movie never ends - lab: hung at the title screen's load), and the main thread's
+  // reads stay after them.
+  if (s_active && s_vtb_mode && s_vtb_anchor)
+  {
+    if (Rd32(ram, 0x800000E4) != 0x80432D10 && I == 1)
+      ++s_apt_side;
+    v = s_vtb_anchor + u64(s32(f - s_vtb_frame0) + s32(s_apt_side)) * 675000 + 1;
+  }
+  ppc.gpr[(ins >> 21) & 31] = u32(v);  // mftbl
+  ppc.npc = site + 4;
+}
+template void HookAptTbN<0>(const Core::CPUThreadGuard&);
+template void HookAptTbN<1>(const Core::CPUThreadGuard&);
 template void HookSeedTbN<0>(const Core::CPUThreadGuard&);
 template void HookSeedTbN<1>(const Core::CPUThreadGuard&);
 template void HookSeedTbN<2>(const Core::CPUThreadGuard&);
