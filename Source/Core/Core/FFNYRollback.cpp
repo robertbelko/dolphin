@@ -89,27 +89,6 @@ bool g_virtual_tb = (std::getenv("FFNY_RB_ALWAYS") != nullptr || std::getenv("FF
 u64 s_vtb_anchor = 0;
 u32 s_vtb_frame0 = 0, s_vtb_steps = 0;
 bool s_vtb_mode = false;
-// sound events started once across rollbacks (see HookSndAcquire)
-static void AcqCaughtUp(u8* ram);
-constexpr u32 SND_ACQ = 0x801F327C;
-constexpr u32 ACQ_RET = 0x8049B5E8;  // a free word in rbtag's area (not rewound): blr + return hook
-constexpr u32 RB_ACQ_N = 0x8049B510, RB_REL_N = 0x8049B514, RB_ACQ = 0x8049B600, RB_REL = 0x8049B900;
-constexpr u32 RB_LOGMAX = 96;
-struct AcqRec
-{
-  u32 frame, a, b, obj, ret;
-  bool used;
-};
-std::vector<AcqRec> s_acq_first;    // acquires of this timeline whose frame is not confirmed yet
-std::vector<AcqRec> s_acq_pending;  // after a rewind: objects of the thrown-away frames, for the re-simulation
-struct
-{
-  bool on;
-  u32 frame, a, b, out, lr;
-} s_acq_call{};
-u32 s_acq_target = 0;  // the original instruction at SND_ACQ is "b s_acq_target" (rbtag's rb_acq)
-bool s_acq_on = false;
-u32 s_acq_reused = 0, s_acq_released = 0, s_acq_first_n = 0;
 
 void DumpDraws(u32 from, u32 to);
 bool s_heapcheck = false;  // lab: FFNY_RB_HEAPCHECK
@@ -1726,10 +1705,9 @@ static void MenusFightMarks(const u8* ram, u32 f)
   {
     line = fmt::format("FFNY fight {} over at frame {} (menus mode: rollback stays on, no resync): {} rollbacks (max {} "
                        "frames, {} frames re-simulated), {} waits for the other side ({:.1f} s), {} desyncs; lockstep "
-                       "frames {} ({:.1f} s waiting); sound events kept across rollbacks {}, dropped {}",
+                       "frames {} ({:.1f} s waiting)",
                        s_fight_no, f, s_rollbacks, s_max_depth, s_resim_frames, s_waits, s_wait_us / 1e6,
-                       s_desyncs_fight, s_lockstep_frames, s_lockstep_us / 1e6, s_acq_reused, s_acq_released);
-    s_acq_reused = s_acq_released = 0;
+                       s_desyncs_fight, s_lockstep_frames, s_lockstep_us / 1e6);
   }
   else
   {
@@ -1760,7 +1738,6 @@ static void MenusFightMarks(const u8* ram, u32 f)
   s_lockstep_frames = 0;
   s_lockstep_us = 0;
   LogLine(line);
-  fprintf(stderr, "FFNYRB %s\n", line.c_str());
   if (s_report_cb)
     s_report_cb(line);
   if (raw)
@@ -2611,18 +2588,6 @@ void OnVIField(Core::System& system)
   if (Rd32(ram, SND_MUSIC) == 0x9421FFF8 && Rd32(ram, 0x8001112C) == 0x8001000C && s_music_hold && !s_music_hold_old &&
       std::getenv("FFNY_RB_MUSICREALRESULT") == nullptr)
     HLE::Patch(system, 0x8001112C, "FFNYRollbackSndMusicResult");
-  {
-    // sound events started once across rollbacks (HookSndAcquire): needs rbtag's acquire branch at SND_ACQ
-    const u32 ins = Rd32(ram, SND_ACQ);
-    s_acq_on = std::getenv("FFNY_RB_NOACQREUSE") == nullptr && (ins >> 26) == 18 && (ins & 3) == 0;
-    if (s_acq_on)
-    {
-      s_acq_target = SND_ACQ + u32(s32(ins << 6) >> 6 & ~3);
-      Wr32(memory.GetRAM(), ACQ_RET, 0x4E800020);  // blr
-      HLE::Patch(system, SND_ACQ, "FFNYRollbackSndAcq");
-      HLE::Patch(system, ACQ_RET, "FFNYRollbackSndAcqRet");
-    }
-  }
   for (const u32 a : {0x80011164u})
     if ((Rd32(ram, a) >> 16) == 0x9421 && (s_music_hold || s_snd_trace))
       HLE::Patch(system, a, "FFNYRollbackSndExtra");
@@ -4023,9 +3988,6 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
   AfEnd(ram);
   s_music_sent.clear();
   s_idle_wait.clear();
-  AcqCaughtUp(ram);
-  s_acq_first.clear();
-  s_acq_call.on = false;
   s_fs_main_queued = false;
   fprintf(stderr, "FFNYRB file ids: %u virtual opens, %u objects of thrown-away frames returned (%u busy), %u releases taken back, %u done after confirmation; %u reads of other threads hurried for the logic\n",
           s_af_opened, s_af_orphans, s_af_busy_orphans, s_af_unfreed, s_af_freed, s_fs_hurried);
@@ -4250,129 +4212,6 @@ void HookSndTrEvict(const Core::CPUThreadGuard& guard)
   const auto& ppc = system.GetPPCState();
   SndTr("DISCARD", ram, ppc, SlotKey(ram, ppc.gpr[3]));
 }
-// ---- Sound events started once (28 October) ----
-// Robert (27 October, menus mode): "a very loud, weird fire sound at Blazin' activation, as if played more than once".
-// The game starts sound effects (animation sound tags: hits, whooshes, the Blazin' fire ...) with the sound-event
-// acquire 0x801F327C (r3, r4 = event, r5 = out: the new sound object), which rbtag (point 5) logs; a rewind to S makes
-// rbtag release the objects acquired in frames >= S and the re-simulation acquires them again - so every sound started
-// in a mispredicted-then-re-simulated frame was started twice (lab, two machines, 30 ms: 15-58 acquires per fight in
-// re-simulations, from the animation tag code 0x80035B58 / 0x80036460 / ...). Now Dolphin keeps those objects at the
-// rewind (takes them out of rbtag's acquire log) and hands the same object back when the re-simulation makes the same
-// acquire in the same frame (same r3 / r4): the sound that already plays is the one of the real timeline. Objects the
-// re-simulation does not ask for again (sounds of the thrown-away prediction) are released when it has caught up.
-// Lab switch FFNY_RB_NOACQREUSE.
-
-void HookSndAcquire(const Core::CPUThreadGuard& guard)
-{
-  auto& system = guard.GetSystem();
-  auto& ppc = system.GetPPCState();
-  u8* ram = system.GetMemory().GetRAM();
-  const bool track = s_acq_on && s_active && s_phase == 'U' && Rd32(ram, 0x800000E4) == 0x80432D10 &&
-                     Rd32(ram, W_ACT) == 1 && Rd32(ram, 0x8049B51C) == 0 && !s_acq_call.on;
-  if (track && s_resim_target)
-  {
-    const u32 fr = Rd32(ram, W_FRAME);
-    for (auto& e : s_acq_pending)
-      if (!e.used && e.frame == fr && e.a == ppc.gpr[3] && e.b == ppc.gpr[4])
-      {
-        e.used = true;
-        s_acq_reused++;
-        if ((ppc.gpr[5] & 0xFE000000) == 0x80000000)
-          Wr32(ram, ppc.gpr[5], e.obj);
-        // rbtag's log: this timeline holds the object now (a later rewind treats it like a new acquire)
-        const u32 n = Rd32(ram, RB_ACQ_N);
-        if (n < RB_LOGMAX)
-        {
-          Wr32(ram, RB_ACQ + 8 * n, e.obj);
-          Wr32(ram, RB_ACQ + 8 * n + 4, fr);
-          Wr32(ram, RB_ACQ_N, n + 1);
-        }
-        s_acq_first.push_back({fr, e.a, e.b, e.obj, e.ret, false});
-        ppc.gpr[3] = e.ret;
-        ppc.npc = ppc.spr[SPR_LR];
-        return;
-      }
-  }
-  if (track)
-  {
-    // a new acquire: see the object when it returns (ACQ_RET)
-    s_acq_call = {true, Rd32(ram, W_FRAME), ppc.gpr[3], ppc.gpr[4], ppc.gpr[5], ppc.spr[SPR_LR]};
-    ppc.spr[SPR_LR] = ACQ_RET;
-  }
-  ppc.npc = s_acq_target;  // the replaced instruction: b rb_acq
-}
-
-void HookSndAcquireRet(const Core::CPUThreadGuard& guard)
-{
-  auto& system = guard.GetSystem();
-  auto& ppc = system.GetPPCState();
-  const u8* ram = system.GetMemory().GetRAM();
-  if (!s_acq_call.on)
-  {
-    ppc.npc = ppc.spr[SPR_LR];
-    return;
-  }
-  s_acq_call.on = false;
-  const u32 obj = (s_acq_call.out & 0xFE000000) == 0x80000000 ? Rd32(ram, s_acq_call.out) : 0;
-  if (obj)
-  {
-    s_acq_first.push_back({s_acq_call.frame, s_acq_call.a, s_acq_call.b, obj, ppc.gpr[3], false});
-    s_acq_first_n++;
-  }
-  ppc.npc = s_acq_call.lr;
-}
-
-// at a rewind to s (before rbtag settles): objects of frames >= s that Dolphin saw being acquired leave rbtag's log
-static void AcqRewind(u8* ram, u32 s)
-{
-  if (!s_acq_on)
-    return;
-  AcqCaughtUp(ram);  // leftovers of an earlier rewind
-  const u32 n = Rd32(ram, RB_ACQ_N);
-  u32 k = 0;
-  for (u32 i = 0; i < n && i < RB_LOGMAX; i++)
-  {
-    const u32 o = Rd32(ram, RB_ACQ + 8 * i), f = Rd32(ram, RB_ACQ + 8 * i + 4);
-    bool keep = true;
-    if (f >= s)
-      for (auto it = s_acq_first.begin(); it != s_acq_first.end(); ++it)
-        if (it->obj == o && it->frame == f)
-        {
-          s_acq_pending.push_back(*it);
-          s_acq_first.erase(it);
-          keep = false;
-          break;
-        }
-    if (keep)
-    {
-      Wr32(ram, RB_ACQ + 8 * k, o);
-      Wr32(ram, RB_ACQ + 8 * k + 4, f);
-      k++;
-    }
-  }
-  Wr32(ram, RB_ACQ_N, k);
-  std::erase_if(s_acq_first, [&](const AcqRec& e) { return e.frame >= s; });
-}
-
-// the re-simulation has caught up: objects it did not ask for again are released (rbtag's deferred release log, frame
-// 0 = done at its next settle)
-static void AcqCaughtUp(u8* ram)
-{
-  for (const auto& e : s_acq_pending)
-  {
-    if (e.used)
-      continue;
-    const u32 n = Rd32(ram, RB_REL_N);
-    if (n >= RB_LOGMAX)
-      break;
-    Wr32(ram, RB_REL + 8 * n, e.obj);
-    Wr32(ram, RB_REL + 8 * n + 4, 0);
-    Wr32(ram, RB_REL_N, n + 1);
-    s_acq_released++;
-  }
-  s_acq_pending.clear();
-}
-
 static void SndExecOriginal(u8* ram, PowerPC::PowerPCState& ppc, u32 fn)
 {
   // the replaced instruction: stwu sp, d(sp)
@@ -4957,8 +4796,6 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   const bool caught_up = s_resim_target != 0;  // f == target: this frame's local input is known
   s_resim_target = 0;
   if (caught_up)
-    AcqCaughtUp(ram);
-  if (caught_up)
     system.GetCoreTiming().SetFrozen(false);  // the re-simulation is over: emulated time runs again
   if (caught_up)
     StressCheck(ram, f, false);
@@ -5295,7 +5132,6 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       {
         const u32 old = Rd32(ram, W_RB);
         Wr32(ram, W_RB, old ? std::min(old, s + 1) : s + 1);
-        AcqRewind(ram, s);
         FreeThrownSysAllocs(ram, s);
         DrainSysPending(ram);
         SndDropFrom(s);
@@ -5338,10 +5174,6 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     s_hashed_upto = f;
   }
   AfConfirm(ram, SndReadyUpTo(f));
-  {
-    const u32 conf = Rd32(ram, W_CONF);
-    std::erase_if(s_acq_first, [&](const AcqRec& e) { return e.frame <= conf; });
-  }
   while (!s_music_sent.empty() && s_music_sent.front().first.frame + 1 <= SndReadyUpTo(f))
     s_music_sent.pop_front();
   SndStartSends(ppc, SndReadyUpTo(f));

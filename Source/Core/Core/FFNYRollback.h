@@ -98,8 +98,6 @@ void LabSchedulePoke(u32 addr, u32 value, u32 frame);  // lab bench: poke at an 
 void HookAsyncSend(const Core::CPUThreadGuard& guard);
 void HookSndMusicResult(const Core::CPUThreadGuard& guard);  // 0x8001112C: the music cue send's result  // OSSendMessage: the logic wakes a worker thread  // memory card device commands (EXI chip selects) so far
 void HookSndPost(const Core::CPUThreadGuard& guard);
-void HookSndAcquire(const Core::CPUThreadGuard& guard);     // 0x801F327C sound-event acquire (b rb_acq)
-void HookSndAcquireRet(const Core::CPUThreadGuard& guard);  // return point of a tracked acquire
 // rollback in the menus: the game's main thread reads a clock that follows the logic frames (Jit64 / interpreter
 // mftb call JitTimeBase while g_virtual_tb is set; set before the JIT compiles, or the JIT cache is cleared)
 extern bool g_virtual_tb;
