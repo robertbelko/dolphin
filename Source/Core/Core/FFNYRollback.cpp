@@ -89,9 +89,12 @@ bool g_virtual_tb = (std::getenv("FFNY_RB_ALWAYS") != nullptr || std::getenv("FF
 u64 s_vtb_anchor = 0;
 u32 s_vtb_frame0 = 0, s_vtb_steps = 0;
 bool s_vtb_mode = false;
+std::map<std::pair<u32, u32>, u32> s_vtb_callers;  // lab: frame-clock reads of this update (pc, lr)
 // match set-up seed reads (see HookSeedTbN)
 u32 s_seed_reads = 0;  // seed reads since rollback started (reset in StartFight)
+u32 s_apt_side = 0;    // Flash player clock reads by the loading-screen thread since rollback started (HookAptTbN)
 constexpr u32 SEED_TB_SITES[] = {0x80095F68, 0x800982C8, 0x80096364, 0x80096610, 0x8003253C};
+constexpr u32 APT_TB_SITES[] = {0x801A3F24, 0x801A3F80};  // menus Flash player clock (see HookAptTbN)
 
 void DumpDraws(u32 from, u32 to);
 bool s_heapcheck = false;  // lab: FFNY_RB_HEAPCHECK
@@ -1771,6 +1774,7 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_vtb_anchor = Core::System::GetInstance().GetPowerPC().ReadFullTimeBaseValue();
   s_vtb_frame0 = f;
   s_seed_reads = 0;
+  s_apt_side = 0;
   s_snd_q.clear();
   s_snd_held = s_snd_sent = s_snd_dropped = 0;
   Wr32(ram, W_CONF, f - 1);
@@ -2595,6 +2599,9 @@ void OnVIField(Core::System& system)
   for (u32 i = 0; i < 5; i++)
     if ((Rd32(ram, SEED_TB_SITES[i]) & 0xFC1FFFFE) == 0x7C0C42E6 && std::getenv("FFNY_RB_NOSEEDTB") == nullptr)  // mftbl
       HLE::Patch(system, SEED_TB_SITES[i], "FFNYRollbackSeedTb" + std::to_string(i));
+  for (u32 i = 0; i < 2; i++)
+    if ((Rd32(ram, APT_TB_SITES[i]) & 0xFC1FFFFE) == 0x7C0C42E6 && s_vtb_mode && std::getenv("FFNY_RB_NOAPTTB") == nullptr)
+      HLE::Patch(system, APT_TB_SITES[i], "FFNYRollbackAptTb" + std::to_string(i));
   for (const u32 a : {0x80011164u})
     if ((Rd32(ram, a) >> 16) == 0x9421 && (s_music_hold || s_snd_trace))
       HLE::Patch(system, a, "FFNYRollbackSndExtra");
@@ -4347,6 +4354,67 @@ void HookSeedTbN(const Core::CPUThreadGuard& guard)
   fprintf(stderr, "FFNYRB SEEDTB %08x frame %u thread %08x read %u -> %08x\n", site, Rd32(ram, ADDR_COUNTER),
           Rd32(ram, 0x800000E4), s_seed_reads, u32(v));
 }
+// lab: the menus' Flash player clock (see the main branch's comment; 28 October: the loading screen's thread
+// 0x806D8AE0 resets and ticks it outside the logic update - lab APTTB log, title screen load at frame 2521)
+template <int I>
+void HookAptTbN(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  const u32 site = APT_TB_SITES[I], ins = Rd32(ram, site);
+  const u64 real = system.GetPowerPC().ReadFullTimeBaseValue();
+  u64 v = real;
+  const u32 f = Rd32(ram, ADDR_COUNTER);
+  // The loading screen's thread (0x806D8AE0, loop 0x800845F8: play the loading movie until it says it is done, sleep)
+  // runs while the main thread waits, so the logic frame does not move: each of its reads moves this clock on by one
+  // frame (with a frozen clock its movie never ends - lab: hung at the title screen's load), and the main thread's
+  // reads stay after them.
+  if (s_active && s_vtb_mode && s_vtb_anchor)
+  {
+    if (Rd32(ram, 0x800000E4) != 0x80432D10 && I == 1)
+      ++s_apt_side;
+    v = s_vtb_anchor + u64(s32(f - s_vtb_frame0) + s32(s_apt_side)) * 675000 + 1;
+  }
+  {
+    static u32 side_seen = 0;
+    if (Rd32(ram, 0x800000E4) == 0x80432D10 && s_apt_side != side_seen)
+    {
+      fprintf(stderr, "FFNYRB APTSIDE frame %u: loading-screen clock reads %u (total %u)%s\n", f, s_apt_side - side_seen,
+              s_apt_side, s_real_fight_now ? " IN FIGHT" : "");
+      side_seen = s_apt_side;
+    }
+  }
+  static const bool aptlog = std::getenv("FFNY_RB_APTLOG") != nullptr;
+  if (aptlog && !s_resim_target)
+  {
+    const u64 old = (s_active && s_vtb_mode && !s_real_fight_now && Rd32(ram, 0x800000E4) == 0x80432D10 && s_phase == 'U') ?
+                        s_vtb_anchor + u64(s32(f - s_vtb_frame0)) * 675000 + s_vtb_steps + 1 : real;
+    static u32 shown = 0, last_f = 0;
+    if (f != last_f)
+      shown = 0;
+    last_f = f;
+    if ((I == 0 || old == real) && s_active && shown++ < 12)
+    {
+      std::string chain;
+      u32 sp = ppc.gpr[1];
+      for (int d = 0; d < 6 && sp >= 0x80000000u && sp < 0x81800000u; d++)
+      {
+        sp = Rd32(ram, sp);
+        if (sp < 0x80000000u || sp >= 0x81800000u)
+          break;
+        chain += fmt::format(" {:08x}", Rd32(ram, sp + 4));
+      }
+      fprintf(stderr, "FFNYRB APTTB %s frame %u phase %c rf %d thread %08x lr %08x old %s diff %lld chain%s\n",
+              I ? "tick" : "reset", f, s_phase ? s_phase : '-', int(s_real_fight_now), Rd32(ram, 0x800000E4),
+              ppc.spr[SPR_LR], old == real ? "REAL" : "frame", (long long)(s64(real) - s64(v)), chain.c_str());
+    }
+  }
+  ppc.gpr[(ins >> 21) & 31] = u32(v);  // mftbl
+  ppc.npc = site + 4;
+}
+template void HookAptTbN<0>(const Core::CPUThreadGuard&);
+template void HookAptTbN<1>(const Core::CPUThreadGuard&);
 template void HookSeedTbN<0>(const Core::CPUThreadGuard&);
 template void HookSeedTbN<1>(const Core::CPUThreadGuard&);
 template void HookSeedTbN<2>(const Core::CPUThreadGuard&);
@@ -4386,7 +4454,10 @@ u64 JitTimeBase()
   // depend on emulated hardware timing, so a re-simulation has them elsewhere or not at all) do not move the count:
   // otherwise every later read of the update got another value (lab: Apt's clock 0x804404BC off by 12 in re-simulations)
   if (ppc.msr.EE)
+  {
     ++s_vtb_steps;
+    s_vtb_callers[{pc, lr}]++;
+  }
   if (s_log && (s_vtb_steps == 50 || s_vtb_steps == 5000))
   {
     static u32 shown = 0;
@@ -4694,6 +4765,18 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   auto& system = guard.GetSystem();
   auto& ppc = system.GetPPCState();
   u8* ram = system.GetMemory().GetRAM();
+  {
+    static const bool vtblog = std::getenv("FFNY_RB_VTBLOG") != nullptr;
+    if (vtblog && s_vtb_steps && !s_resim_target)
+    {
+      std::string who;
+      for (const auto& [k, n] : s_vtb_callers)
+        who += fmt::format(" {:08x}/{:08x}x{}", k.first, k.second, n);
+      fprintf(stderr, "FFNYRB VTBSTEPS frame %u steps %u:%s\n", Rd32(guard.GetSystem().GetMemory().GetRAM(), ADDR_COUNTER),
+              s_vtb_steps, who.c_str());
+    }
+    s_vtb_callers.clear();
+  }
   s_vtb_steps = 0;
   if (s_log && s_active && !s_snd_sending)
   {
