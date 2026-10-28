@@ -92,7 +92,7 @@ void VideoSoftware::InitBackendInfo(const WindowSystemInfo& wsi)
 bool VideoSoftware::Initialize(const WindowSystemInfo& wsi)
 {
   std::unique_ptr<SWOGLWindow> window = SWOGLWindow::Create(wsi);
-  if (!window && !std::getenv("FFNY_LAB"))  // lab: run without a window (frames are read from the XFB in RAM)
+  if (!window && !std::getenv("FFNY_LAB") && !std::getenv("FFNY_SWHEADLESS"))  // lab: run without a window (frames are read from the XFB in RAM)
     return false;
 
   Clipper::Init();

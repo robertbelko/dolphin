@@ -1,0 +1,293 @@
+# FFNY Babylon benchmark (Robert's GCI save in Card A). Screen counter 0x803ea56c, logic counter 0x80440C24
+untilge 80440C24 600 20000
+press 0 100 18 180
+untilge 80440C24 800 20000
+press 0 100 18 180
+untilge 8042ffdc 1 20000
+mashge 0 100 18 180 80440C24 96c 200000
+mark title
+mashge 0 1000 18 360 80440C24 ba2 200000
+mark mainmenu
+wait 180
+press 0 2 18 90
+press 0 100 18 180
+untilge 80440C24 cbb 200000
+wait 180
+press 0 100 18 180
+untilge 80440C24 d79 200000
+wait 180
+press 0 100 18 180
+untilge 80440C24 e35 200000
+wait 180
+press 0 100 18 180
+untilge 80440C24 f1c 200000
+wait 180
+press 0 1000 18 180
+wait 198
+untilge 80440C24 103c 200000
+wait 90
+press 0 100 18 180
+untilge 80440C24 10cc 200000
+wait 90
+wait 198
+wait 270
+wait 90
+press 0 100 18 180
+untilge 80440C24 1267 200000
+mark fighterselect
+wait 270
+press 0 100 18 180          # P1 fighter (Blaze)
+wait 108
+wait 198
+untilge 80440C24 13e3 200000
+wait 90
+press 0 100 18 180
+untilge 80440C24 1471 200000
+mark venueselect
+wait 360
+press 0 4 18 120            # DOWN DOWN RIGHT DOWN DOWN -> Babylon
+press 0 4 18 120
+press 0 2 18 120
+press 0 4 18 120
+press 0 4 18 120
+wait 90
+press 0 100 18 180
+mashge 0 100 18 360 80440C24 1a27 200000
+mark fight
+wait 180
+pad 0 0 0 128               # P1 walks left, P2 right -> camera zooms out
+wait 600
+rel 0
+wait 180
+
+mark f0
+wait 60
+mark beforeko1
+pokef 803F1494 1.0
+pokef 803F278C 1.0
+pad 0 0 255 128
+wait 90
+rel 0
+mashge 0 840 8 30 803F1000 2 4000
+mark ko1
+wait 120
+shot r1_0
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+shot r1_3
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+shot r1_6
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+shot r1_9
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+shot r1_12
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+shot r1_15
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+shot r1_18
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+shot r1_21
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+shot r1_24
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+shot r1_27
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+shot r1_30
+until 803F1000 1 6000
+mark fight_next1
+wait 300
+mark beforeko2
+pokef 803F1494 1.0
+pokef 803F278C 1.0
+pad 0 0 255 128
+wait 90
+rel 0
+mashge 0 840 8 30 803F1000 2 4000
+mark ko2
+wait 120
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+until 803F1000 1 6000
+mark fight_next2
+wait 300
+mark beforeko3
+pokef 803F1494 1.0
+pokef 803F278C 1.0
+pad 0 0 255 128
+wait 90
+rel 0
+mashge 0 840 8 30 803F1000 2 4000
+mark ko3
+wait 120
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+press 0 1 6 30
+press 0 100 6 60
+until 803F1000 1 6000
+mark fight_next3
+wait 300
+mark end
+quit

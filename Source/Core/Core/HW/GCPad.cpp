@@ -27,6 +27,31 @@ static void FFNYBench_Write32(u32 a, u32 v)
   r[o] = u8(v >> 24); r[o + 1] = u8(v >> 16); r[o + 2] = u8(v >> 8); r[o + 3] = u8(v);
 }
 #include "Core/FFNYRollback.h"
+#include "Core/Core.h"
+#include "Core/HW/VideoInterface.h"
+static void FFNYBench_Xfb(const std::string& n)
+{
+  auto& sys = Core::System::GetInstance();
+  const u32 a = sys.GetVideoInterface().GetXFBAddressTop() & 0x01FFFFFF;
+  const char* dir = getenv("FFNY_XFBDIR");
+  if (!dir)
+    return;
+  FILE* f = fopen((std::string(dir) + "/" + n + ".yuyv").c_str(), "wb");
+  if (!f)
+    return;
+  fprintf(f, "XFB %08x\n", a);
+  fwrite(sys.GetMemory().GetRAM() + a, 1, 640 * 2 * 480, f);
+  fclose(f);
+}
+#define FFNYBENCH_SHOT(n) FFNYBench_Xfb(n)
+#include "Core/State.h"
+static void FFNYBench_SaveState(const std::string& n)
+{
+  const char* dir = getenv("FFNY_XFBDIR");
+  if (dir)
+    State::SaveAs(Core::System::GetInstance(), std::string(dir) + "/" + n + ".sav");
+}
+#define FFNYBENCH_SAVESTATE(n) FFNYBench_SaveState(n)
 #include "/home/claude/lab/bench/FFNYBench.inc"
 namespace Pad
 {

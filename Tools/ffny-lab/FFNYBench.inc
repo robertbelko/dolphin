@@ -47,7 +47,7 @@ static GCPadStatus Make(unsigned btn, unsigned sx, unsigned sy)
   GCPadStatus st{};
   st.button = (u16)btn;
   st.stickX = (u8)sx; st.stickY = (u8)sy; st.substickX = 128; st.substickY = 128;
-  st.triggerLeft = 0; st.triggerRight = 0;
+  st.triggerLeft = (btn & 0x40) ? 0xFF : 0; st.triggerRight = (btn & 0x20) ? 0xFF : 0;  // L / R fully pressed with their buttons
   st.analogA = (btn & 0x100) ? 0xFF : 0;
   st.analogB = (btn & 0x200) ? 0xFF : 0;
   st.isConnected = true;
@@ -68,7 +68,7 @@ static void Init()
     std::istringstream ss(ln);
     BStep s;
     if (!(ss >> s.op)) continue;
-    if (s.op == "mark" || s.op == "shot") ss >> s.name;
+    if (s.op == "mark" || s.op == "shot" || s.op == "savestate") ss >> s.name;
     else if (s.op == "pad" || s.op == "press") { ss >> s.a >> std::hex >> s.b >> std::dec >> s.c >> s.d; }
     else if (s.op == "until" || s.op == "untilge") { ss >> std::hex >> s.a >> s.b >> std::dec; if (!(ss >> s.c)) s.c = 0; }
     else if (s.op == "padc") { ss >> s.a >> std::hex >> s.b >> std::dec >> s.c >> s.d >> s.e >> s.f; }
@@ -149,6 +149,12 @@ static void Step()
     if (s.op == "peek") { fprintf(stderr, "PEEK %08lx:", s.a); for (long i = 0; i < s.b; i++) fprintf(stderr, " %08x", FFNYBench_Read32((u32)s.a + 4 * (u32)i)); fprintf(stderr, " (ctr %u)\n", FFNYBench_Read32(0x80440C24)); s_pc++; continue; }
     if (s.op == "rel") { s_ov[s.a & 3] = Make(0, 128, 128); s_pc++; continue; }
     if (s.op == "mark") { Mark(s.name); if (s.name == "b0" && FFNY_GPHistReset) FFNY_GPHistReset(); s_pc++; continue; }
+    if (s.op == "savestate") {
+#ifdef FFNYBENCH_SAVESTATE
+      FFNYBENCH_SAVESTATE(s.name);
+      fprintf(stderr, "SAVESTATE %s (ctr %u)\n", s.name.c_str(), FFNYBench_Read32(0x80440C24));
+#endif
+      s_pc++; continue; }
     if (s.op == "shot") {
 #ifdef FFNYBENCH_SHOT
       FFNYBENCH_SHOT(s.name);

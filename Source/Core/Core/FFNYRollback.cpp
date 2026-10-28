@@ -92,9 +92,15 @@ bool s_vtb_mode = false;
 std::map<std::pair<u32, u32>, u32> s_vtb_callers;  // lab: frame-clock reads of this update (pc, lr)
 // match set-up seed reads (see HookSeedTbN)
 u32 s_seed_reads = 0;  // seed reads since rollback started (reset in StartFight)
-u32 s_apt_side = 0;    // Flash player clock reads by the loading-screen thread since rollback started (HookAptTbN)
+u32 s_apt_side = 0;
+u64 s_lab_apt_anchor = 0;  // lab FFNY_RB_APTAFTER: Apt frame clock only from the first real fight (as in Robert's menus mode)
+u32 s_lab_apt_f0 = 0;    // Flash player clock reads by the loading-screen thread since rollback started (HookAptTbN)
 constexpr u32 SEED_TB_SITES[] = {0x80095F68, 0x800982C8, 0x80096364, 0x80096610, 0x8003253C};
 constexpr u32 APT_TB_SITES[] = {0x801A3F24, 0x801A3F80};  // menus Flash player clock (see HookAptTbN)
+// one loading-screen tick = 6.5 frames: its loop (sleep + wait for the retrace) takes 6-7 frames of real time per
+// pass (lab APTTB: 4.05M / 4.73M time base ticks); with 1 frame per pass the menus' transition movies, which also
+// run on this clock, ended ~200 frames later after every loading screen (lab kor1 vs kor2)
+constexpr u64 APT_SIDE_STEP = 4387500;
 
 void DumpDraws(u32 from, u32 to);
 bool s_heapcheck = false;  // lab: FFNY_RB_HEAPCHECK
@@ -1718,6 +1724,13 @@ static void MenusFightMarks(const u8* ram, u32 f)
   else
   {
     s_fight_no++;
+    if (std::getenv("FFNY_RB_APTAFTER") && !s_lab_apt_anchor)
+    {
+      s_lab_apt_anchor = Core::System::GetInstance().GetPowerPC().ReadFullTimeBaseValue();
+      s_lab_apt_f0 = f;
+      s_apt_side = 0;
+      fprintf(stderr, "FFNYRB APTAFTER: Apt frame clock from frame %u\n", f);
+    }
     line = fmt::format("FFNY fight {} starts at frame {} (menus mode). Since the last fight: {} frames, {} waits for the "
                        "other side ({:.1f} s), input delay outside the fight {}, {} desyncs",
                        s_fight_no, f, f - s_fight_from, s_waits, s_wait_us / 1e6, MenuDelayNow(), s_desyncs_fight);
@@ -4364,17 +4377,21 @@ void HookAptTbN(const Core::CPUThreadGuard& guard)
   const u8* ram = system.GetMemory().GetRAM();
   const u32 site = APT_TB_SITES[I], ins = Rd32(ram, site);
   const u64 real = system.GetPowerPC().ReadFullTimeBaseValue();
-  u64 v = real;
+  static const bool after_ = std::getenv("FFNY_RB_APTAFTER") != nullptr;
+  u64 v = (after_ && !s_lab_apt_anchor) ? JitTimeBase() : real;  // lab APTAFTER: as before the hook until then
   const u32 f = Rd32(ram, ADDR_COUNTER);
   // The loading screen's thread (0x806D8AE0, loop 0x800845F8: play the loading movie until it says it is done, sleep)
-  // runs while the main thread waits, so the logic frame does not move: each of its reads moves this clock on by one
-  // frame (with a frozen clock its movie never ends - lab: hung at the title screen's load), and the main thread's
+  // runs while the main thread waits, so the logic frame does not move: each of its ticks moves this clock on by
+  // APT_SIDE_STEP (with a frozen clock its movie never ends - lab: hung at the title screen's load), and the main thread's
   // reads stay after them.
-  if (s_active && s_vtb_mode && s_vtb_anchor)
+  static const bool after = std::getenv("FFNY_RB_APTAFTER") != nullptr;
+  const u64 anchor = after ? s_lab_apt_anchor : s_vtb_anchor;
+  const u32 f0 = after ? s_lab_apt_f0 : s_vtb_frame0;
+  if (s_active && s_vtb_mode && anchor)
   {
     if (Rd32(ram, 0x800000E4) != 0x80432D10 && I == 1)
       ++s_apt_side;
-    v = s_vtb_anchor + u64(s32(f - s_vtb_frame0) + s32(s_apt_side)) * 675000 + 1;
+    v = anchor + u64(s32(f - f0)) * 675000 + u64(s_apt_side) * APT_SIDE_STEP + 1;
   }
   {
     static u32 side_seen = 0;
