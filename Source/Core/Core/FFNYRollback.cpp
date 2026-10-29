@@ -1429,9 +1429,15 @@ std::unordered_map<u32, u32> s_fs_req_thread;  // file-system request node -> th
 // fight into lockstep for that frame + LOAD_TAIL - each switch costs about the ping. The streams' data goes to the
 // sound player (not rewound; the music module's view of it already differs per machine and is kept out of the logic),
 // so those reads no longer count. Requests of the logic, the loader and unknown requesters still do.
-const bool s_fs_all_streams = std::getenv("FFNY_RB_STREAMLOCK") != nullptr;  // lab / fallback: the old rule
+// 29 October, evening: without lockstep for the stream reads (1bf61b8) Robert's test brought back fast, choppy music
+// and the sound-thread crash at 0x801E7FC8 (read from 0x1C) - rollbacks across a stream refill do break the sound side
+// (mechanism not found yet). Back on by default; the stream reads are counted separately, with their own tail
+// (FFNY_RB_STREAMTAIL=N frames, default LOAD_TAIL) and FFNY_RB_NOSTREAMLOCK=1 = no lockstep for them (lab only).
+const bool s_stream_nolock = std::getenv("FFNY_RB_NOSTREAMLOCK") != nullptr;
+const u32 s_stream_tail = std::getenv("FFNY_RB_STREAMTAIL") ? u32(std::atoi(std::getenv("FFNY_RB_STREAMTAIL"))) : 4;
+u32 s_fs_stream_last = 0;           // newest frame where the file system served only the music / speech streams
 u32 s_fs_stream_only = 0;           // update starts where the file system served only the music / speech streams
-u32 s_ls_files = 0, s_ls_other = 0;  // lockstep frames of the fight by cause (file loads incl. the fight start / rest)
+u32 s_ls_files = 0, s_ls_stream = 0, s_ls_other = 0;  // lockstep frames of the fight by cause
 static bool FsBusyForLogic(const u8* ram)
 {
   auto counts = [&](u32 node) {
@@ -1902,11 +1908,11 @@ static void MenusFightMarks(const u8* ram, u32 f)
   {
     line = fmt::format("FFNY fight {} over at frame {} (menus mode: rollback stays on, no resync): {} rollbacks (max {} "
                        "frames, {} frames re-simulated), {} waits for the other side ({:.1f} s), {} desyncs; lockstep "
-                       "frames {} ({} for file loads incl. the fight start, {} for the memory card / worker threads; "
-                       "{:.1f} s waiting), music / speech stream reads without lockstep {}; other threads' random "
-                       "draws: {}",
+                       "frames {} (game file loads incl. the fight start {}, music / speech stream reads {}, memory card "
+                       "/ worker threads {}; {:.1f} s waiting), update starts during stream reads {}; other threads' "
+                       "random draws: {}",
                        s_fight_no, f, s_rollbacks, s_max_depth, s_resim_frames, s_waits, s_wait_us / 1e6,
-                       s_desyncs_fight, s_lockstep_frames, s_ls_files, s_ls_other, s_lockstep_us / 1e6,
+                       s_desyncs_fight, s_lockstep_frames, s_ls_files, s_ls_stream, s_ls_other, s_lockstep_us / 1e6,
                        s_fs_stream_only, SideDrawText(true));
   }
   else
@@ -1927,7 +1933,7 @@ static void MenusFightMarks(const u8* ram, u32 f)
   s_wait_us = 0;
   s_lockstep_frames = 0;
   s_lockstep_us = 0;
-  s_ls_files = s_ls_other = s_fs_stream_only = 0;
+  s_ls_files = s_ls_stream = s_ls_other = s_fs_stream_only = 0;
   LogLine(line);
   if (s_report_cb)
     s_report_cb(line);
@@ -2083,7 +2089,7 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_fs_was_busy = true;
   s_lockstep_frames = 0;
   s_lockstep_us = 0;
-  s_ls_files = s_ls_other = s_fs_stream_only = 0;
+  s_ls_files = s_ls_stream = s_ls_other = s_fs_stream_only = 0;
   s_conv_warned = false;
   s_min_free2 = s_min_free3 = 0xFFFFFFFF;
   s_min_free3_frame = s_min_free3_largest = s_min_free3_nodes = 0;
@@ -2621,10 +2627,14 @@ void OnVIField(Core::System& system)
     const u8* r = system.GetMemory().GetRAM();
     const u32 cur = Rd32(r, 0x804018D4);
     const bool busy = cur || Rd32(r, 0x804018E0);
-    if (busy && (s_fs_all_streams || FsBusyForLogic(r)))
+    if (busy && FsBusyForLogic(r))
     {
       s_fs_last_busy = std::max(s_fs_last_busy, Rd32(r, ADDR_COUNTER));
       s_fs_real_busy = std::max(s_fs_real_busy, Rd32(r, ADDR_COUNTER));
+    }
+    else if (busy)
+    {
+      s_fs_stream_last = std::max(s_fs_stream_last, Rd32(r, ADDR_COUNTER));
     }
     if (busy && !s_fs_was_busy)
       s_fs_episodes++;
@@ -5290,7 +5300,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   // known: the frames of a load are never rolled back. Costs a wait per frame of about ping - input delay.
   if (Rd32(ram, 0x804018D4) != 0 || Rd32(ram, 0x804018E0) != 0)
   {
-    if (s_fs_all_streams || FsBusyForLogic(ram))
+    if (FsBusyForLogic(ram))
     {
       s_fs_last_busy = std::max(s_fs_last_busy, f);
       s_fs_real_busy = std::max(s_fs_real_busy, f);
@@ -5298,6 +5308,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     else
     {
       s_fs_stream_only++;
+      s_fs_stream_last = std::max(s_fs_stream_last, f);
     }
   }
   if (s_async_on)
@@ -5343,7 +5354,9 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   if (menu_lock)
     s_menu_lock_frames++;
   const bool card_lock = fight && (CardLocked(f) || (s_stall_guard && f <= s_stall_guard + 1) || menu_lock);
-  const bool lockstep = (s_settings.load_lockstep && fight && f <= s_fs_last_busy + LOAD_TAIL) || card_lock;
+  const bool stream_lock = s_settings.load_lockstep && fight && !s_stream_nolock && s_fs_stream_last &&
+                           f <= s_fs_stream_last + s_stream_tail;
+  const bool lockstep = (s_settings.load_lockstep && fight && f <= s_fs_last_busy + LOAD_TAIL) || stream_lock || card_lock;
   if (lockstep)
     s_last_lock_frame = std::max(s_last_lock_frame, f);
   if (lockstep)
@@ -5351,6 +5364,8 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     s_lockstep_frames++;
     if (s_settings.load_lockstep && fight && f <= s_fs_last_busy + LOAD_TAIL)
       s_ls_files++;
+    else if (stream_lock)
+      s_ls_stream++;
     else
       s_ls_other++;
     if (f > s_fs_last_busy && f > s_start_frame + START_LOCKSTEP)
