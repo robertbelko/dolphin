@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/HLE/HLE.h"
+#include "Core/FFNYPaceLog.h"
 #include "Core/FFNYRollback.h"
 
 #include <algorithm>
@@ -27,7 +28,7 @@ namespace HLE
 static std::map<u32, u32> s_hooked_addresses;
 
 // clang-format off
-constexpr std::array<Hook, 115> os_patches{{
+constexpr std::array<Hook, 122> os_patches{{
     // Placeholder, os_patches[0] is the "non-existent function" index
     {"FAKE_TO_SKIP_0",               HLE_Misc::UnimplementedFunction,       HookType::Replace, HookFlag::Generic},
 
@@ -152,6 +153,13 @@ constexpr std::array<Hook, 115> os_patches{{
     {"FFNYRollbackSndRel",           FFNYRollback::HookSndRelease,          HookType::Start,   HookFlag::Fixed},
     {"FFNYRollbackProbe",            FFNYRollback::HookProbe,               HookType::Start,   HookFlag::Fixed},
     {"FFNYRollbackCrash",            FFNYRollback::HookUnhandledException,  HookType::Start,   HookFlag::Fixed},
+    {"FFNYPacePass",                 FFNYPaceLog::HookPassStart,            HookType::Start,   HookFlag::Fixed},
+    {"FFNYPaceTickLoop",             FFNYPaceLog::HookTickLoop,             HookType::Start,   HookFlag::Fixed},
+    {"FFNYPaceUpd",                  FFNYPaceLog::HookUpdateStart,          HookType::Start,   HookFlag::Fixed},
+    {"FFNYPaceUpdEnd",               FFNYPaceLog::HookUpdateEnd,            HookType::Start,   HookFlag::Fixed},
+    {"FFNYPacePreRender",            FFNYPaceLog::HookPreRender,            HookType::Start,   HookFlag::Fixed},
+    {"FFNYPaceRend",                 FFNYPaceLog::HookRenderStart,          HookType::Start,   HookFlag::Fixed},
+    {"FFNYPaceRendEnd",              FFNYPaceLog::HookRenderEnd,            HookType::Start,   HookFlag::Fixed},
 }};
 // clang-format on
 

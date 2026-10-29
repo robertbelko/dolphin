@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/CoreTiming.h"
+#include "Core/FFNYPaceLog.h"
 #include "Core/HW/Memmap.h"
 #include <cstdlib>
 
@@ -505,6 +506,17 @@ void CoreTimingManager::Throttle(const s64 target_cycle)
   }
 
   UpdateVISkip(time, target_time);
+
+  if (FFNYPaceLog::g_on.load(std::memory_order_relaxed))
+  {
+    const s64 late = std::chrono::duration_cast<std::chrono::microseconds>(time - target_time).count();
+    if (late > FFNYPaceLog::g_late_us.load(std::memory_order_relaxed))
+      FFNYPaceLog::g_late_us = late;
+    SleepUntil(target_time);
+    FFNYPaceLog::g_sleep_us += static_cast<u64>(
+        std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - time).count());
+    return;
+  }
 
   SleepUntil(target_time);
 }

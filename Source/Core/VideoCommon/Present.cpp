@@ -3,7 +3,10 @@
 
 #include "VideoCommon/Present.h"
 
+#include <chrono>
+
 #include "Common/ChunkFile.h"
+#include "Core/FFNYPaceLog.h"
 #include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/CoreTiming.h"
@@ -169,6 +172,7 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
                        TimePoint presentation_time)
 {
   bool is_duplicate = FetchXFB(xfb_addr, fb_width, fb_stride, fb_height, ticks);
+  FFNYPaceLog::OnViSwap(xfb_addr, is_duplicate, false);
 
   PresentInfo present_info{
       .present_count = m_present_count++,
@@ -232,6 +236,7 @@ void Presenter::ImmediateSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_
   const u64 ticks = m_next_swap_estimated_ticks;
 
   FetchXFB(xfb_addr, fb_width, fb_stride, fb_height, ticks);
+  FFNYPaceLog::OnViSwap(xfb_addr, false, true);
 
   PresentInfo present_info{
       .frame_count = m_frame_count++,
@@ -906,6 +911,17 @@ void Presenter::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
 void Presenter::Present(PresentInfo* present_info)
 {
   m_present_count++;
+  struct PaceTimer
+  {
+    std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+    ~PaceTimer()
+    {
+      if (FFNYPaceLog::g_on.load(std::memory_order_relaxed))
+        FFNYPaceLog::g_present_us += static_cast<u64>(
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0)
+                .count());
+    }
+  } pace_timer;
 
   if (g_gfx->IsHeadless() || (!m_onscreen_ui && !m_xfb_entry))
     return;

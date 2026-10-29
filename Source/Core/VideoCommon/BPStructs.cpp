@@ -13,6 +13,7 @@
 #include "Common/EnumMap.h"
 #include "Common/Logging/Log.h"
 
+#include "Core/FFNYPaceLog.h"
 #include "Core/DolphinAnalytics.h"
 #include "Core/FifoPlayer/FifoPlayer.h"
 #include "Core/FifoPlayer/FifoRecorder.h"
@@ -359,6 +360,7 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager& 
         g_texture_cache->CopyRenderTargetToTexture(std::ref(resolved_data));
 
         auto& system = Core::System::GetInstance();
+        FFNYPaceLog::OnXfbCopy(system, destAddr);
 
         // This is as closest as we have to an "end of the frame"
         // It works 99% of the time.

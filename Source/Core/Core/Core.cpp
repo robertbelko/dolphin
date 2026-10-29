@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/Core.h"
+#include "Core/FFNYPaceLog.h"
 
 #include <algorithm>
 #include <atomic>
@@ -582,6 +583,7 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
 
   Common::ScopeGuard hw_guard{[&system] {
     INFO_LOG_FMT(CONSOLE, "{}", StopMessage(false, "Shutting down HW"));
+    FFNYPaceLog::Shutdown();
     HW::Shutdown(system);
     INFO_LOG_FMT(CONSOLE, "{}", StopMessage(false, "HW shutdown"));
 

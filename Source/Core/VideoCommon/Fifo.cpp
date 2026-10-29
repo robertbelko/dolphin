@@ -5,6 +5,7 @@
 #include "VideoCommon/Fifo.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
 
 #include "Common/Assert.h"
@@ -18,6 +19,7 @@
 #include "Core/Config/MainSettings.h"
 #include "Core/ConfigManager.h"
 #include "Core/CoreTiming.h"
+#include "Core/FFNYPaceLog.h"
 #include "Core/HW/GPFifo.h"
 #include "Core/HW/Memmap.h"
 #include "Core/Host.h"
@@ -400,6 +402,9 @@ void FifoManager::RunGpuLoop()
 
             command_processor.SetCPStatusFromGPU();
 
+            if (FFNYPaceLog::g_on.load(std::memory_order_relaxed))
+              FFNYPaceLog::g_gpu_cycles += cyclesExecuted;
+
             if (m_config_sync_gpu)
             {
               cyclesExecuted = (int)(cyclesExecuted / m_config_sync_gpu_overclock);
@@ -481,6 +486,8 @@ void FifoManager::RunGpu()
 
 int FifoManager::RunGpuOnCpu(int ticks)
 {
+  const bool pace_log = FFNYPaceLog::g_on.load(std::memory_order_relaxed);
+  const auto pace_t0 = pace_log ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   auto& command_processor = m_system.GetCommandProcessor();
   auto& fifo = command_processor.GetFifo();
   bool reset_simd_state = false;
@@ -512,6 +519,8 @@ int FifoManager::RunGpuOnCpu(int ticks)
       m_video_buffer_read_ptr = OpcodeDecoder::RunFifo(
           DataReader(m_video_buffer_read_ptr, m_video_buffer_write_ptr), &cycles);
       available_ticks -= cycles;
+      if (pace_log)
+        FFNYPaceLog::g_gpu_cycles += cycles;
     }
 
     const u32 cur = fifo.CPReadPointer.load(std::memory_order_relaxed);
@@ -537,6 +546,15 @@ int FifoManager::RunGpuOnCpu(int ticks)
 
   // Discard all available ticks as there is nothing to do any more.
   m_sync_ticks.store(std::min(available_ticks, 0));
+
+  if (pace_log)
+  {
+    if (available_ticks < 0)
+      FFNYPaceLog::g_gpu_out_of_time++;
+    FFNYPaceLog::g_gpu_host_us += static_cast<u64>(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - pace_t0)
+            .count());
+  }
 
   // If the GPU is idle, drop the handler.
   if (available_ticks >= 0)

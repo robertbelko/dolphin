@@ -3,6 +3,8 @@
 
 #include "VideoCommon/ShaderCache.h"
 
+#include <chrono>
+
 #include <utility>
 
 #include <fmt/format.h>
@@ -10,6 +12,7 @@
 #include "Common/Assert.h"
 #include "Common/FileUtil.h"
 #include "Common/MsgHandler.h"
+#include "Core/FFNYPaceLog.h"
 #include "Core/ConfigManager.h"
 
 #include "VideoCommon/AbstractGfx.h"
@@ -127,10 +130,18 @@ const AbstractPipeline* ShaderCache::GetPipelineForUid(const GXPipelineUid& uid)
     return it->second.first.get();
 
   const bool exists_in_cache = it != m_gx_pipeline_cache.end();
+  const auto pace_t0 = std::chrono::steady_clock::now();
   std::unique_ptr<AbstractPipeline> pipeline;
   std::optional<AbstractPipelineConfig> pipeline_config = GetGXPipelineConfig(uid);
   if (pipeline_config)
     pipeline = g_gfx->CreatePipeline(*pipeline_config);
+  if (FFNYPaceLog::g_on.load(std::memory_order_relaxed))
+  {
+    FFNYPaceLog::g_shader_compiles++;
+    FFNYPaceLog::g_shader_us += static_cast<u64>(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - pace_t0)
+            .count());
+  }
   if (g_ActiveConfig.bShaderCache && !exists_in_cache)
     AppendGXPipelineUID(uid);
   return InsertGXPipeline(uid, std::move(pipeline));

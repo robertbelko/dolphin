@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/HW/VideoInterface.h"
+#include "Core/FFNYPaceLog.h"
 #include "Core/FFNYRollback.h"
 
 #include <algorithm>
@@ -896,6 +897,7 @@ void VideoInterfaceManager::EndField(FieldType field, u64 ticks)
   if (is_vblank_data_wanted)
     m_system.GetCoreTiming().Throttle(ticks);
 
+  FFNYPaceLog::OnEndField(m_system, ticks);
   m_system.GetPerfMetrics().CountVBlank();
   m_system.GetVideoEvents().vi_end_field_event.Trigger();
   Core::OnFrameEnd(m_system);
@@ -919,6 +921,7 @@ void VideoInterfaceManager::Update(u64 ticks)
   {
     m_system.GetMovie().FrameUpdate();
     FFNYRollback::OnVIField(m_system);
+    FFNYPaceLog::OnViField(m_system);
   }
 
   // If this half-line is at some boundary of the "active video lines" in either field, we either

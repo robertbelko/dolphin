@@ -12,6 +12,8 @@
 // it right when they are called. The reason is that the vertex format affects the sizes of the
 // vertices.
 
+#include "Core/FFNYPaceLog.h"
+
 #include "VideoCommon/OpcodeDecoding.h"
 
 #include "Common/Assert.h"
@@ -44,6 +46,8 @@ public:
 
     if constexpr (!is_preprocess)
     {
+      if (FFNYPaceLog::g_on.load(std::memory_order_relaxed))
+        FFNYPaceLog::g_xf_words += count;
       LoadXFReg(address, count, data);
 
       INCSTAT(g_stats.this_frame.num_xf_loads);
@@ -136,6 +140,11 @@ public:
 
     // 4 GPU ticks per vertex, 3 CPU ticks per GPU tick
     m_cycles += num_vertices * 4 * 3 + 6;
+    if constexpr (!is_preprocess)
+    {
+      if (FFNYPaceLog::g_on.load(std::memory_order_relaxed))
+        FFNYPaceLog::g_vertices += num_vertices;
+    }
   }
   // This can't be inlined since it calls Run, which makes it recursive
   // m_in_display_list prevents it from actually recursing infinitely, but there's no real benefit
