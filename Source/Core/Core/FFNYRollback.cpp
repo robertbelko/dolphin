@@ -515,7 +515,12 @@ void BuildRanges(const u8* ram, u32 size, std::vector<std::pair<u32, u32>>& out)
   }
   ex.push_back({0x0049A400, 0x0049A410});  // rbtag: previous hook, SysHeap index
   ex.push_back({0x0049B400, 0x0049BF00});
-  ex.push_back({ADDR_VICOUNT & 0x01FFFFFF, (ADDR_VICOUNT + 8) & 0x01FFFFFF});  // VI retrace counters (real time)  // rbtag: deferred-free queue, sound-ref / free logs and flags (system state)
+  ex.push_back({ADDR_VICOUNT & 0x01FFFFFF, (ADDR_VICOUNT + 8) & 0x01FFFFFF});
+  // pacefix DOL patch (29 October; "PACE" at 0x80468F28): its words 0x80468F00-0x80468F2F are main-loop pacing state
+  // (pass flags, the main thread's wait queue, VI callback count, pass start / length from the real time base, wait
+  // counters) - real-time state like the VI counter: not rewound, not compared
+  if (rd(0x80468F28) == 0x50414345)
+    ex.push_back({0x00468F00, 0x00468F30});  // VI retrace counters (real time)  // rbtag: deferred-free queue, sound-ref / free logs and flags (system state)
   const u32 pool = rd(0x802E9B00);
   if (pool)
     ex.push_back({(pool + 0x2A4) & 0x01FFFFFF, (pool + 0x2BC) & 0x01FFFFFF});
