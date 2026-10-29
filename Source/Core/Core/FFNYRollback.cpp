@@ -193,6 +193,7 @@ struct SndCall
 std::deque<SndCall> s_snd_q;
 std::deque<std::pair<SndCall, bool>> s_music_sent;  // music cues sent by first runs (+ matched in the current re-simulation)
 u32 s_music_deduped = 0, s_music_resent = 0, s_music_refused = 0;
+u32 s_stream_guard_skips = 0, s_stream_guard_fight = 0;  // sound stream notes dropped by HookStreamGuard (session / fight)
 bool s_music_hold_old = std::getenv("FFNY_RB_MUSICHOLD") != nullptr;  // lab: the 153a233 behaviour (held until confirmed)
 bool s_snd_defer = false;     // hooks installed
 bool s_snd_trace = false, s_snd_hold_on = true;  // lab: FFNY_RB_SNDTRACE; FFNY_RB_NOSNDHOLD
@@ -1910,10 +1911,11 @@ static void MenusFightMarks(const u8* ram, u32 f)
                        "frames, {} frames re-simulated), {} waits for the other side ({:.1f} s), {} desyncs; lockstep "
                        "frames {} (game file loads incl. the fight start {}, music / speech stream reads {}, memory card "
                        "/ worker threads {}; {:.1f} s waiting), update starts during stream reads {}; other threads' "
-                       "random draws: {}",
+                       "random draws: {}; sound stream notes dropped {}",
                        s_fight_no, f, s_rollbacks, s_max_depth, s_resim_frames, s_waits, s_wait_us / 1e6,
                        s_desyncs_fight, s_lockstep_frames, s_ls_files, s_ls_stream, s_ls_other, s_lockstep_us / 1e6,
-                       s_fs_stream_only, SideDrawText(true));
+                       s_fs_stream_only, SideDrawText(true), s_stream_guard_fight);
+    s_stream_guard_fight = 0;
   }
   else
   {
@@ -2775,6 +2777,17 @@ void OnVIField(Core::System& system)
       HLE::Patch(system, s_count_addr[i], "FFNYRollbackCount" + std::to_string(i));
       i++;
     }
+  }
+  // sound stream guard (see HookStreamGuard)
+  if (std::getenv("FFNY_RB_NOSTREAMGUARD") == nullptr && Rd32(ram, 0x801E7F90) == 0x9421FFE8)
+    HLE::Patch(system, 0x801E7F90, "FFNYRollbackStreamGuard");
+  if (std::getenv("FFNY_RB_NOSTREAMGUARD") == nullptr && Rd32(ram, 0x801E8BCC) == 0x7C7E1B79 &&
+      Rd32(ram, 0x801E7344) == 0x4E800021 && Rd32(ram, 0x801E735C) == 0x4E800021 && Rd32(ram, 0x801E7370) == 0x3D20803F)
+  {
+    HLE::Patch(system, 0x801E8BCC, "FFNYRollbackStreamReset");
+    HLE::Patch(system, 0x801E7344, "FFNYRollbackNoteDispatch0");
+    HLE::Patch(system, 0x801E735C, "FFNYRollbackNoteDispatch1");
+    HLE::Patch(system, 0x801E7370, "FFNYRollbackNotesDone");
   }
   if (const char* c = std::getenv("FFNY_RB_TRACE"))
   {
@@ -4113,6 +4126,154 @@ template void HookTraceN<1>(const Core::CPUThreadGuard&);
 template void HookTraceN<2>(const Core::CPUThreadGuard&);
 template void HookTraceN<3>(const Core::CPUThreadGuard&);
 
+// Sound stream guard (30 October 2026; Robert's friend session of 29 October: the client's audio thread crashed at
+// 0x801E7FC8 in fight 10, right after a Blazin' activation; reproduced in the lab in fight 4 of a scripted menus-mode
+// session, frame 21410, with the old and the new music cue rule alike). 0x801E7F90(r4 = bytes, r5 = stream) applies a
+// "bytes played" note of the mixer to the stream's chunk list (stream +0x11C head; chunk +0 next, +0x1C bytes left).
+// When the music module restarts the stream in between (cue 0x0002 at a Blazin' activation: the old chunks go to the
+// free list +0x128, one empty chunk waits for its disc read), the note still counts bytes of the old buffer; the loop
+// uses up the empty chunk and then reads chunk NULL (+0x1C) - the crash. Replaces "stwu sp,-0x18(sp)": a note bigger
+// than everything the stream holds belongs to the old buffer and is dropped; every other note runs as before. The
+// original game would crash the same way; with rollback the main thread's timing relative to the audio thread changes
+// (re-simulations), which makes the race much more likely (lab: no crash in single fights, a crash in fight 4).
+// Audio-thread state only (not part of the rollback state, not compared): no effect on the game logic or desyncs.
+// FFNY_RB_NOSTREAMGUARD=1 = off.
+void HookStreamGuard(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  const u32 bytes = ppc.gpr[4], st = ppc.gpr[5];
+  if ((st & 0xFE000000) == 0x80000000)
+  {
+    u64 sum = 0;
+    u32 n = Rd32(ram, st + 0x11C), cnt = 0;
+    while (n != 0 && (n & 0xFE000000) == 0x80000000 && cnt < 400)
+    {
+      sum += Rd32(ram, n + 0x1C);
+      n = Rd32(ram, n);
+      cnt++;
+    }
+    if (u64(bytes) > sum)
+    {
+      if (s_stream_guard_skips++ < 3)
+        Report(fmt::format("FFNY: sound stream note dropped at frame {} (stream {:08x} asked for {} bytes, {} buffered in "
+                           "{} chunks; without the guard the audio thread would have crashed at 801e7fc8)",
+                           Rd32(ram, W_FRAME), st, bytes, sum, cnt));
+      s_stream_guard_fight++;
+      ppc.npc = ppc.spr[SPR_LR];
+      return;
+    }
+  }
+  const u32 sp = ppc.gpr[1], nsp = sp - 0x18;  // the replaced instruction: stwu sp,-0x18(sp)
+  Wr32(ram, nsp, sp);
+  ppc.gpr[1] = nsp;
+  ppc.npc = 0x801E7F94;
+}
+
+// Stale sound notes after a stream reset (30 October 2026, lab). The mixer queues notes for the audio thread
+// (0x803EC9C0 = count, 0x803EC9C4 = 8-byte entries {u16 kind, u16 channel, u32 value}; channel objects 0x803ECCC4[ch],
+// +0x58 / +0x54 = handler for kind 0 ("bytes played", 0x801E7F90) / other ("buffer done", 0x801E7F54), +0x5C = the
+// stream). 0x801E72E0 runs them. The stream reset 0x801E8BAC (music restart, e.g. cue 0x0002 at a Blazin' activation)
+// moves the stream's chunks to its free list but leaves notes already queued for it; run after the reset they act on
+// the new, empty buffer list (crash at 0x801E7FC8) or on a reused buffer header (crash at 0x801E7F6C). With rollback
+// the main thread's timing makes such a reset between a note and its processing much more likely (lab: crash in
+// fight 3 / 4 of a scripted session; never in the same session without rollback). Here: every reset remembers how
+// many notes were queued; those notes of that stream are skipped when the queue runs. FFNY_RB_NOSTREAMGUARD=1 = off.
+struct SndResetRec
+{
+  u32 stream, count;
+};
+static std::vector<SndResetRec> s_snd_resets;
+u32 s_stale_notes = 0;
+void HookStreamReset(const Core::CPUThreadGuard& guard)  // Start hook at 0x801E8BCC: r3 = the stream being reset (or 0)
+{
+  auto& system = guard.GetSystem();
+  const u8* ram = system.GetMemory().GetRAM();
+  const u32 st = system.GetPPCState().gpr[3];
+  const u32 q = Rd32(ram, 0x803EC9C0);
+  if ((st & 0xFE000000) == 0x80000000 && q != 0 && q < 0x60 && s_snd_resets.size() < 64)
+    s_snd_resets.push_back({st, q});
+}
+static bool RamPtr(u32 a)
+{
+  return a >= 0x80000000 && a < 0x81800000;
+}
+// Is the queued note still about the buffer its stream holds now? kind 0 = "bytes played": the stream must hold that
+// many bytes; other kinds = "buffer done" (value = buffer, *(buffer - 4) = header, header byte 3 = stream index in
+// 0x803ECD68): the header must still lead back to this stream. (The game's own check, the generation byte obj+0x42
+// in 0x801E7274, does not change at a stream reset, so notes of the old buffer keep coming for a few mixer passes.)
+static const char* StaleNote(const u8* ram, u32 idx, u32 obj, u32* why_val)
+{
+  const u32 st = Rd32(ram, obj + 0x5C);
+  const u32 e = 0x803EC9C4 + idx * 8;
+  const u32 kind = Rd32(ram, e) >> 16, val = Rd32(ram, e + 4);
+  *why_val = val;
+  for (const auto& r : s_snd_resets)
+    if (r.stream == st && idx < r.count)
+      return "queued before the stream was reset";
+  if (!RamPtr(st))
+    return nullptr;
+  if (kind == 0)
+  {
+    u64 sum = 0;
+    u32 n = Rd32(ram, st + 0x11C), cnt = 0;
+    while (n != 0 && RamPtr(n) && cnt < 400)
+    {
+      sum += Rd32(ram, n + 0x1C);
+      n = Rd32(ram, n);
+      cnt++;
+    }
+    return u64(val) > sum ? "bytes played: more than the stream holds" : nullptr;
+  }
+  if (Rd32(ram, obj + 0x54) != 0x801E7F54)
+    return nullptr;  // not the stream handler: leave it alone
+  if (!RamPtr(val) || !RamPtr(val - 4))
+    return "buffer done: bad buffer pointer";
+  const u32 hdr = Rd32(ram, val - 4);
+  if (!RamPtr(hdr))
+    return "buffer done: bad buffer header";
+  const u32 si = Rd32(ram, hdr) & 0xFF;  // byte 3 of the header word
+  const u32 count = ram[0x803DE6E2 & 0x01FFFFFF];  // number of streams
+  if (si >= count || Rd32(ram, 0x803ECD68 + 4 * si) != st)
+    return "buffer done: the buffer no longer belongs to this stream";
+  return nullptr;
+}
+static void NoteDispatch(const Core::CPUThreadGuard& guard, u32 here)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  const u32 idx = ppc.gpr[31], obj = ppc.gpr[9];
+  u32 val = 0;
+  const char* why = (RamPtr(obj) && idx < 0x60) ? StaleNote(ram, idx, obj, &val) : nullptr;
+  if (why != nullptr)
+  {
+    if (s_stale_notes++ < 3)
+      Report(fmt::format("FFNY: stale sound note skipped at frame {} ({}; value {:08x}, stream {:08x}; without the guard "
+                         "the audio thread could crash)",
+                         Rd32(ram, W_FRAME), why, val, Rd32(ram, obj + 0x5C)));
+    s_stream_guard_fight++;
+    ppc.npc = 0x801E7360;
+    return;
+  }
+  const u32 target = ppc.spr[SPR_LR];  // the replaced blrl
+  ppc.spr[SPR_LR] = here + 4;
+  ppc.npc = target;
+}
+void HookNoteDispatch0(const Core::CPUThreadGuard& guard)  // 0x801E7344
+{
+  NoteDispatch(guard, 0x801E7344);
+}
+void HookNoteDispatch1(const Core::CPUThreadGuard& guard)  // 0x801E735C
+{
+  NoteDispatch(guard, 0x801E735C);
+}
+void HookNotesDone(const Core::CPUThreadGuard&)  // Start hook at 0x801E7370: the queue has run
+{
+  s_snd_resets.clear();
+}
+
 // rbtag's post-allocation hook (called by the heap allocator for every allocation, r3 = info: +0x18 pointer)
 void HookSysAlloc(const Core::CPUThreadGuard& guard)
 {
@@ -4262,8 +4423,9 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
                "rollback state %u (at most %u frames after the file system was busy)",
                s_fs_episodes, LOAD_TAIL, s_lockstep_tail, s_conv_out, s_conv_gap_max);
       line += e;
-      snprintf(e, sizeof e, "; sound events held %u, sent %u, dropped %u (hold %s); music cues not repeated %u",
-               s_snd_held, s_snd_sent, s_snd_dropped, SndModeName(), s_music_deduped);
+      snprintf(e, sizeof e, "; sound events held %u, sent %u, dropped %u (hold %s); music cues not repeated %u; sound stream notes dropped %u",
+               s_snd_held, s_snd_sent, s_snd_dropped, SndModeName(), s_music_deduped, s_stream_guard_fight);
+      s_stream_guard_fight = 0;
       line += e;
       snprintf(e, sizeof e, "; reads finished at once %u; SysHeap blocks of thrown-away frames freed %u%s", s_fs_instant,
                s_sys_freed, s_sys_free_overflow ? (" (" + std::to_string(s_sys_free_overflow) + " left: free log full)").c_str() : "");

@@ -109,6 +109,11 @@ void HookSongPickN(const Core::CPUThreadGuard& guard);  // playlist picks (own g
 extern bool g_virtual_tb;
 u64 JitTimeBase();
 void HookSndMusic(const Core::CPUThreadGuard& guard);
+void HookStreamGuard(const Core::CPUThreadGuard& guard);  // 0x801E7F90: sound stream note bigger than the buffered data
+void HookStreamReset(const Core::CPUThreadGuard& guard);    // 0x801E8BCC, sound stream reset
+void HookNoteDispatch0(const Core::CPUThreadGuard& guard);  // 0x801E7344, sound note handler call
+void HookNoteDispatch1(const Core::CPUThreadGuard& guard);  // 0x801E735C
+void HookNotesDone(const Core::CPUThreadGuard& guard);      // 0x801E7370
 void HookSndExtra(const Core::CPUThreadGuard& guard);  // more music wrappers, held the same way  // 0x80011108 music event send
 void HookSndTrAccept(const Core::CPUThreadGuard& guard);  // lab sound trace
 void HookSndTrMusRes(const Core::CPUThreadGuard& guard);
