@@ -4498,23 +4498,45 @@ static void SndHook(const Core::CPUThreadGuard& guard, u32 fn)
     // song changed every 376 frames in stress mode, never without rollback; with the hold off it stayed). In a
     // re-simulation a cue the first run of that frame already sent (same arguments) is not sent again; a different
     // one (the inputs were mispredicted) is sent then.
+    // 29 October (friend session, 10th fight: the music stream's chunk list ran empty in the audio thread, crash at
+    // 0x801E7FC8, right after P1's Blazin' activation; Robert heard fast, choppy music before such crashes): a cue the
+    // first run sent at frame F that the corrected timeline makes at another frame (a Blazin' activated a frame or two
+    // later, a KO a frame earlier) used to be sent again - the music player jumped to the same part twice within a few
+    // frames, each jump a seek of the stream. Now an unmatched cue of the thrown-away frames with the same event
+    // within the rollback window counts as this one (FFNY_RB_MUSICEXACT=1: exact frame only, the old rule). Every cue
+    // is logged (first 400 per session) so a crash report can be matched with the cues before it.
+    static const bool exact = std::getenv("FFNY_RB_MUSICEXACT") != nullptr;
+    static u32 cue_logged = 0;
+    const u32 ev = c.r[0] & 0xFFFF;  // 0x80011108 uses only (s16)r3
+    auto log_cue = [&](const char* what) {
+      if (cue_logged++ < 400)
+        LogLine(fmt::format("FFNY music cue {:04x} ({:08x}) at frame {}: {}", ev, fn, c.frame, what));
+    };
     if (!s_resim_target)
     {
       s_music_sent.push_back({c, false});
+      log_cue("sent (first run)");
       SndExecOriginal(ram, ppc, fn);
       return;
     }
-    for (auto& e : s_music_sent)
-      if (!e.second && e.first.frame == c.frame && e.first.fn == c.fn && (e.first.r[0] & 0xFFFF) == (c.r[0] & 0xFFFF))  // 0x80011108 uses only (s16)r3
-      {
-        e.second = true;  // matched in this re-simulation
-        s_music_deduped++;
-        ppc.gpr[3] = 1;
-        ppc.npc = ppc.spr[SPR_LR];
-        return;
-      }
+    const u32 window = s_settings.max_rollback + 2;
+    for (int pass = 0; pass < (exact ? 1 : 2); pass++)
+      for (auto& e : s_music_sent)
+        if (!e.second && e.first.fn == c.fn && (e.first.r[0] & 0xFFFF) == ev &&
+            (pass == 0 ? e.first.frame == c.frame :
+                         (e.first.frame + window >= c.frame && c.frame + window >= e.first.frame)))
+        {
+          e.second = true;  // matched in this re-simulation
+          s_music_deduped++;
+          if (pass == 1)
+            log_cue(fmt::format("not sent again (the first run sent it at frame {})", e.first.frame).c_str());
+          ppc.gpr[3] = 1;
+          ppc.npc = ppc.spr[SPR_LR];
+          return;
+        }
     s_music_sent.push_back({c, true});
     s_music_resent++;
+    log_cue("sent by a re-simulation (the first run did not send it)");
     SndExecOriginal(ram, ppc, fn);
     return;
   }
