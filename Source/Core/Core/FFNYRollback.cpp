@@ -303,6 +303,19 @@ const bool s_side_off = std::getenv("FFNY_RB_NOSIDERNG") != nullptr;
 u32 s_side_draws[2] = {};          // since the last report
 std::map<u32, u32> s_side_lr[2];  // caller (lr) -> draws since the last report
 u32 s_match_updates = 0;           // match update 0x80096C04 calls since the last menus status line
+// Song picks (29 October, Robert: after the menus-mode fights the main menu played a different song on each machine;
+// dumps at 25737: A "music/hypno", B "music/where" in the song stream object at 0x80B16850). The music module's
+// playlist picks 0x8002C294 (in 0x8002BC18, from the front end / loading screen 0x8008428C, 0x80084B90, 0x80089598)
+// and 0x8002CB88 (in 0x8002C6BC, from 0x80041F18) draw "random index mod count" from the audio module's private
+// generator (rbaudrng stub 0x8049A200 -> state 0x8049A210), which the voices, render and effect draws advance by a
+// different amount on each machine. While rollback runs, these two calls get their own generator instead (seeded
+// in StartFight, where the machines are identical): the same pick sequence on all machines. On the main thread in a
+// running fight (re-simulations) a pick's value comes from (logic frame, n-th pick in the frame) instead.
+// FFNY_RB_NOSONGPICK=1 turns it off.
+constexpr u32 SONG_PICK_SITES[] = {0x8002C294, 0x8002CB88};
+u32 s_song[6] = {};
+u32 s_song_picks = 0, s_song_logged = 0;
+u32 s_song_frame = 0xFFFFFFFF, s_song_in_frame = 0;
 // 0x8001FC88 in C++ (checked instruction by instruction against the DOL's code on 20,000 random states)
 static u32 Gen1Step(u32* s)
 {
@@ -351,7 +364,8 @@ static float Gen2Step(u32* s)
 }
 static std::string SideDrawText(bool reset)
 {
-  std::string t = fmt::format("generator 1 {}, generator 2 {}", s_side_draws[0], s_side_draws[1]);
+  std::string t = fmt::format("generator 1 {}, generator 2 {}, song picks {}", s_side_draws[0], s_side_draws[1],
+                              s_song_picks);
   for (int g = 0; g < 2; g++)
   {
     if (s_side_lr[g].empty())
@@ -368,6 +382,7 @@ static std::string SideDrawText(bool reset)
     s_side_draws[0] = s_side_draws[1] = 0;
     s_side_lr[0].clear();
     s_side_lr[1].clear();
+    s_song_picks = 0;
   }
   return t;
 }
@@ -1885,6 +1900,10 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   for (int i = 0; i < 34; i++)
     s_side2[i] = Rd32(ram, GEN2_SHARED + 4 * i);
   s_side2[32] ^= 0x7F4A7C15u;
+  for (int i = 0; i < 6; i++)
+    s_song[i] = Rd32(ram, GEN1_PRIVATE + 4 * i) ^ (0x85EBCA6Bu * u32(i + 3));
+  s_song_picks = 0;
+  s_song_frame = 0xFFFFFFFF;
   s_side_draws[0] = s_side_draws[1] = 0;
   s_side_lr[0].clear();
   s_side_lr[1].clear();
@@ -2715,6 +2734,10 @@ void OnVIField(Core::System& system)
   for (u32 i = 0; i < 2; i++)
     if ((Rd32(ram, APT_TB_SITES[i]) & 0xFC1FFFFE) == 0x7C0C42E6 && s_vtb_mode && std::getenv("FFNY_RB_NOAPTTB") == nullptr)
       HLE::Patch(system, APT_TB_SITES[i], "FFNYRollbackAptTb" + std::to_string(i));
+  for (u32 i = 0; i < 2; i++)
+    if (Rd32(ram, SONG_PICK_SITES[i]) == (0x48000001u | ((0x8049A200u - SONG_PICK_SITES[i]) & 0x03FFFFFCu)) &&
+        std::getenv("FFNY_RB_NOSONGPICK") == nullptr)  // bl 0x8049A200 (rbaudrng)
+      HLE::Patch(system, SONG_PICK_SITES[i], "FFNYRollbackSongPick" + std::to_string(i));
   for (const u32 a : {0x80011164u})
     if ((Rd32(ram, a) >> 16) == 0x9421 && (s_music_hold || s_snd_trace))
       HLE::Patch(system, a, "FFNYRollbackSndExtra");
@@ -4494,6 +4517,53 @@ void HookAptTbN(const Core::CPUThreadGuard& guard)
   ppc.gpr[(ins >> 21) & 31] = u32(v);  // mftbl
   ppc.npc = site + 4;
 }
+// see SONG_PICK_SITES: Replace hook on the "bl 0x8049A200" of a playlist pick
+template <int I>
+void HookSongPickN(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  const u8* ram = system.GetMemory().GetRAM();
+  const u32 site = SONG_PICK_SITES[I];
+  if (!s_active)
+  {
+    // the original call: bl 0x8049A200
+    ppc.spr[SPR_LR] = site + 4;
+    ppc.npc = 0x8049A200;
+    return;
+  }
+  const u32 thread = Rd32(ram, 0x800000E4), f = Rd32(ram, ADDR_COUNTER);
+  u32 v;
+  if (thread == MAIN_THREAD && Rd32(ram, ADDR_FIGHT) == 1)
+  {
+    if (f != s_song_frame)
+    {
+      s_song_frame = f;
+      s_song_in_frame = 0;
+    }
+    u32 st[6];
+    for (int i = 0; i < 6; i++)
+      st[i] = s_song[i] ^ (f * 0x9E3779B1u) ^ (s_song_in_frame * 0x7FEB352Du) ^ u32(i);
+    s_song_in_frame++;
+    v = Gen1Step(st);
+    v = Gen1Step(st);
+  }
+  else
+  {
+    v = Gen1Step(s_song);
+  }
+  s_song_picks++;
+  if (s_song_logged < 200)
+  {
+    s_song_logged++;
+    LogLine(fmt::format("FFNY song pick {} at {:08x}: frame {}, thread {:08x}, value {:08x}, count {}",
+                        s_song_logged, site, f, thread, v, ppc.gpr[I == 0 ? 21 : 22]));
+  }
+  ppc.gpr[3] = v;
+  ppc.npc = site + 4;
+}
+template void HookSongPickN<0>(const Core::CPUThreadGuard&);
+template void HookSongPickN<1>(const Core::CPUThreadGuard&);
 template void HookAptTbN<0>(const Core::CPUThreadGuard&);
 template void HookAptTbN<1>(const Core::CPUThreadGuard&);
 template void HookSeedTbN<0>(const Core::CPUThreadGuard&);

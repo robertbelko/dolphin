@@ -102,6 +102,8 @@ template <int I>
 void HookSeedTbN(const Core::CPUThreadGuard& guard);  // match set-up mftbl seed reads (deterministic values)
 template <int I>
 void HookAptTbN(const Core::CPUThreadGuard& guard);  // menus Flash player clock reads (frame clock)
+template <int I>
+void HookSongPickN(const Core::CPUThreadGuard& guard);  // playlist picks (own generator while rollback runs)
 // rollback in the menus: the game's main thread reads a clock that follows the logic frames (Jit64 / interpreter
 // mftb call JitTimeBase while g_virtual_tb is set; set before the JIT compiles, or the JIT cache is cleared)
 extern bool g_virtual_tb;
