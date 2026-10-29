@@ -51,4 +51,9 @@ void HookUpdateEnd(const Core::CPUThreadGuard& guard);    // 0x80004D28
 void HookPreRender(const Core::CPUThreadGuard& guard);    // 0x80004D80 tick loop done
 void HookRenderStart(const Core::CPUThreadGuard& guard);  // 0x80004D98 bl 0x800838F4 (render)
 void HookRenderEnd(const Core::CPUThreadGuard& guard);    // 0x80004D9C
+// event probes (Logs/ffny_paceev_<date>_<time>.csv)
+void HookTickResult(const Core::CPUThreadGuard& guard);  // 0x80004D00 tick() result
+void HookPadPush(const Core::CPUThreadGuard& guard);     // 0x800EC4F8 pad thread pushed a snapshot
+void HookSleep(const Core::CPUThreadGuard& guard);       // 0x802776E8 OSSleepThread (main thread only)
+void HookWake(const Core::CPUThreadGuard& guard);        // 0x802777B4 OSSleepThread returns (main thread only)
 }  // namespace FFNYPaceLog

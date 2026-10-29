@@ -32,3 +32,12 @@ Columns (per VI field):
   gpu_ms, present_ms  host time running the GPU (single core) / presenting
   counter, fight, pending  logic counter 0x80440C24, fight flag 0x803F1000, pad snapshots waiting
   marker              1 = Scroll Lock pressed
+
+Event file (v2, same folder, ffny_paceev_<date>_<time>.csv), one line per event:
+  kind,field,at,tick,a,b,c,d   (at = emulated kilo-ticks since the field started)
+  A pass start, U/u update start/end, R/r render start/end, F field end
+  T tick() result: a = 1 (an update follows) / 0 (draw now), b = snapshots still pending
+  P pad thread pushed a snapshot: a = pending count
+  S main thread sleeps in OSSleepThread: a = phase (P pass start, T tick loop, U update, B before render,
+    R render, O other, as ASCII hex), b/c/d = caller, its caller, the next caller
+  W main thread runs again: a = phase

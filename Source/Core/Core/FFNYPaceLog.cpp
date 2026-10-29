@@ -44,6 +44,13 @@ constexpr u32 INSN_UPD = 0x4807E3B1;
 constexpr u32 INSN_REND = 0x4807EB5D;
 constexpr u32 ADDR_COUNTER = 0x80440C24;  // logic update counter
 constexpr u32 ADDR_FIGHT = 0x803F1000;    // 1 while a fight runs (rbtag DOLs)
+// event probes (second file, ffny_paceev_*.csv)
+constexpr u32 ADDR_TICKRES = 0x80004D00;  // cmpwi r3,0 right after tick() 0x800EC144 (r3 = 1: an update follows)
+constexpr u32 ADDR_PUSH = 0x800EC4F8;     // pad thread: stw r9,0x17C8(r31) = snapshot pushed (r9 = new count)
+constexpr u32 ADDR_SLEEP = 0x802776E8;    // OSSleepThread entry (r3 = queue, LR = caller)
+constexpr u32 ADDR_WAKE = 0x802777B4;     // OSSleepThread after __OSReschedule: the thread runs again
+constexpr u32 INSN_TICKRES = 0x2C030000, INSN_PUSH = 0x913F17C8, INSN_SLEEP = 0x7C0802A6, INSN_WAKE = 0x7FE3FB78;
+constexpr u32 ADDR_CUR_THREAD = 0x800000E4;
 
 bool s_env_checked = false;
 bool s_wanted = false;
@@ -51,6 +58,11 @@ std::string s_path_env;
 bool s_installed = false;
 File::IOFile s_iofile;
 FILE* s_file = nullptr;
+File::IOFile s_evfile_io;
+FILE* s_evfile = nullptr;
+u32 s_main_thread = 0;
+char s_phase = 'O';  // main loop phase: P pass start, T tick loop, U update, B before render, R render, O other
+u32 s_sleep_lr[3] = {};
 u64 s_field = 0;
 Clock::time_point s_t0, s_prev_host;
 u64 s_prev_ticks = 0;
@@ -81,6 +93,15 @@ s64 HostUs(Clock::time_point t)
   return std::chrono::duration_cast<std::chrono::microseconds>(t - s_t0).count();
 }
 
+void Ev(char kind, u64 tick, u32 a = 0, u32 b = 0, u32 c = 0, u32 d = 0)
+{
+  if (!s_evfile)
+    return;
+  const s64 at = tick >= s_prev_ticks ? static_cast<s64>((tick - s_prev_ticks) / 1000) : -1;
+  std::fprintf(s_evfile, "%c,%llu,%lld,%llu,%x,%x,%x,%x\n", kind, static_cast<unsigned long long>(s_field),
+               static_cast<long long>(at), static_cast<unsigned long long>(tick), a, b, c, d);
+}
+
 void Open()
 {
   std::string path = s_path_env;
@@ -94,6 +115,21 @@ void Open()
   }
   s_iofile.Open(path, "w");
   s_file = s_iofile.GetHandle();
+  {
+    std::string ev = path;
+    const size_t k = ev.rfind("ffny_pacelog");
+    ev = k != std::string::npos ? ev.substr(0, k) + "ffny_paceev" + ev.substr(k + 12) : ev + ".ev.csv";
+    s_evfile_io.Open(ev, "w");
+    s_evfile = s_evfile_io.GetHandle();
+    if (s_evfile)
+      std::fprintf(s_evfile, "# FFNY pace events: kind,field,at (emulated kilo-ticks into the field),tick,a,b,c,d\n"
+                             "# T tick() result (a = 1 update follows / 0 render, b = snapshots still pending)\n"
+                             "# P pad snapshot pushed (a = pending count)\n"
+                             "# S main thread goes to sleep (a = phase, b c d = caller, its caller, next caller)\n"
+                             "# W main thread runs again (a = phase)\n"
+                             "# U/u update start/end, R/r render start/end, A pass start, F field end\n"
+                             "kind,field,at,tick,a,b,c,d\n");
+  }
   if (!s_file)
   {
     std::fprintf(stderr, "FFNY pacelog: cannot write %s\n", path.c_str());
@@ -156,6 +192,15 @@ void OnViField(Core::System& system)
   HLE::Patch(system, ADDR_PRERENDER, "FFNYPacePreRender");
   HLE::Patch(system, ADDR_REND, "FFNYPaceRend");
   HLE::Patch(system, ADDR_REND_END, "FFNYPaceRendEnd");
+  if (Rd32(ram, ADDR_TICKRES) == INSN_TICKRES)
+    HLE::Patch(system, ADDR_TICKRES, "FFNYPaceTickRes");
+  if (Rd32(ram, ADDR_PUSH) == INSN_PUSH)
+    HLE::Patch(system, ADDR_PUSH, "FFNYPacePush");
+  if (Rd32(ram, ADDR_SLEEP) == INSN_SLEEP && Rd32(ram, ADDR_WAKE) == INSN_WAKE)
+  {
+    HLE::Patch(system, ADDR_SLEEP, "FFNYPaceSleep");
+    HLE::Patch(system, ADDR_WAKE, "FFNYPaceWake");
+  }
   s_installed = true;
   if (!s_file)
     Open();
@@ -171,6 +216,12 @@ void Shutdown()
   }
   s_installed = false;
   s_env_checked = false;
+  if (s_evfile)
+  {
+    s_evfile_io.Close();
+    s_evfile = nullptr;
+  }
+  s_main_thread = 0;
 }
 
 static u64 Ticks(const Core::CPUThreadGuard& guard)
@@ -181,6 +232,9 @@ static u64 Ticks(const Core::CPUThreadGuard& guard)
 void HookPassStart(const Core::CPUThreadGuard& guard)
 {
   s_t_pass = Ticks(guard);
+  s_phase = 'P';
+  s_main_thread = Rd32(guard.GetSystem().GetMemory().GetRAM(), ADDR_CUR_THREAD);
+  Ev('A', s_t_pass);
   s_passes++;
   s_updates_this_pass = 0;
 }
@@ -189,11 +243,14 @@ void HookTickLoop(const Core::CPUThreadGuard& guard)
 {
   if (s_t_pass)
     s_wait_ticks += Ticks(guard) - s_t_pass;
+  s_phase = 'T';
 }
 
 void HookUpdateStart(const Core::CPUThreadGuard& guard)
 {
   s_t_upd = Ticks(guard);
+  s_phase = 'U';
+  Ev('U', s_t_upd);
 }
 
 void HookUpdateEnd(const Core::CPUThreadGuard& guard)
@@ -203,6 +260,8 @@ void HookUpdateEnd(const Core::CPUThreadGuard& guard)
   s_t_upd = 0;
   s_updates++;
   s_updates_this_pass++;
+  s_phase = 'T';
+  Ev('u', Ticks(guard));
 }
 
 void HookPreRender(const Core::CPUThreadGuard& guard)
@@ -210,11 +269,14 @@ void HookPreRender(const Core::CPUThreadGuard& guard)
   s_tick_obj = guard.GetSystem().GetPPCState().gpr[28];
   if (s_updates_this_pass > s_max_updates_in_pass)
     s_max_updates_in_pass = s_updates_this_pass;
+  s_phase = 'B';
 }
 
 void HookRenderStart(const Core::CPUThreadGuard& guard)
 {
   s_t_rend = Ticks(guard);
+  s_phase = 'R';
+  Ev('R', s_t_rend);
 }
 
 void HookRenderEnd(const Core::CPUThreadGuard& guard)
@@ -224,6 +286,46 @@ void HookRenderEnd(const Core::CPUThreadGuard& guard)
     s_rend_ticks += t - s_t_rend;
   s_t_rend = 0;
   s_rend_end_tick = static_cast<s64>(t);
+  s_phase = 'O';
+  Ev('r', t);
+}
+
+void HookTickResult(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  const u32 obj = system.GetPPCState().gpr[28];
+  const u32 pending = (obj >> 24) == 0x80 ? Rd32(system.GetMemory().GetRAM(), obj + 0x17C8) : 0;
+  Ev('T', Ticks(guard), system.GetPPCState().gpr[3], pending);
+}
+
+void HookPadPush(const Core::CPUThreadGuard& guard)
+{
+  Ev('P', Ticks(guard), guard.GetSystem().GetPPCState().gpr[9]);
+}
+
+void HookSleep(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  const u8* ram = system.GetMemory().GetRAM();
+  if (!s_main_thread || Rd32(ram, ADDR_CUR_THREAD) != s_main_thread)
+    return;
+  const auto& ppc = system.GetPPCState();
+  auto ok = [](u32 a) { return (a >> 24) == 0x80 && (a & 0x01FFFFFF) < 0x01800000; };
+  const u32 lr1 = ppc.spr[SPR_LR];
+  const u32 sp1 = ppc.gpr[1];  // caller's frame (OSSleepThread has not made its own yet)
+  const u32 sp2 = ok(sp1) ? Rd32(ram, sp1) : 0;
+  const u32 lr2 = ok(sp2) ? Rd32(ram, sp2 + 4) : 0;
+  const u32 sp3 = ok(sp2) ? Rd32(ram, sp2) : 0;
+  const u32 lr3 = ok(sp3) ? Rd32(ram, sp3 + 4) : 0;
+  Ev('S', Ticks(guard), static_cast<u32>(s_phase), lr1, lr2, lr3);
+}
+
+void HookWake(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  if (!s_main_thread || Rd32(system.GetMemory().GetRAM(), ADDR_CUR_THREAD) != s_main_thread)
+    return;
+  Ev('W', Ticks(guard), static_cast<u32>(s_phase));
 }
 
 void OnXfbCopy(Core::System& system, u32 dest_addr)
@@ -293,8 +395,13 @@ void OnEndField(Core::System& system, u64 ticks)
                fifo / 1024, g_vertices.exchange(0), g_xf_words.exchange(0), g_shader_compiles.exchange(0),
                g_shader_us.exchange(0) / 1000.0, g_gpu_host_us.exchange(0) / 1000.0,
                g_present_us.exchange(0) / 1000.0, counter, fight, pending, marker ? 1 : 0);
+  Ev('F', ticks);
   if ((s_field & 63) == 0 || marker)
+  {
     std::fflush(s_file);
+    if (s_evfile)
+      std::fflush(s_evfile);
+  }
 
   s_field++;
   s_prev_host = now;
