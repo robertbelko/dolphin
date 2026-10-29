@@ -1226,6 +1226,17 @@ void CompareParts(u32 f, const std::array<u32, NPARTS>& local, const std::array<
   if (which.empty())
     which = "(no single part - hash method mismatch: are both players on the same build?)";
   Report("FFNY DESYNC at frame " + std::to_string(f) + ": " + which + " differ. Mine now: " + FightSummary(ram));
+  // Automatic repair (29 October, Robert: long sessions must stay in sync): a difference in the fighters, the fight
+  // RNG, the shared generators or the frame counter is real - end rollback here and take the host's state, as after
+  // a forced fight end (both machines see the mismatch and stop; the host's whole emulator state replaces the
+  // others'). Rollback starts again at the next fight. FFNY_RB_NOAUTORESYNC=1: only report.
+  static const bool no_auto = std::getenv("FFNY_RB_NOAUTORESYNC") != nullptr;
+  if (!no_auto && s_active && s_fight_end_cb && !s_force_end && !s_resync_waiting)
+  {
+    Report("FFNY: desync - ending rollback here and taking the host's state (automatic resync); rollback starts "
+           "again at the next fight");
+    RequestForceEnd("desync at frame " + std::to_string(f) + " (" + which + ")");
+  }
 }
 
 static void MenusFightMarks(const u8* ram, u32 f);
@@ -1630,6 +1641,25 @@ static const char* ChunkLabel(u32 addr, u32 len)
     return " (music module)";
   if (addr >= 0x803F1144 && addr < 0x803F1144 + 4 * 0x12F8)
     return " (fighters)";
+  // classified from Robert's A/B dumps of 29 October (see the handoff, "Remaining state-check differences"): none of
+  // these is read by the fight logic; they differ because rendering, sound and the GPU's deferred releases follow
+  // each machine's own displayed frames and audio
+  if (in(0x80433FA8) || in(0x80434004))
+    return " (song position from the sound player: sound side)";
+  if (in(0x8049A210))
+    return " (audio module's private generators: sound side)";
+  if (in(0x803D5950))
+    return " (Flash player's deferred GPU releases: render side)";
+  if (in(0x80437600))
+    return " (stack leftovers: junk)";
+  if (in(0x802F9748) || in(0x802F9874))
+    return " (frame timing meter: render side)";
+  if (addr < 0x806E84F0 && addr + len > 0x8060C3D0)
+    return " (small-object pool: same objects, other slots)";
+  if (in(0x809C2110) || in(0x809D0000))
+    return " (object table: same objects, other slots)";
+  if (in(0x80A02130))
+    return " (matrices: cosmetic)";
   if (addr >= VMEM_BASE && addr < 0x80000000u)
     return " (VMEM: front-end heap)";
   return "";
