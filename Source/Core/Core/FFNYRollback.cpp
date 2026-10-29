@@ -1422,6 +1422,33 @@ constexpr u32 AUDIO_THREAD = 0x803E23C8;  // the music / speech streams' reads c
 u32 s_fs_instant = 0;  // reads finished at once in this fight
 u32 s_fs_not_main = 0;  // waits of requests from other threads (streams): left to normal timing
 std::unordered_map<u32, u32> s_fs_req_thread;  // file-system request node -> thread that queued it
+// Lockstep for file loads only for requests whose data reaches the rewound game state (29 October, Robert: short
+// regular slowdowns in the fights of menus mode, 0.4-1.3 s of waiting per fight). The "busy" test looked at the file
+// system's current request 0x804018D4 and its queue 0x804018E0 (nodes linked at +0x2C, sorted by +0x10) whoever made
+// them, so every refill of the music / speech streams (the audio thread's reads, a few per second of play) put the
+// fight into lockstep for that frame + LOAD_TAIL - each switch costs about the ping. The streams' data goes to the
+// sound player (not rewound; the music module's view of it already differs per machine and is kept out of the logic),
+// so those reads no longer count. Requests of the logic, the loader and unknown requesters still do.
+const bool s_fs_all_streams = std::getenv("FFNY_RB_STREAMLOCK") != nullptr;  // lab / fallback: the old rule
+u32 s_fs_stream_only = 0;           // update starts where the file system served only the music / speech streams
+u32 s_ls_files = 0, s_ls_other = 0;  // lockstep frames of the fight by cause (file loads incl. the fight start / rest)
+static bool FsBusyForLogic(const u8* ram)
+{
+  auto counts = [&](u32 node) {
+    const auto it = s_fs_req_thread.find(node);
+    return it == s_fs_req_thread.end() || it->second != AUDIO_THREAD;
+  };
+  if (const u32 cur = Rd32(ram, 0x804018D4); cur && counts(cur))
+    return true;
+  u32 n = Rd32(ram, 0x804018E0), k = 0;
+  while ((n & 0xFE000000) == 0x80000000 && k++ < 64)
+  {
+    if (counts(n))
+      return true;
+    n = Rd32(ram, n + 0x2C);
+  }
+  return false;
+}
 bool s_fs_main_queued = false;  // a request of the game logic waits behind another thread's
 u32 s_fs_hurried = 0;  // reads of other threads finished at once because of that
 const bool s_fs_hurry_off = std::getenv("FFNY_RB_NOFSHURRY") != nullptr;
@@ -1875,9 +1902,12 @@ static void MenusFightMarks(const u8* ram, u32 f)
   {
     line = fmt::format("FFNY fight {} over at frame {} (menus mode: rollback stays on, no resync): {} rollbacks (max {} "
                        "frames, {} frames re-simulated), {} waits for the other side ({:.1f} s), {} desyncs; lockstep "
-                       "frames {} ({:.1f} s waiting); other threads' random draws: {}",
+                       "frames {} ({} for file loads incl. the fight start, {} for the memory card / worker threads; "
+                       "{:.1f} s waiting), music / speech stream reads without lockstep {}; other threads' random "
+                       "draws: {}",
                        s_fight_no, f, s_rollbacks, s_max_depth, s_resim_frames, s_waits, s_wait_us / 1e6,
-                       s_desyncs_fight, s_lockstep_frames, s_lockstep_us / 1e6, SideDrawText(true));
+                       s_desyncs_fight, s_lockstep_frames, s_ls_files, s_ls_other, s_lockstep_us / 1e6,
+                       s_fs_stream_only, SideDrawText(true));
   }
   else
   {
@@ -1897,6 +1927,7 @@ static void MenusFightMarks(const u8* ram, u32 f)
   s_wait_us = 0;
   s_lockstep_frames = 0;
   s_lockstep_us = 0;
+  s_ls_files = s_ls_other = s_fs_stream_only = 0;
   LogLine(line);
   if (s_report_cb)
     s_report_cb(line);
@@ -2052,6 +2083,7 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_fs_was_busy = true;
   s_lockstep_frames = 0;
   s_lockstep_us = 0;
+  s_ls_files = s_ls_other = s_fs_stream_only = 0;
   s_conv_warned = false;
   s_min_free2 = s_min_free3 = 0xFFFFFFFF;
   s_min_free3_frame = s_min_free3_largest = s_min_free3_nodes = 0;
@@ -2589,7 +2621,7 @@ void OnVIField(Core::System& system)
     const u8* r = system.GetMemory().GetRAM();
     const u32 cur = Rd32(r, 0x804018D4);
     const bool busy = cur || Rd32(r, 0x804018E0);
-    if (busy)
+    if (busy && (s_fs_all_streams || FsBusyForLogic(r)))
     {
       s_fs_last_busy = std::max(s_fs_last_busy, Rd32(r, ADDR_COUNTER));
       s_fs_real_busy = std::max(s_fs_real_busy, Rd32(r, ADDR_COUNTER));
@@ -5258,8 +5290,15 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   // known: the frames of a load are never rolled back. Costs a wait per frame of about ping - input delay.
   if (Rd32(ram, 0x804018D4) != 0 || Rd32(ram, 0x804018E0) != 0)
   {
-    s_fs_last_busy = std::max(s_fs_last_busy, f);
-    s_fs_real_busy = std::max(s_fs_real_busy, f);
+    if (s_fs_all_streams || FsBusyForLogic(ram))
+    {
+      s_fs_last_busy = std::max(s_fs_last_busy, f);
+      s_fs_real_busy = std::max(s_fs_real_busy, f);
+    }
+    else
+    {
+      s_fs_stream_only++;
+    }
   }
   if (s_async_on)
   {
@@ -5310,6 +5349,10 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   if (lockstep)
   {
     s_lockstep_frames++;
+    if (s_settings.load_lockstep && fight && f <= s_fs_last_busy + LOAD_TAIL)
+      s_ls_files++;
+    else
+      s_ls_other++;
     if (f > s_fs_last_busy && f > s_start_frame + START_LOCKSTEP)
       s_lockstep_tail++;  // only because of the tail: the file system is idle and no conversion is this recent
   }
