@@ -284,6 +284,93 @@ bool s_rng_redirect = false;  // the DOL has the private states (rbaudrng stub a
 u32 s_rng_redirected = 0;
 u32 s_rng_effect = 0;  // of those: effect manager draws (any phase)
 u32 s_rng2_calls[4][3] = {};  // lab: [phase U/T/R/other][r3 shared/private/other]
+// ---- Random draws by the game's other threads (29 October) ----
+// Robert's third match in menus mode (Hunt's Point Scrapyard, after 4th Heaven and Club Murder): generator 1 differed
+// one frame after the match set-up (13743 -> 13744) and the heap layouts differed after it. The match set-up runs on
+// the fight loader thread 0x806D8AE0 (0x80095F8C) and builds the crowd there (0x8008BDF4 -> 0x8008C010 ->
+// 0x8008CD70 / 0x8009037C / 0x800905BC / 0x800953BC / 0x80095548: ~40 draw sites of the shared generator 1), while
+// the main thread's logic draws from the same generator (e.g. the per-update countdown 0x800E0994). Which main-thread
+// draw comes between which crowd draws depends on each machine's emulated timing, and after a rollback fight that is
+// no longer the same on the two machines: the crowd and the main thread got different numbers. While rollback runs,
+// draws from the two shared generators by any thread other than the main thread now come from side states kept here
+// (the game's own algorithms, seeded from the shared states at the fight start, where they are equal on all
+// machines); the order of the draws on that thread is the game's own and the same on every machine.
+// FFNY_RB_NOSIDERNG=1 turns this off.
+constexpr u32 MAIN_THREAD = 0x80432D10;
+u32 s_side1[6] = {};   // generator 1 layout (0x8001FC88)
+u32 s_side2[34] = {};  // generator 2 layout (0x800B7DAC): 32 floats (bits), +0x80 seed, +0x84 increment
+const bool s_side_off = std::getenv("FFNY_RB_NOSIDERNG") != nullptr;
+u32 s_side_draws[2] = {};          // since the last report
+std::map<u32, u32> s_side_lr[2];  // caller (lr) -> draws since the last report
+u32 s_match_updates = 0;           // match update 0x80096C04 calls since the last menus status line
+// 0x8001FC88 in C++ (checked instruction by instruction against the DOL's code on 20,000 random states)
+static u32 Gen1Step(u32* s)
+{
+  u32 r0 = s[5], r9 = s[4];
+  u32 r3 = r0 + r9;
+  const u32 c = (r3 < r0 || r3 < r9) ? 1 : 0;
+  r9 = s[3];
+  const u32 r10 = s[2];
+  r0 = r3 + r9;
+  s[4] = r3;
+  r3 = r0 + c;
+  const u32 r8 = s[1];
+  r0 = r3 + r10;
+  s[3] = r3;
+  r3 = r0 + (r3 < r9 ? 1 : 0);
+  r0 = r3 + r8;
+  s[2] = r3;
+  r3 = r0 + (r3 < r10 ? 1 : 0);
+  const u32 r11 = r3 + s[0];
+  s[1] = r3;
+  const u32 n = s[5] + 1;
+  r3 = r11 + (r3 < r8 ? 1 : 0);
+  s[0] = r3;
+  s[5] = n;
+  if (n != 0)
+    return r3;
+  for (int k = 4; k >= 1; k--)
+    if (++s[k] != 0)
+      return r3;
+  s[0] = r3 + 1;
+  return s[0];
+}
+// 0x800B7DAC in C++: two LCG steps, returns the table entry picked by the first, refills it from the second
+static float Gen2Step(u32* s)
+{
+  constexpr u32 K = 0x5D588B65;
+  const u32 r10 = s[32] * K + s[33];
+  const u32 r0 = r10 * K + s[33];
+  s[32] = r0;
+  const u32 i = (((r10 << 2) | (r10 >> 30)) & 0x7C) / 4;
+  float out, v;
+  memcpy(&out, &s[i], 4);
+  v = static_cast<float>(static_cast<double>(r0)) * 2.3283064365386963e-10f;  // frsp, fmuls by 2^-32 (0x802BA498)
+  memcpy(&s[i], &v, 4);
+  return out;
+}
+static std::string SideDrawText(bool reset)
+{
+  std::string t = fmt::format("generator 1 {}, generator 2 {}", s_side_draws[0], s_side_draws[1]);
+  for (int g = 0; g < 2; g++)
+  {
+    if (s_side_lr[g].empty())
+      continue;
+    std::vector<std::pair<u32, u32>> v(s_side_lr[g].begin(), s_side_lr[g].end());
+    std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second > b.second; });
+    t += fmt::format(" (gen {} callers:", g + 1);
+    for (size_t k = 0; k < v.size() && k < 8; k++)
+      t += fmt::format(" {:08x} x{}", v[k].first, v[k].second);
+    t += ")";
+  }
+  if (reset)
+  {
+    s_side_draws[0] = s_side_draws[1] = 0;
+    s_side_lr[0].clear();
+    s_side_lr[1].clear();
+  }
+  return t;
+}
 // lab stress: every shared-generator draw per frame, first visit and newest re-simulation
 struct Draw
 {
@@ -1698,11 +1785,37 @@ static void MenusFightMarks(const u8* ram, u32 f)
   if (!s_menus_on || !s_active)
     return;
   const bool raw = Rd32(ram, ADDR_FIGHT) == 1 && !(Rd32(ram, ADDR_FIGHT_FLAGS) & FIGHT_DECIDED);
+  // match set-up (fight flags bit 0 set by the fight init; 13743 in Robert's 29 October log): log line + MEM1 / VMEM
+  // dumps (FFNY_RB_EVDUMP) at the set-up frame and 1 / 30 frames later, when the loader thread is still setting up
+  {
+    static bool setup_prev = false;
+    static u32 dump_at[2] = {0, 0};
+    const bool setup = !raw && (Rd32(ram, ADDR_FIGHT_FLAGS) & 1);
+    if (setup && !setup_prev)
+    {
+      LogLine(fmt::format("FFNY match set-up at frame {}: match rule {}, fight loop {}, other threads' random draws "
+                          "since the last line: {}",
+                          f, Rd32(ram, 0x803F0DA0), Rd32(ram, ADDR_FIGHT), SideDrawText(true)));
+      EvDump(ram, f);
+      dump_at[0] = f + 1;
+      dump_at[1] = f + 30;
+    }
+    else if (f == dump_at[0] || f == dump_at[1])
+      EvDump(ram, f);
+    setup_prev = setup;
+  }
   if (raw == s_fight_raw_prev)
   {
     // outside the fights (lockstep: every frame is hashed here, at the same frames on both machines): every 10 s
     if (!raw && f % 600 == 0 && f >= s_mark_frame + 10)
+    {
+      LogLine(fmt::format("FFNY menus status at frame {}: fight loop {}, fight flags {:03x}, match rule {}, match "
+                          "updates {}, other threads' random draws: {}",
+                          f, Rd32(ram, ADDR_FIGHT), Rd32(ram, ADDR_FIGHT_FLAGS) & 0x1FF, Rd32(ram, 0x803F0DA0),
+                          s_match_updates, SideDrawText(true)));
+      s_match_updates = 0;
       StateCheck(ram, f, "between fights");
+    }
     return;
   }
   s_fight_raw_prev = raw;
@@ -1712,16 +1825,18 @@ static void MenusFightMarks(const u8* ram, u32 f)
   {
     line = fmt::format("FFNY fight {} over at frame {} (menus mode: rollback stays on, no resync): {} rollbacks (max {} "
                        "frames, {} frames re-simulated), {} waits for the other side ({:.1f} s), {} desyncs; lockstep "
-                       "frames {} ({:.1f} s waiting)",
+                       "frames {} ({:.1f} s waiting); other threads' random draws: {}",
                        s_fight_no, f, s_rollbacks, s_max_depth, s_resim_frames, s_waits, s_wait_us / 1e6,
-                       s_desyncs_fight, s_lockstep_frames, s_lockstep_us / 1e6);
+                       s_desyncs_fight, s_lockstep_frames, s_lockstep_us / 1e6, SideDrawText(true));
   }
   else
   {
     s_fight_no++;
     line = fmt::format("FFNY fight {} starts at frame {} (menus mode). Since the last fight: {} frames, {} waits for the "
-                       "other side ({:.1f} s), input delay outside the fight {}, {} desyncs",
-                       s_fight_no, f, f - s_fight_from, s_waits, s_wait_us / 1e6, MenuDelayNow(), s_desyncs_fight);
+                       "other side ({:.1f} s), input delay outside the fight {}, {} desyncs; other threads' random "
+                       "draws: {}",
+                       s_fight_no, f, f - s_fight_from, s_waits, s_wait_us / 1e6, MenuDelayNow(), s_desyncs_fight,
+                       SideDrawText(true));
     // the new fight's files are usually still loading (as at the first fight, see StartFight)
     s_fs_last_busy = std::max(s_fs_last_busy, f + START_LOCKSTEP - LOAD_TAIL);
     s_reports = 0;
@@ -1764,6 +1879,15 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_vtb_frame0 = f;
   s_seed_reads = 0;
   s_apt_side = 0;
+  // side states for the other threads' random draws (see Gen1Step): from the shared ones, equal on all machines here
+  for (int i = 0; i < 6; i++)
+    s_side1[i] = Rd32(ram, GEN1_SHARED + 4 * i) ^ (0x9E3779B9u * u32(i + 1));
+  for (int i = 0; i < 34; i++)
+    s_side2[i] = Rd32(ram, GEN2_SHARED + 4 * i);
+  s_side2[32] ^= 0x7F4A7C15u;
+  s_side_draws[0] = s_side_draws[1] = 0;
+  s_side_lr[0].clear();
+  s_side_lr[1].clear();
   s_snd_q.clear();
   s_snd_held = s_snd_sent = s_snd_dropped = 0;
   Wr32(ram, W_CONF, f - 1);
@@ -3389,6 +3513,7 @@ void HookAfRelease(const Core::CPUThreadGuard& guard)
 void HookMatchUpdate(const Core::CPUThreadGuard& guard)
 {
   Wr32(guard.GetSystem().GetMemory().GetRAM(), W_MATCH, 1);
+  s_match_updates++;
 }
 
 // The generator hooks are Replace hooks: a Start hook's change of r3 is not seen by the JIT code after it when
@@ -3399,6 +3524,17 @@ void HookMatchUpdate(const Core::CPUThreadGuard& guard)
 void HookRng1(const Core::CPUThreadGuard& guard)
 {
   auto& ppc = guard.GetSystem().GetPPCState();
+  if (s_active && !s_side_off && ppc.gpr[3] == GEN1_SHARED &&
+      Rd32(guard.GetSystem().GetMemory().GetRAM(), 0x800000E4) != MAIN_THREAD)
+  {
+    // another thread (the loader's match / crowd set-up): side state, then return to the caller
+    ppc.gpr[3] = Gen1Step(s_side1);
+    s_side_draws[0]++;
+    if (s_side_lr[0].size() < 64)
+      s_side_lr[0][ppc.spr[SPR_LR]]++;
+    ppc.npc = ppc.spr[SPR_LR];
+    return;
+  }
   if (s_active && s_rng_redirect && s_phase == 'R' && ppc.gpr[3] == GEN1_SHARED)
   {
     ppc.gpr[3] = GEN1_PRIVATE;
@@ -3413,9 +3549,21 @@ void HookRng1(const Core::CPUThreadGuard& guard)
 static void HookRngBody(const Core::CPUThreadGuard& guard);
 void HookRng(const Core::CPUThreadGuard& guard)
 {
-  HookRngBody(guard);
   auto& system = guard.GetSystem();
   auto& ppc = system.GetPPCState();
+  if (s_active && !s_side_off && ppc.gpr[3] == GEN2_SHARED &&
+      Rd32(system.GetMemory().GetRAM(), 0x800000E4) != MAIN_THREAD)
+  {
+    // another thread: side state (see Gen1Step), result in f1 like lfsx, return to the caller
+    const double v = Gen2Step(s_side2);
+    ppc.ps[1].SetBoth(v, v);
+    s_side_draws[1]++;
+    if (s_side_lr[1].size() < 64)
+      s_side_lr[1][ppc.spr[SPR_LR]]++;
+    ppc.npc = ppc.spr[SPR_LR];
+    return;
+  }
+  HookRngBody(guard);
   // 0x800B7DAC: stwu sp, -0x10(sp)
   const u32 sp = ppc.gpr[1];
   Wr32(system.GetMemory().GetRAM(), sp - 0x10, sp);
