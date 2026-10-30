@@ -1,0 +1,73 @@
+FFNYLAB cue 0002 first run frame 21409
+WATCH fighter 1 +93C 00000100 -> 00000200 (ctr 21410)
+FFNYLAB STREAM UNDERRUN stream 80b13150 wants 110 has 0 in 1 chunks (list count 1) frame 21409 ctr 21410 thread 803e23c8 lr 801e7348
+FFNYLAB   now: resim 0 frozen 0; stream words +0x100..+0x140: ffff0000 00000000 00000000 00000000 00000000 00000000 00000000 80b13360 80b13360 00000001 80b13388 80b13388 00000001 00000000 c9742400 00000000; head chunk 80b13360: 00000000 00000000 0001c900 0000b906 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+FFNYLAB   consume frame 21400 bytes 110 had 19795 in 2 chunks; head 80b13388 rem 19795 pos 8258 size 28053; resim 0 frozen 0 ticks 195702456201
+FFNYLAB   consume frame 21400 bytes 110 had 19685 in 2 chunks; head 80b13388 rem 19685 pos 8368 size 28053; resim 0 frozen 0 ticks 195704886308
+FFNYLAB   consume frame 21400 bytes 110 had 19575 in 2 chunks; head 80b13388 rem 19575 pos 8478 size 28053; resim 0 frozen 0 ticks 195704886450
+FFNYLAB   consume frame 21400 bytes 111 had 19465 in 2 chunks; head 80b13388 rem 19465 pos 8588 size 28053; resim 0 frozen 0 ticks 195707448804
+FFNYLAB   consume frame 21400 bytes 111 had 19354 in 2 chunks; head 80b13388 rem 19354 pos 8699 size 28053; resim 0 frozen 0 ticks 195707448946
+FFNYLAB   consume frame 21401 bytes 110 had 26607 in 2 chunks; head 80b13388 rem 19243 pos 8810 size 28053; resim 0 frozen 0 ticks 195709739620
+FFNYLAB   consume frame 21401 bytes 110 had 26497 in 2 chunks; head 80b13388 rem 19133 pos 8920 size 28053; resim 0 frozen 0 ticks 195709739762
+FFNYLAB   consume frame 21401 bytes 110 had 26387 in 2 chunks; head 80b13388 rem 19023 pos 9030 size 28053; resim 0 frozen 0 ticks 195712167941
+FFNYLAB   consume frame 21401 bytes 110 had 26277 in 2 chunks; head 80b13388 rem 18913 pos 9140 size 28053; resim 0 frozen 0 ticks 195712168083
+FFNYLAB   consume frame 21401 bytes 110 had 26167 in 2 chunks; head 80b13388 rem 18803 pos 9250 size 28053; resim 0 frozen 0 ticks 195714594508
+FFNYLAB   consume frame 21401 bytes 110 had 26057 in 2 chunks; head 80b13388 rem 18693 pos 9360 size 28053; resim 0 frozen 0 ticks 195714594650
+FFNYLAB   consume frame 21401 bytes 111 had 25947 in 2 chunks; head 80b13388 rem 18583 pos 9470 size 28053; resim 0 frozen 0 ticks 195717160002
+FFNYLAB   consume frame 21401 bytes 111 had 25836 in 2 chunks; head 80b13388 rem 18472 pos 9581 size 28053; resim 0 frozen 0 ticks 195717160144
+FFNYLAB   consume frame 21402 bytes 110 had 25725 in 2 chunks; head 80b13388 rem 18361 pos 9692 size 28053; resim 0 frozen 0 ticks 195719449840
+FFNYLAB   consume frame 21402 bytes 110 had 25615 in 2 chunks; head 80b13388 rem 18251 pos 9802 size 28053; resim 0 frozen 0 ticks 195719449982
+FFNYLAB   consume frame 21402 bytes 110 had 25505 in 2 chunks; head 80b13388 rem 18141 pos 9912 size 28053; resim 0 frozen 0 ticks 195721878267
+FFNYLAB   consume frame 21402 bytes 110 had 25395 in 2 chunks; head 80b13388 rem 18031 pos 10022 size 28053; resim 0 frozen 0 ticks 195721878409
+FFNYLAB   consume frame 21402 bytes 110 had 25285 in 2 chunks; head 80b13388 rem 17921 pos 10132 size 28053; resim 0 frozen 0 ticks 195724306293
+FFNYLAB   consume frame 21402 bytes 110 had 25175 in 2 chunks; head 80b13388 rem 17811 pos 10242 size 28053; resim 0 frozen 0 ticks 195724306435
+FFNYLAB   consume frame 21403 bytes 111 had 25065 in 2 chunks; head 80b13388 rem 17701 pos 10352 size 28053; resim 0 frozen 0 ticks 195726868447
+FFNYLAB   consume frame 21403 bytes 111 had 24954 in 2 chunks; head 80b13388 rem 17590 pos 10463 size 28053; resim 0 frozen 0 ticks 195726869391
+FFNYLAB   consume frame 21403 bytes 110 had 24843 in 2 chunks; head 80b13388 rem 17479 pos 10574 size 28053; resim 0 frozen 0 ticks 195729162033
+FFNYLAB   consume frame 21403 bytes 110 had 24733 in 2 chunks; head 80b13388 rem 17369 pos 10684 size 28053; resim 0 frozen 0 ticks 195729162175
+FFNYLAB   consume frame 21403 bytes 110 had 24623 in 2 chunks; head 80b13388 rem 17259 pos 10794 size 28053; resim 0 frozen 0 ticks 195731589909
+FFNYLAB   consume frame 21403 bytes 110 had 24513 in 2 chunks; head 80b13388 rem 17149 pos 10904 size 28053; resim 0 frozen 0 ticks 195731590051
+FFNYLAB   consume frame 21404 bytes 110 had 24403 in 2 chunks; head 80b13388 rem 17039 pos 11014 size 28053; resim 0 frozen 0 ticks 195734017731
+FFNYLAB   consume frame 21404 bytes 110 had 24293 in 2 chunks; head 80b13388 rem 16929 pos 11124 size 28053; resim 0 frozen 0 ticks 195734017873
+FFNYLAB   consume frame 21404 bytes 111 had 24183 in 2 chunks; head 80b13388 rem 16819 pos 11234 size 28053; resim 0 frozen 0 ticks 195736580438
+FFNYLAB   consume frame 21404 bytes 111 had 24072 in 2 chunks; head 80b13388 rem 16708 pos 11345 size 28053; resim 0 frozen 0 ticks 195736580580
+FFNYLAB   consume frame 21404 bytes 110 had 23961 in 2 chunks; head 80b13388 rem 16597 pos 11456 size 28053; resim 0 frozen 0 ticks 195738874471
+FFNYLAB   consume frame 21404 bytes 110 had 23851 in 2 chunks; head 80b13388 rem 16487 pos 11566 size 28053; resim 0 frozen 0 ticks 195738874613
+FFNYLAB   consume frame 21404 bytes 110 had 23741 in 2 chunks; head 80b13388 rem 16377 pos 11676 size 28053; resim 0 frozen 0 ticks 195741301426
+FFNYLAB   consume frame 21404 bytes 110 had 23631 in 2 chunks; head 80b13388 rem 16267 pos 11786 size 28053; resim 0 frozen 0 ticks 195741301568
+FFNYLAB   consume frame 21405 bytes 110 had 23521 in 2 chunks; head 80b13388 rem 16157 pos 11896 size 28053; resim 0 frozen 0 ticks 195743818147
+FFNYLAB   consume frame 21405 bytes 110 had 23411 in 2 chunks; head 80b13388 rem 16047 pos 12006 size 28053; resim 0 frozen 0 ticks 195743818289
+FFNYLAB   consume frame 21405 bytes 111 had 23301 in 2 chunks; head 80b13388 rem 15937 pos 12116 size 28053; resim 0 frozen 0 ticks 195746202695
+FFNYLAB   consume frame 21405 bytes 111 had 23190 in 2 chunks; head 80b13388 rem 15826 pos 12227 size 28053; resim 0 frozen 0 ticks 195746202837
+FFNYLAB   consume frame 21405 bytes 110 had 23079 in 2 chunks; head 80b13388 rem 15715 pos 12338 size 28053; resim 0 frozen 0 ticks 195748585080
+FFNYLAB   consume frame 21405 bytes 110 had 22969 in 2 chunks; head 80b13388 rem 15605 pos 12448 size 28053; resim 0 frozen 0 ticks 195748585222
+FFNYLAB   consume frame 21406 bytes 110 had 22859 in 2 chunks; head 80b13388 rem 15495 pos 12558 size 28053; resim 0 frozen 0 ticks 195751013032
+FFNYLAB   consume frame 21406 bytes 110 had 22749 in 2 chunks; head 80b13388 rem 15385 pos 12668 size 28053; resim 0 frozen 0 ticks 195751013174
+FFNYLAB   consume frame 21406 bytes 110 had 22639 in 2 chunks; head 80b13388 rem 15275 pos 12778 size 28053; resim 0 frozen 0 ticks 195753528677
+FFNYLAB   consume frame 21406 bytes 110 had 22529 in 2 chunks; head 80b13388 rem 15165 pos 12888 size 28053; resim 0 frozen 0 ticks 195753528819
+FFNYLAB   consume frame 21406 bytes 111 had 22419 in 2 chunks; head 80b13388 rem 15055 pos 12998 size 28053; resim 0 frozen 0 ticks 195755913117
+FFNYLAB   consume frame 21406 bytes 111 had 22308 in 2 chunks; head 80b13388 rem 14944 pos 13109 size 28053; resim 0 frozen 0 ticks 195755913259
+FFNYLAB   consume frame 21407 bytes 110 had 22197 in 2 chunks; head 80b13388 rem 14833 pos 13220 size 28053; resim 0 frozen 0 ticks 195758295239
+FFNYLAB   consume frame 21407 bytes 110 had 22087 in 2 chunks; head 80b13388 rem 14723 pos 13330 size 28053; resim 0 frozen 0 ticks 195758295381
+FFNYLAB   consume frame 21407 bytes 110 had 21977 in 2 chunks; head 80b13388 rem 14613 pos 13440 size 28053; resim 0 frozen 0 ticks 195760724074
+FFNYLAB   consume frame 21407 bytes 110 had 21867 in 2 chunks; head 80b13388 rem 14503 pos 13550 size 28053; resim 0 frozen 0 ticks 195760724216
+FFNYLAB   consume frame 21407 bytes 110 had 21757 in 2 chunks; head 80b13388 rem 14393 pos 13660 size 28053; resim 0 frozen 0 ticks 195763241148
+FFNYLAB   consume frame 21407 bytes 110 had 21647 in 2 chunks; head 80b13388 rem 14283 pos 13770 size 28053; resim 0 frozen 0 ticks 195763242092
+FFNYLAB   consume frame 21407 bytes 111 had 21537 in 2 chunks; head 80b13388 rem 14173 pos 13880 size 28053; resim 0 frozen 0 ticks 195765624643
+FFNYLAB   consume frame 21407 bytes 111 had 21426 in 2 chunks; head 80b13388 rem 14062 pos 13991 size 28053; resim 0 frozen 0 ticks 195765624785
+FFNYLAB   consume frame 21408 bytes 110 had 21315 in 2 chunks; head 80b13388 rem 13951 pos 14102 size 28053; resim 0 frozen 0 ticks 195768007361
+FFNYLAB   consume frame 21408 bytes 110 had 21205 in 2 chunks; head 80b13388 rem 13841 pos 14212 size 28053; resim 0 frozen 0 ticks 195768007503
+FFNYLAB   consume frame 21408 bytes 110 had 21095 in 2 chunks; head 80b13388 rem 13731 pos 14322 size 28053; resim 0 frozen 0 ticks 195770437107
+FFNYLAB   consume frame 21408 bytes 110 had 20985 in 2 chunks; head 80b13388 rem 13621 pos 14432 size 28053; resim 0 frozen 0 ticks 195770437249
+FFNYLAB   consume frame 21408 bytes 110 had 28211 in 2 chunks; head 80b13388 rem 13511 pos 14542 size 28053; resim 0 frozen 0 ticks 195772997578
+FFNYLAB   consume frame 21408 bytes 110 had 28101 in 2 chunks; head 80b13388 rem 13401 pos 14652 size 28053; resim 0 frozen 0 ticks 195772997720
+FFNYLAB   consume frame 21409 bytes 111 had 27991 in 2 chunks; head 80b13388 rem 13291 pos 14762 size 28053; resim 0 frozen 0 ticks 195775291187
+FFNYLAB   consume frame 21409 bytes 111 had 27880 in 2 chunks; head 80b13388 rem 13180 pos 14873 size 28053; resim 0 frozen 0 ticks 195775291329
+FFNYLAB   consume frame 21409 bytes 110 had 27769 in 2 chunks; head 80b13388 rem 13069 pos 14984 size 28053; resim 0 frozen 0 ticks 195777718900
+FFNYLAB   consume frame 21409 bytes 110 had 27659 in 2 chunks; head 80b13388 rem 12959 pos 15094 size 28053; resim 0 frozen 0 ticks 195777719042
+FFNYLAB   consume frame 21409 bytes 110 had 0 in 1 chunks; head 80b13360 rem 0 pos 0 size 0; resim 0 frozen 0 ticks 195780124979
+CRASHDUMP thread 803e23c8 (main 80432d10) r3 80b13278 r4 0000006e r5 80b13150 r29 80b13150 r30 00000002 r31 00000000
+CRASHDUMP   caller 801e7348
+CRASHDUMP   caller 801e4118
+CRASHDUMP   caller 80277050
+FFNYRB REPORT: FFNY CRASH (Dolphin): invalid read from 0000001c at PC 801e7fc8 LR 801e8010, frame 21410, fight running, calls 801e7348 < 801e4118 < 80277050. P1 state 30 blazin 00 momentum 88.3 | P2 state 1 blazin 02 momentum 100.0 | rollbacks 276 (max 4, last 21408->21404) | loads 359 fixed 0 | render draws 1 | logic VI reads 123062 | heap free lists ok | rbtag logs now acq 2 rel 2 free 0 (max 9/

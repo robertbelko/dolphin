@@ -4,6 +4,7 @@
 #include "Core/State.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <map>
 #include <mutex>
@@ -228,6 +229,13 @@ static bool LoadFromBuffer(Core::System& system, std::span<u8> buffer)
   PointerWrap p(&ptr, buffer.size(), PointerWrap::Mode::Read);
   DoState(system, p);
   return p.IsReadMode();
+}
+
+static std::size_t SaveToBuffer(Core::System& system, Common::UniqueBuffer<u8>& buffer);
+std::size_t LabSaveToBuffer(Core::System& system, Common::UniqueBuffer<u8>& buffer) { return SaveToBuffer(system, buffer); }
+bool LabLoadFromBuffer(Core::System& system, Common::UniqueBuffer<u8>& buffer, std::size_t size)
+{
+  return LoadFromBuffer(system, std::span<u8>(buffer.data(), size));
 }
 
 // Returns the required size, or 0 on failure.
@@ -871,6 +879,17 @@ static void LoadAsFromCore(Core::System& system, std::string filename)
     s_on_after_load_callback();
 }
 
+std::string LabLoadDebug(Core::System& system, const std::string& filename)
+{
+  Common::UniqueBuffer<u8> buffer;
+  LoadFileStateData(filename, buffer);
+  if (buffer.empty())
+    return "file read failed (header / decompression)";
+  PointerWrap::s_last_read_marker = "(start)";
+  const bool ok = LoadFromBuffer(system, buffer);
+  return std::string(ok ? "ok" : "FAILED") + " size " + std::to_string(buffer.size()) + " last marker " + PointerWrap::s_last_read_marker;
+}
+
 void LoadAs(Core::System& system, std::string filename)
 {
   if (!CheckIfStateLoadIsAllowed(system))
@@ -996,6 +1015,7 @@ void UndoSaveState(Core::System& system)
 }
 
 bool g_ffny_resync_save = false;
+bool g_lab_fail_after_memory = false;
 
 bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& compressed)
 {
@@ -1003,7 +1023,7 @@ bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& compressed)
   Common::UniqueBuffer<u8> buffer(last ? last : std::size_t(64) << 20);
   // no EFB / texture-cache contents: backend- and resolution-dependent (a client with other video settings may fail
   // to read them, leaving a half-loaded state), and by far the biggest part at high internal resolutions
-  g_state_skip_texture_cache = true;
+  g_state_skip_texture_cache = std::getenv("FFNY_RB_RESYNC_TEX") == nullptr;  // lab: old behaviour
   g_ffny_resync_save = true;
   const std::size_t size = SaveToBuffer(system, buffer);
   g_ffny_resync_save = false;
@@ -1046,10 +1066,14 @@ bool FFNYLoadCompressed(Core::System& system, const u8* data, std::size_t size, 
   const std::size_t own_size = SaveToBuffer(system, own);
   PointerWrap::s_last_read_marker = "(start)";
   g_state_foreign_load = true;
+  g_lab_fail_after_memory = std::getenv("FFNY_RB_LAB_FAILLOAD") != nullptr;
   const bool loaded = LoadFromBuffer(system, buffer);
+  g_lab_fail_after_memory = false;
   g_state_foreign_load = false;
   if (loaded)
     return true;
+  if (std::getenv("FFNY_RB_LAB_NOUNDO"))
+    return false;  // lab: old behaviour (half-loaded state stays)
   if (where)
     *where = PointerWrap::s_last_read_marker;
   if (own_size != 0)

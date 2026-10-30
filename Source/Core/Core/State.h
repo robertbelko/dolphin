@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "Common/CommonTypes.h"
+#include "Common/Buffer.h"
 
 namespace Core
 {
@@ -97,6 +98,8 @@ void Save(Core::System& system, u32 slot);
 void Load(Core::System& system, u32 slot);
 
 void SaveAs(Core::System& system, std::string filename);
+std::size_t LabSaveToBuffer(Core::System& system, Common::UniqueBuffer<u8>& buffer);
+bool LabLoadFromBuffer(Core::System& system, Common::UniqueBuffer<u8>& buffer, std::size_t size);
 
 // FFNY rollback resync: set while the host saves the state it sends to the other players. The memory card's
 // contents and device state are then saved too (normally only while a movie runs): every machine must have the
@@ -107,8 +110,10 @@ extern bool g_ffny_resync_save;
 // Must run on the CPU thread with the CPU paused (Core::RunOnCPUThread).
 bool FFNYSaveCompressed(Core::System& system, std::vector<u8>& compressed);
 // failure: *where gets the last part of the state that still loaded
+extern bool g_lab_fail_after_memory;  // lab
 bool FFNYLoadCompressed(Core::System& system, const u8* data, std::size_t size, std::string* where = nullptr);
 void LoadAs(Core::System& system, std::string filename);
+std::string LabLoadDebug(Core::System& system, const std::string& filename);
 
 void LoadLastSaved(Core::System& system, int i = 1);
 void SaveFirstSaved(Core::System& system);

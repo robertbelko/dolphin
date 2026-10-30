@@ -1,0 +1,200 @@
+[2026-10-30 01:09:45] [P1] state: fight loop 0 (was -1), fight flags 000 (was ffffffff), lost bits P1 0000 P2 0000, match rule 0, frame 0, rollback off
+[2026-10-30 01:09:46] [P1] FFNY: sound hold on (speech held until confirmed; music cues sent at once, not repeated by re-simulations)
+[2026-10-30 01:11:54] [P1] state: fight loop 0 (was 0), fight flags 000 (was 0), lost bits P1 0000 P2 0000, match rule 24, frame 5985, rollback off
+[2026-10-30 01:11:54] [P1] state: fight loop 0 (was 0), fight flags 001 (was 0), lost bits P1 0000 P2 0000, match rule 24, frame 5985, rollback off
+[2026-10-30 01:12:21] [P1] state: fight loop 1 (was 0), fight flags 002 (was 1), lost bits P1 0000 P2 0000, match rule 24, frame 6672, rollback off
+[2026-10-30 01:12:21] [P1] FFNY: rollback stays on after this fight (menus mode)
+[2026-10-30 01:12:21] [P1] FFNY fight started at frame 6672 (input delay 1, lockstep while loading)
+[2026-10-30 01:12:52] [P1] FFNY music cue 000f (80011108) at frame 8493: sent (first run)
+[2026-10-30 01:12:53] [P1] FFNY music cue 0010 (80011108) at frame 8592: sent (first run)
+[2026-10-30 01:13:12] [P1] state: fight loop 1 (was 1), fight flags 002 (was 2), lost bits P1 0001 P2 0000, match rule 24, frame 9678, rollback on
+[2026-10-30 01:13:12] [P1] state: fight loop 2 (was 1), fight flags 006 (was 2), lost bits P1 0200 P2 0100, match rule 24, frame 9679, rollback on
+[2026-10-30 01:13:12] [P1] FFNY music cue 0009 (80011108) at frame 9678: sent (first run)
+[2026-10-30 01:13:12] [P1] FFNY fight 1 over at frame 9679 (menus mode: rollback stays on, no resync): 168 rollbacks (max 4 frames, 630 frames re-simulated), 587 waits for the other side (0.2 s), 0 desyncs; lockstep frames 1148 (game file loads incl. the fight start 1049, music / speech stream reads 99, memory card / worker threads 0; 0.2 s waiting), update starts during stream reads 725; other threads' random draws: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:13:12] [P1] state: fight loop 3 (was 2), fight flags 006 (was 6), lost bits P1 0200 P2 0100, match rule 24, frame 9680, rollback on
+[2026-10-30 01:13:15] [P1] state: fight loop 3 (was 3), fight flags 00e (was 6), lost bits P1 0600 P2 0100, match rule 24, frame 9848, rollback on
+[2026-10-30 01:13:15] [P1] FFNY music cue 0018 (80011108) at frame 9877: sent (first run)
+[2026-10-30 01:13:15] [P1] FFNY music cue 000e (80011108) at frame 9877: sent (first run)
+[2026-10-30 01:13:15] [P1] FFNY music cue 0018 (80011108) at frame 9877: sent (first run)
+[2026-10-30 01:13:15] [P1] FFNY music cue 000e (80011108) at frame 9877: sent (first run)
+[2026-10-30 01:13:21] [P1] FFNY menus status at frame 10200: fight loop 3, fight flags 00e, match rule 24, match updates 4522, other threads' random draws: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:13:21] [P1] FFNY music cue 0018 (80011108) at frame 10230: sent (first run)
+[2026-10-30 01:13:21] [P1] FFNY music cue 000e (80011108) at frame 10230: sent (first run)
+[2026-10-30 01:13:21] [P1] FFNY music cue 0011 (80011108) at frame 10230: sent (first run)
+[2026-10-30 01:13:21] [P1] FFNY music cue 0011 (80011108) at frame 10230: sent (first run)
+[2026-10-30 01:13:21] [P1] FFNY music cue 000c (80011108) at frame 10230: sent (first run)
+[2026-10-30 01:13:21] [P1] state: fight loop 0 (was 3), fight flags 001 (was e), lost bits P1 0000 P2 0000, match rule 24, frame 10230, rollback on
+[2026-10-30 01:13:22] [P1] FFNY music cue 0000 (80011108) at frame 10230: sent (first run)
+[2026-10-30 01:13:22] [P1] FFNY match set-up at frame 10231: match rule 24, fight loop 0, other threads' random draws since the last line: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:13:24] [P1] state: fight loop 1 (was 0), fight flags 002 (was 1), lost bits P1 0000 P2 0000, match rule 24, frame 10346, rollback on
+[2026-10-30 01:13:24] [P1] FFNY music cue 0001 (80011108) at frame 10345: sent (first run)
+[2026-10-30 01:13:24] [P1] FFNY fight 2 starts at frame 10346 (menus mode). Since the last fight: 667 frames, 333 waits for the other side (0.1 s), input delay outside the fight 1, 0 desyncs; other threads' random draws: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:13:31] [P1] FFNY music cue 000f (80011108) at frame 10790: sent (first run)
+[2026-10-30 01:13:33] [P1] FFNY music cue 0010 (80011108) at frame 10881: sent (first run)
+[2026-10-30 01:14:23] [P1] state: fight loop 1 (was 1), fight flags 002 (was 2), lost bits P1 0001 P2 0000, match rule 24, frame 13885, rollback on
+[2026-10-30 01:14:23] [P1] state: fight loop 2 (was 1), fight flags 006 (was 2), lost bits P1 0200 P2 0100, match rule 24, frame 13886, rollback on
+[2026-10-30 01:14:23] [P1] FFNY music cue 0009 (80011108) at frame 13885: sent (first run)
+[2026-10-30 01:14:23] [P1] FFNY fight 2 over at frame 13886 (menus mode: rollback stays on, no resync): 246 rollbacks (max 4 frames, 979 frames re-simulated), 356 waits for the other side (0.1 s), 0 desyncs; lockstep frames 689 (game file loads incl. the fight start 643, music / speech stream reads 44, memory card / worker threads 2; 0.1 s waiting), update starts during stream reads 544; other threads' random draws: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:14:23] [P1] state: fight loop 3 (was 2), fight flags 006 (was 6), lost bits P1 0200 P2 0100, match rule 24, frame 13887, rollback on
+[2026-10-30 01:14:26] [P1] state: fight loop 3 (was 3), fight flags 006 (was 6), lost bits P1 0600 P2 0100, match rule 24, frame 14055, rollback on
+[2026-10-30 01:14:26] [P1] state: fight loop 3 (was 3), fight flags 00e (was 6), lost bits P1 0600 P2 0100, match rule 24, frame 14056, rollback on
+[2026-10-30 01:14:26] [P1] FFNY music cue 0018 (80011108) at frame 14086: sent (first run)
+[2026-10-30 01:14:26] [P1] FFNY music cue 000e (80011108) at frame 14086: sent (first run)
+[2026-10-30 01:14:26] [P1] FFNY music cue 0018 (80011108) at frame 14086: sent (first run)
+[2026-10-30 01:14:26] [P1] FFNY music cue 000e (80011108) at frame 14086: sent (first run)
+[2026-10-30 01:14:32] [P1] FFNY menus status at frame 14400: fight loop 3, fight flags 00e, match rule 24, match updates 4835, other threads' random draws: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:14:32] [P1] FFNY music cue 0018 (80011108) at frame 14439: sent (first run)
+[2026-10-30 01:14:32] [P1] FFNY music cue 000e (80011108) at frame 14439: sent (first run)
+[2026-10-30 01:14:32] [P1] FFNY music cue 0011 (80011108) at frame 14439: sent (first run)
+[2026-10-30 01:14:32] [P1] FFNY music cue 0011 (80011108) at frame 14439: sent (first run)
+[2026-10-30 01:14:32] [P1] FFNY music cue 000c (80011108) at frame 14439: sent (first run)
+[2026-10-30 01:14:32] [P1] state: fight loop 0 (was 3), fight flags 001 (was e), lost bits P1 0000 P2 0000, match rule 24, frame 14439, rollback on
+[2026-10-30 01:14:33] [P1] FFNY music cue 0000 (80011108) at frame 14439: sent (first run)
+[2026-10-30 01:14:33] [P1] FFNY match set-up at frame 14440: match rule 24, fight loop 0, other threads' random draws since the last line: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:14:35] [P1] state: fight loop 1 (was 0), fight flags 002 (was 1), lost bits P1 0000 P2 0000, match rule 24, frame 14556, rollback on
+[2026-10-30 01:14:35] [P1] FFNY music cue 0001 (80011108) at frame 14555: sent (first run)
+[2026-10-30 01:14:35] [P1] FFNY fight 3 starts at frame 14561 (menus mode). Since the last fight: 675 frames, 335 waits for the other side (0.1 s), input delay outside the fight 1, 0 desyncs; other threads' random draws: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:14:42] [P1] FFNY music cue 000f (80011108) at frame 15000: sent (first run)
+[2026-10-30 01:14:44] [P1] FFNY music cue 0010 (80011108) at frame 15102: sent (first run)
+[2026-10-30 01:16:08] [P1] FFNY music cue 000f (80011108) at frame 20059: sent (first run)
+[2026-10-30 01:16:09] [P1] FFNY music cue 0010 (80011108) at frame 20115: sent (first run)
+[2026-10-30 01:16:23] [P1] FFNY music cue 000f (80011108) at frame 20988: sent (first run)
+[2026-10-30 01:16:25] [P1] FFNY music cue 0010 (80011108) at frame 21068: sent (first run)
+[2026-10-30 01:16:33] [P1] FFNY music cue 000f (80011108) at frame 21578: sent (first run)
+[2026-10-30 01:16:35] [P1] FFNY music cue 0010 (80011108) at frame 21672: sent (first run)
+[2026-10-30 01:16:37] [P1] FFNY music cue 0002 (80011108) at frame 21797: sent (first run)
+[2026-10-30 01:16:37] [P1] FFNY: stale sound note skipped at frame 21797 (bytes played: more than the stream holds; value 0000006e, stream 80b13150; without the guard the audio thread could crash)
+[2026-10-30 01:16:37] [P1] FFNY: stale sound note skipped at frame 21798 (bytes played: more than the stream holds; value 0000006f, stream 80b13150; without the guard the audio thread could crash)
+[2026-10-30 01:16:37] [P1] FFNY: stale sound note skipped at frame 21798 (bytes played: more than the stream holds; value 0000006e, stream 80b13150; without the guard the audio thread could crash)
+[2026-10-30 01:16:44] [P1] FFNY music cue 0010 (80011108) at frame 22231: sent (first run)
+[2026-10-30 01:16:59] [P1] FFNY music cue 0003 (80011108) at frame 23129: sent (first run)
+[2026-10-30 01:17:59] [P1] FFNY music cue 0002 (80011108) at frame 26698: sent (first run)
+[2026-10-30 01:18:07] [P1] FFNY music cue 0010 (80011108) at frame 27135: sent (first run)
+[2026-10-30 01:18:07] [P1] FFNY music cue 0010 (80011108) at frame 27132: not sent again (the first run sent it at frame 27135)
+[2026-10-30 01:18:28] [P1] FFNY music cue 0003 (80011108) at frame 28390: sent (first run)
+[2026-10-30 01:18:29] [P1] state: fight loop 1 (was 1), fight flags 002 (was 2), lost bits P1 0001 P2 0000, match rule 24, frame 28497, rollback on
+[2026-10-30 01:18:29] [P1] FFNY music cue 0009 (80011108) at frame 28497: sent (first run)
+[2026-10-30 01:18:29] [P1] state: fight loop 1 (was 1), fight flags 002 (was 2), lost bits P1 0000 P2 0000, match rule 24, frame 28495, rollback on
+[2026-10-30 01:18:29] [P1] FFNY fight 3 over at frame 28498 (menus mode: rollback stays on, no resync): 651 rollbacks (max 4 frames, 2466 frames re-simulated), 2513 waits for the other side (0.9 s), 0 desyncs; lockstep frames 4897 (game file loads incl. the fight start 4463, music / speech stream reads 432, memory card / worker threads 2; 0.9 s waiting), update starts during stream reads 3044; other threads' random draws: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:18:29] [P1] state: fight loop 3 (was 1), fight flags 006 (was 2), lost bits P1 0200 P2 0100, match rule 24, frame 28499, rollback on
+[2026-10-30 01:18:32] [P1] state: fight loop 3 (was 3), fight flags 006 (was 6), lost bits P1 0600 P2 0100, match rule 24, frame 28667, rollback on
+[2026-10-30 01:18:32] [P1] state: fight loop 3 (was 3), fight flags 00e (was 6), lost bits P1 0600 P2 0100, match rule 24, frame 28668, rollback on
+[2026-10-30 01:18:33] [P1] FFNY music cue 0018 (80011108) at frame 28698: sent (first run)
+[2026-10-30 01:18:33] [P1] FFNY music cue 000e (80011108) at frame 28698: sent (first run)
+[2026-10-30 01:18:33] [P1] FFNY music cue 0018 (80011108) at frame 28698: sent (first run)
+[2026-10-30 01:18:33] [P1] FFNY music cue 000e (80011108) at frame 28698: sent (first run)
+[2026-10-30 01:18:35] [P1] FFNY menus status at frame 28800: fight loop 3, fight flags 00e, match rule 24, match updates 16725, other threads' random draws: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:18:39] [P1] FFNY music cue 0018 (80011108) at frame 29051: sent (first run)
+[2026-10-30 01:18:39] [P1] FFNY music cue 000e (80011108) at frame 29051: sent (first run)
+[2026-10-30 01:18:39] [P1] FFNY music cue 0011 (80011108) at frame 29051: sent (first run)
+[2026-10-30 01:18:39] [P1] FFNY music cue 0011 (80011108) at frame 29051: sent (first run)
+[2026-10-30 01:18:39] [P1] FFNY music cue 000c (80011108) at frame 29051: sent (first run)
+[2026-10-30 01:18:39] [P1] state: fight loop 0 (was 3), fight flags 001 (was e), lost bits P1 0000 P2 0000, match rule 24, frame 29051, rollback on
+[2026-10-30 01:18:39] [P1] FFNY music cue 0000 (80011108) at frame 29051: sent (first run)
+[2026-10-30 01:18:39] [P1] FFNY match set-up at frame 29052: match rule 24, fight loop 0, other threads' random draws since the last line: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:18:41] [P1] FFNY music cue 0001 (80011108) at frame 29166: sent (first run)
+[2026-10-30 01:18:41] [P1] state: fight loop 1 (was 0), fight flags 002 (was 1), lost bits P1 0000 P2 0000, match rule 24, frame 29167, rollback on
+[2026-10-30 01:18:41] [P1] FFNY fight 4 starts at frame 29167 (menus mode). Since the last fight: 669 frames, 334 waits for the other side (0.1 s), input delay outside the fight 1, 0 desyncs; other threads' random draws: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:18:56] [P1] FFNY music cue 000f (80011108) at frame 30070: sent (first run)
+[2026-10-30 01:18:58] [P1] FFNY music cue 0010 (80011108) at frame 30156: sent (first run)
+[2026-10-30 01:19:29] [P1] FFNY music cue 0002 (80011108) at frame 31998: sent (first run)
+[2026-10-30 01:19:40] [P1] state: fight loop 1 (was 1), fight flags 002 (was 2), lost bits P1 0001 P2 0000, match rule 24, frame 32664, rollback on
+[2026-10-30 01:19:40] [P1] state: fight loop 2 (was 1), fight flags 006 (was 2), lost bits P1 0200 P2 0100, match rule 24, frame 32665, rollback on
+[2026-10-30 01:19:40] [P1] FFNY music cue 0009 (80011108) at frame 32664: sent (first run)
+[2026-10-30 01:19:40] [P1] FFNY fight 4 over at frame 32665 (menus mode: rollback stays on, no resync): 232 rollbacks (max 4 frames, 888 frames re-simulated), 249 waits for the other side (0.1 s), 0 desyncs; lockstep frames 470 (game file loads incl. the fight start 392, music / speech stream reads 77, memory card / worker threads 1; 0.1 s waiting), update starts during stream reads 199; other threads' random draws: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:19:40] [P1] state: fight loop 3 (was 2), fight flags 006 (was 6), lost bits P1 0200 P2 0100, match rule 24, frame 32666, rollback on
+[2026-10-30 01:19:43] [P1] state: fight loop 3 (was 3), fight flags 006 (was 6), lost bits P1 0600 P2 0100, match rule 24, frame 32834, rollback on
+[2026-10-30 01:19:43] [P1] state: fight loop 3 (was 3), fight flags 00e (was 6), lost bits P1 0600 P2 0100, match rule 24, frame 32835, rollback on
+[2026-10-30 01:19:43] [P1] FFNY music cue 0018 (80011108) at frame 32865: sent (first run)
+[2026-10-30 01:19:43] [P1] FFNY music cue 000e (80011108) at frame 32865: sent (first run)
+[2026-10-30 01:19:43] [P1] FFNY music cue 0018 (80011108) at frame 32865: sent (first run)
+[2026-10-30 01:19:43] [P1] FFNY music cue 000e (80011108) at frame 32865: sent (first run)
+[2026-10-30 01:19:46] [P1] FFNY menus status at frame 33000: fight loop 3, fight flags 00e, match rule 24, match updates 4702, other threads' random draws: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:19:49] [P1] FFNY music cue 0018 (80011108) at frame 33218: sent (first run)
+[2026-10-30 01:19:49] [P1] FFNY music cue 000e (80011108) at frame 33218: sent (first run)
+[2026-10-30 01:19:49] [P1] FFNY music cue 0011 (80011108) at frame 33218: sent (first run)
+[2026-10-30 01:19:49] [P1] FFNY music cue 0011 (80011108) at frame 33218: sent (first run)
+[2026-10-30 01:19:49] [P1] FFNY music cue 000c (80011108) at frame 33218: sent (first run)
+[2026-10-30 01:19:49] [P1] state: fight loop 0 (was 3), fight flags 001 (was e), lost bits P1 0000 P2 0000, match rule 24, frame 33218, rollback on
+[2026-10-30 01:19:50] [P1] FFNY music cue 0000 (80011108) at frame 33218: sent (first run)
+[2026-10-30 01:19:50] [P1] FFNY match set-up at frame 33219: match rule 24, fight loop 0, other threads' random draws since the last line: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:19:52] [P1] FFNY music cue 0001 (80011108) at frame 33334: sent (first run)
+[2026-10-30 01:19:52] [P1] state: fight loop 1 (was 0), fight flags 002 (was 1), lost bits P1 0000 P2 0000, match rule 24, frame 33335, rollback on
+[2026-10-30 01:19:52] [P1] FFNY fight 5 starts at frame 33335 (menus mode). Since the last fight: 670 frames, 335 waits for the other side (0.1 s), input delay outside the fight 1, 0 desyncs; other threads' random draws: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:20:07] [P1] FFNY music cue 000f (80011108) at frame 34238: sent (first run)
+[2026-10-30 01:20:08] [P1] FFNY music cue 0010 (80011108) at frame 34329: sent (first run)
+[2026-10-30 01:20:42] [P1] FFNY music cue 000f (80011108) at frame 36354: sent (first run)
+[2026-10-30 01:20:44] [P1] FFNY music cue 0010 (80011108) at frame 36438: sent (first run)
+[2026-10-30 01:20:52] [P1] state: fight loop 1 (was 1), fight flags 002 (was 2), lost bits P1 0001 P2 0000, match rule 24, frame 36946, rollback on
+[2026-10-30 01:20:52] [P1] state: fight loop 2 (was 1), fight flags 006 (was 2), lost bits P1 0200 P2 0100, match rule 24, frame 36947, rollback on
+[2026-10-30 01:20:52] [P1] FFNY music cue 0009 (80011108) at frame 36946: sent (first run)
+[2026-10-30 01:20:52] [P1] FFNY fight 5 over at frame 36947 (menus mode: rollback stays on, no resync): 189 rollbacks (max 4 frames, 707 frames re-simulated), 630 waits for the other side (0.2 s), 0 desyncs; lockstep frames 1228 (game file loads incl. the fight start 1098, music / speech stream reads 128, memory card / worker threads 2; 0.2 s waiting), update starts during stream reads 723; other threads' random draws: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:20:52] [P1] state: fight loop 3 (was 2), fight flags 006 (was 6), lost bits P1 0200 P2 0100, match rule 24, frame 36948, rollback on
+[2026-10-30 01:20:55] [P1] state: fight loop 3 (was 3), fight flags 006 (was 6), lost bits P1 0600 P2 0100, match rule 24, frame 37116, rollback on
+[2026-10-30 01:20:55] [P1] state: fight loop 3 (was 3), fight flags 00e (was 6), lost bits P1 0600 P2 0100, match rule 24, frame 37117, rollback on
+[2026-10-30 01:20:55] [P1] FFNY music cue 0018 (80011108) at frame 37128: sent (first run)
+[2026-10-30 01:20:55] [P1] FFNY music cue 000e (80011108) at frame 37128: sent (first run)
+[2026-10-30 01:20:55] [P1] FFNY music cue 0018 (80011108) at frame 37128: sent (first run)
+[2026-10-30 01:20:55] [P1] FFNY music cue 000e (80011108) at frame 37128: sent (first run)
+[2026-10-30 01:20:57] [P1] FFNY menus status at frame 37200: fight loop 3, fight flags 00e, match rule 24, match updates 4617, other threads' random draws: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:21:01] [P1] FFNY music cue 0018 (80011108) at frame 37481: sent (first run)
+[2026-10-30 01:21:01] [P1] FFNY music cue 000e (80011108) at frame 37481: sent (first run)
+[2026-10-30 01:21:01] [P1] FFNY music cue 0011 (80011108) at frame 37481: sent (first run)
+[2026-10-30 01:21:01] [P1] FFNY music cue 0011 (80011108) at frame 37481: sent (first run)
+[2026-10-30 01:21:01] [P1] state: fight loop 0 (was 3), fight flags 001 (was e), lost bits P1 0000 P2 0000, match rule 24, frame 37481, rollback on
+[2026-10-30 01:21:02] [P1] FFNY music cue 0000 (80011108) at frame 37481: sent (first run)
+[2026-10-30 01:21:02] [P1] FFNY match set-up at frame 37482: match rule 24, fight loop 0, other threads' random draws since the last line: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:21:04] [P1] FFNY music cue 0001 (80011108) at frame 37597: sent (first run)
+[2026-10-30 01:21:04] [P1] state: fight loop 1 (was 0), fight flags 002 (was 1), lost bits P1 0000 P2 0000, match rule 24, frame 37598, rollback on
+[2026-10-30 01:21:04] [P1] FFNY fight 6 starts at frame 37598 (menus mode). Since the last fight: 651 frames, 325 waits for the other side (0.1 s), input delay outside the fight 1, 0 desyncs; other threads' random draws: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:21:19] [P1] FFNY music cue 000f (80011108) at frame 38501: sent (first run)
+[2026-10-30 01:21:20] [P1] FFNY music cue 0010 (80011108) at frame 38586: sent (first run)
+[2026-10-30 01:21:54] [P1] FFNY music cue 000f (80011108) at frame 40610: sent (first run)
+[2026-10-30 01:21:54] [P1] FFNY music cue 000f (80011108) at frame 40607: not sent again (the first run sent it at frame 40610)
+[2026-10-30 01:21:55] [P1] FFNY music cue 0010 (80011108) at frame 40674: sent (first run)
+[2026-10-30 01:21:55] [P1] FFNY music cue 0010 (80011108) at frame 40672: not sent again (the first run sent it at frame 40674)
+[2026-10-30 01:22:01] [P1] FFNY music cue 0002 (80011108) at frame 41015: sent (first run)
+[2026-10-30 01:22:08] [P1] FFNY music cue 0010 (80011108) at frame 41452: sent (first run)
+[2026-10-30 01:22:08] [P1] FFNY music cue 0010 (80011108) at frame 41449: not sent again (the first run sent it at frame 41452)
+[2026-10-30 01:22:09] [P1] state: fight loop 1 (was 1), fight flags 002 (was 2), lost bits P1 0001 P2 0000, match rule 24, frame 41486, rollback on
+[2026-10-30 01:22:09] [P1] state: fight loop 2 (was 1), fight flags 006 (was 2), lost bits P1 0200 P2 0100, match rule 24, frame 41487, rollback on
+[2026-10-30 01:22:09] [P1] FFNY music cue 0009 (80011108) at frame 41486: sent (first run)
+[2026-10-30 01:22:09] [P1] FFNY fight 6 over at frame 41487 (menus mode: rollback stays on, no resync): 312 rollbacks (max 4 frames, 1248 frames re-simulated), 11 waits for the other side (0.0 s), 0 desyncs; lockstep frames 21 (game file loads incl. the fight start 20, music / speech stream reads 0, memory card / worker threads 1; 0.0 s waiting), update starts during stream reads 0; other threads' random draws: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:22:09] [P1] state: fight loop 3 (was 2), fight flags 006 (was 6), lost bits P1 0200 P2 0100, match rule 24, frame 41488, rollback on
+[2026-10-30 01:22:12] [P1] state: fight loop 3 (was 3), fight flags 00e (was 6), lost bits P1 0600 P2 0100, match rule 24, frame 41656, rollback on
+[2026-10-30 01:22:12] [P1] FFNY music cue 0018 (80011108) at frame 41689: sent (first run)
+[2026-10-30 01:22:12] [P1] FFNY music cue 000e (80011108) at frame 41689: sent (first run)
+[2026-10-30 01:22:12] [P1] FFNY music cue 0018 (80011108) at frame 41689: sent (first run)
+[2026-10-30 01:22:12] [P1] FFNY music cue 000e (80011108) at frame 41689: sent (first run)
+[2026-10-30 01:22:18] [P1] FFNY menus status at frame 42000: fight loop 3, fight flags 00e, match rule 24, match updates 5456, other threads' random draws: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:22:18] [P1] FFNY music cue 0018 (80011108) at frame 42042: sent (first run)
+[2026-10-30 01:22:18] [P1] FFNY music cue 000e (80011108) at frame 42042: sent (first run)
+[2026-10-30 01:22:18] [P1] FFNY music cue 0011 (80011108) at frame 42042: sent (first run)
+[2026-10-30 01:22:18] [P1] FFNY music cue 0011 (80011108) at frame 42042: sent (first run)
+[2026-10-30 01:22:18] [P1] state: fight loop 0 (was 3), fight flags 001 (was e), lost bits P1 0000 P2 0000, match rule 24, frame 42042, rollback on
+[2026-10-30 01:22:19] [P1] FFNY music cue 0000 (80011108) at frame 42042: sent (first run)
+[2026-10-30 01:22:19] [P1] FFNY match set-up at frame 42043: match rule 24, fight loop 0, other threads' random draws since the last line: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:22:21] [P1] FFNY music cue 0001 (80011108) at frame 42158: sent (first run)
+[2026-10-30 01:22:21] [P1] state: fight loop 1 (was 0), fight flags 002 (was 1), lost bits P1 0000 P2 0000, match rule 24, frame 42159, rollback on
+[2026-10-30 01:22:21] [P1] FFNY fight 7 starts at frame 42159 (menus mode). Since the last fight: 672 frames, 336 waits for the other side (0.1 s), input delay outside the fight 1, 0 desyncs; other threads' random draws: generator 1 0, generator 2 0, song picks 0
+[2026-10-30 01:22:36] [P1] FFNY music cue 000f (80011108) at frame 43062: sent (first run)
+[2026-10-30 01:22:38] [P1] FFNY music cue 0010 (80011108) at frame 43162: sent (first run)
+[2026-10-30 01:23:12] [P1] FFNY music cue 0002 (80011108) at frame 45193: sent by a re-simulation (the first run did not send it)
+[2026-10-30 01:23:19] [P1] FFNY music cue 0010 (80011108) at frame 45636: sent (first run)
+[2026-10-30 01:23:40] [P1] FFNY music cue 0003 (80011108) at frame 46916: sent (first run)
+[2026-10-30 01:23:46] [P1] FFNY music cue 000f (80011108) at frame 47257: sent (first run)
+[2026-10-30 01:23:47] [P1] FFNY music cue 0010 (80011108) at frame 47317: sent (first run)
+[2026-10-30 01:23:54] [P1] FFNY music cue 000f (80011108) at frame 47716: sent (first run)
+[2026-10-30 01:23:55] [P1] FFNY music cue 0010 (80011108) at frame 47803: sent (first run)
+[2026-10-30 01:24:01] [P1] FFNY music cue 000f (80011108) at frame 48175: sent (first run)
+[2026-10-30 01:24:03] [P1] FFNY music cue 0010 (80011108) at frame 48257: sent (first run)
+[2026-10-30 01:24:22] [P1] FFNY music cue 0002 (80011108) at frame 49425: sent (first run)
+[2026-10-30 01:24:30] [P1] FFNY music cue 0010 (80011108) at frame 49868: sent (first run)
+[2026-10-30 01:24:30] [P1] FFNY music cue 0010 (80011108) at frame 49867: not sent again (the first run sent it at frame 49868)
+[2026-10-30 01:24:53] [P1] FFNY music cue 0003 (80011108) at frame 51237: sent (first run)
+[2026-10-30 01:25:12] [P1] FFNY music cue 000f (80011108) at frame 52406: sent (first run)
+[2026-10-30 01:25:14] [P1] FFNY music cue 0010 (80011108) at frame 52503: sent (first run)
+[2026-10-30 01:25:20] [P1] FFNY music cue 000f (80011108) at frame 52880: sent (first run)
+[2026-10-30 01:25:21] [P1] FFNY music cue 0010 (80011108) at frame 52970: sent (first run)
+[2026-10-30 01:25:22] [P1] FFNY music cue 000f (80011108) at frame 53021: sent (first run)
+[2026-10-30 01:25:24] [P1] FFNY music cue 0010 (80011108) at frame 53131: sent (first run)

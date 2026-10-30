@@ -56,6 +56,8 @@ add_library(core
   ConfigManager.cpp
   ConfigManager.h
   Core.cpp
+  FFNYLab.cpp
+  FFNYLab.h
   Core.h
   CoreTiming.cpp
   CoreTiming.h

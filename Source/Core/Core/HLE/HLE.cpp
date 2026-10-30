@@ -27,7 +27,7 @@ namespace HLE
 static std::map<u32, u32> s_hooked_addresses;
 
 // clang-format off
-constexpr std::array<Hook, 117> os_patches{{
+constexpr std::array<Hook, 122> os_patches{{
     // Placeholder, os_patches[0] is the "non-existent function" index
     {"FAKE_TO_SKIP_0",               HLE_Misc::UnimplementedFunction,       HookType::Replace, HookFlag::Generic},
 
@@ -133,6 +133,11 @@ constexpr std::array<Hook, 117> os_patches{{
     {"FFNYRollbackTrace3", FFNYRollback::HookTraceN<3>, HookType::Start, HookFlag::Fixed},
     {"FFNYRollbackViCount",          FFNYRollback::HookViCount,             HookType::Replace, HookFlag::Fixed},
     {"FFNYRollbackSndCtx",           FFNYRollback::HookSndNullContext,      HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackStreamGuard",      FFNYRollback::HookStreamGuard,         HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackStreamReset",      FFNYRollback::HookStreamReset,         HookType::Start,   HookFlag::Fixed},
+    {"FFNYRollbackNoteDispatch0",    FFNYRollback::HookNoteDispatch0,       HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackNoteDispatch1",    FFNYRollback::HookNoteDispatch1,       HookType::Replace, HookFlag::Fixed},
+    {"FFNYRollbackNotesDone",        FFNYRollback::HookNotesDone,           HookType::Start,   HookFlag::Fixed},
     {"FFNYRollbackSndPost",          FFNYRollback::HookSndPost,             HookType::Replace, HookFlag::Fixed},
     {"FFNYRollbackSeedTb0",          FFNYRollback::HookSeedTbN<0>,          HookType::Replace, HookFlag::Fixed},
     {"FFNYRollbackSeedTb1",          FFNYRollback::HookSeedTbN<1>,          HookType::Replace, HookFlag::Fixed},

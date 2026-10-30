@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/HW/GCPad.h"
+#include "Core/System.h"
+#include "Core/HW/Memmap.h"
+#include "Core/FFNYLab.h"
 
 #include "Common/Common.h"
 #include "Core/HW/GCPadEmu.h"
@@ -9,6 +12,47 @@
 #include "InputCommon/GCPadStatus.h"
 #include "InputCommon/InputConfig.h"
 
+static u32 FFNYBench_Read32(u32 a)
+{
+  const u8* r = Core::System::GetInstance().GetMemory().GetRAM();
+  if (!r) return 0;
+  const u32 o = a & 0x01FFFFFF;
+  return (u32(r[o]) << 24) | (u32(r[o + 1]) << 16) | (u32(r[o + 2]) << 8) | r[o + 3];
+}
+static void FFNYBench_Write32(u32 a, u32 v)
+{
+  u8* r = Core::System::GetInstance().GetMemory().GetRAM();
+  if (!r) return;
+  const u32 o = a & 0x01FFFFFF;
+  r[o] = u8(v >> 24); r[o + 1] = u8(v >> 16); r[o + 2] = u8(v >> 8); r[o + 3] = u8(v);
+}
+#include "Core/FFNYRollback.h"
+#include "Core/Core.h"
+#include "Core/HW/VideoInterface.h"
+static void FFNYBench_Xfb(const std::string& n)
+{
+  auto& sys = Core::System::GetInstance();
+  const u32 a = sys.GetVideoInterface().GetXFBAddressTop() & 0x01FFFFFF;
+  const char* dir = getenv("FFNY_XFBDIR");
+  if (!dir)
+    return;
+  FILE* f = fopen((std::string(dir) + "/" + n + ".yuyv").c_str(), "wb");
+  if (!f)
+    return;
+  fprintf(f, "XFB %08x\n", a);
+  fwrite(sys.GetMemory().GetRAM() + a, 1, 640 * 2 * 480, f);
+  fclose(f);
+}
+#define FFNYBENCH_SHOT(n) FFNYBench_Xfb(n)
+#include "Core/State.h"
+static void FFNYBench_SaveState(const std::string& n)
+{
+  const char* dir = getenv("FFNY_XFBDIR");
+  if (dir)
+    State::SaveAs(Core::System::GetInstance(), std::string(dir) + "/" + n + ".sav");
+}
+#define FFNYBENCH_SAVESTATE(n) FFNYBench_SaveState(n)
+#include "/home/claude/lab/bench/FFNYBench.inc"
 namespace Pad
 {
 static InputConfig s_config("GCPadNew", _trans("Pad"), "GCPad", "Pad");
@@ -55,6 +99,15 @@ bool IsInitialized()
 
 GCPadStatus GetStatus(int pad_num)
 {
+  {
+    GCPadStatus fb;
+    if (FFNYBench::GetPad(pad_num, &fb))
+      return fb;
+  }
+
+  GCPadStatus lab;
+  if (FFNYLab::GetPad(pad_num, &lab))
+    return lab;
   return static_cast<GCPad*>(s_config.GetController(pad_num))->GetInput();
 }
 

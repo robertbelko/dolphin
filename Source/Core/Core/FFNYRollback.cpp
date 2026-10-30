@@ -189,7 +189,13 @@ struct SndCall
 {
   u32 frame, fn;
   u32 r[8];  // r3..r10
+  bool lab = false;  // lab 29 October: a deliberate duplicate of a music cue (FFNY_LAB_CUEDUP)
 };
+// lab 29 October: music cue duplicates + stream checks
+u32 s_lab_cuedup = std::getenv("FFNY_LAB_CUEDUP") ? u32(std::strtoul(std::getenv("FFNY_LAB_CUEDUP"), nullptr, 10)) : 0;
+u32 s_lab_cuedup_ev = std::getenv("FFNY_LAB_CUEDUP_EV") ? u32(std::strtoul(std::getenv("FFNY_LAB_CUEDUP_EV"), nullptr, 16)) : 0xFFFFFFFF;
+u32 s_lab_cuedup_n = std::getenv("FFNY_LAB_CUEDUP_N") ? u32(std::strtoul(std::getenv("FFNY_LAB_CUEDUP_N"), nullptr, 10)) : 1;
+u32 s_lab_dups_made = 0, s_lab_dups_sent = 0;
 std::deque<SndCall> s_snd_q;
 std::deque<std::pair<SndCall, bool>> s_music_sent;  // music cues sent by first runs (+ matched in the current re-simulation)
 u32 s_music_deduped = 0, s_music_resent = 0, s_music_refused = 0;
@@ -2776,6 +2782,18 @@ void OnVIField(Core::System& system)
       i++;
     }
   }
+  if ((std::getenv("FFNY_RB_NOSTREAMGUARD") == nullptr || std::getenv("FFNY_LAB_STREAMCHECK")) && Rd32(ram, 0x801E7F90) == 0x9421FFE8)
+  {
+    HLE::Patch(system, 0x801E7F90, "FFNYRollbackStreamGuard");
+  }
+  if (std::getenv("FFNY_RB_NOSTREAMGUARD") == nullptr && Rd32(ram, 0x801E8BCC) == 0x7C7E1B79 &&
+      Rd32(ram, 0x801E7344) == 0x4E800021 && Rd32(ram, 0x801E735C) == 0x4E800021 && Rd32(ram, 0x801E7370) == 0x3D20803F)
+  {
+    HLE::Patch(system, 0x801E8BCC, "FFNYRollbackStreamReset");
+    HLE::Patch(system, 0x801E7344, "FFNYRollbackNoteDispatch0");
+    HLE::Patch(system, 0x801E735C, "FFNYRollbackNoteDispatch1");
+    HLE::Patch(system, 0x801E7370, "FFNYRollbackNotesDone");
+  }
   if (const char* c = std::getenv("FFNY_RB_TRACE"))
   {
     std::stringstream ss(c);
@@ -4113,6 +4131,259 @@ template void HookTraceN<1>(const Core::CPUThreadGuard&);
 template void HookTraceN<2>(const Core::CPUThreadGuard&);
 template void HookTraceN<3>(const Core::CPUThreadGuard&);
 
+// lab 29 October: 0x801E7F90(r4 = bytes, r5 = stream) consumes bytes from the stream's chunk list (+0x11C head,
+// node +0 next, +0x1C bytes left; +0x124 count). Checks that the list holds what is asked (else the loop runs into a
+// NULL chunk: the crash at 0x801E7FC8).
+struct LabStreamStat
+{
+  u64 calls = 0, under = 0, empty = 0, resim_calls = 0, resim_bytes = 0, bytes = 0, frozen_calls = 0;
+  s64 min_margin = 1LL << 40;
+  u32 min_count = 0xFFFFFFFF;
+};
+static std::map<u32, LabStreamStat> s_lab_streams;
+static bool s_lab_streamcheck = std::getenv("FFNY_LAB_STREAMCHECK") != nullptr;
+u32 s_stream_guard_skips = 0, s_stream_guard_fight = 0;
+bool s_stream_guard_on = std::getenv("FFNY_RB_NOSTREAMGUARD") == nullptr;
+static void LabStreamConsume(const Core::CPUThreadGuard& guard);
+// Music / speech stream guard (30 October; Robert's friend session 29 October, client crash at 0x801E7FC8 in fight
+// 10; reproduced in the lab: fight 4 of a scripted menus-mode session, frame 21410, right after a Blazin' activation).
+// 0x801E7F90(r4 = bytes, r5 = stream) applies a "bytes played" note of the mixer to the stream's chunk list. When the
+// music module restarts the stream (cue 0x0002 at a Blazin' activation: the old chunks go to the free list, one empty
+// chunk waits for its disc read) between the note and its processing, the note asks for bytes the new list does not
+// hold; the loop then reads chunk NULL (+0x1C) and the audio thread crashes. Replaces "stwu sp,-0x18(sp)": a note
+// bigger than everything buffered is dropped (it belongs to the old buffer), the rest runs as before. The original
+// game would crash the same way; with rollback the main thread's timing (re-simulations, frozen time) makes the race
+// much more likely. FFNY_RB_NOSTREAMGUARD=1 = off.
+void HookStreamGuard(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  const u32 bytes = ppc.gpr[4], st = ppc.gpr[5];
+  if (s_lab_streamcheck)
+    LabStreamConsume(guard);
+  if ((st & 0xFE000000) == 0x80000000)
+  {
+    u64 sum = 0;
+    u32 n = Rd32(ram, st + 0x11C), cnt = 0;
+    while (n && (n & 0xFE000000) == 0x80000000 && cnt < 400)
+    {
+      sum += Rd32(ram, n + 0x1C);
+      n = Rd32(ram, n);
+      cnt++;
+    }
+    if (u64(bytes) > sum && s_stream_guard_on)
+    {
+      if (s_stream_guard_skips++ < 3)
+        Report(fmt::format("FFNY: sound stream note skipped at frame {} (stream {:08x} asked for {} bytes, {} buffered in {} "
+                           "chunks; the audio thread would have crashed at 801e7fc8)",
+                           Rd32(ram, W_FRAME), st, bytes, sum, cnt));
+      s_stream_guard_fight++;
+      ppc.npc = ppc.spr[SPR_LR];
+      return;
+    }
+  }
+  const u32 sp = ppc.gpr[1], nsp = sp - 0x18;  // the replaced stwu sp,-0x18(sp)
+  Wr32(ram, nsp, sp);
+  ppc.gpr[1] = nsp;
+  ppc.npc = 0x801E7F94;
+}
+static void LabStreamConsume(const Core::CPUThreadGuard& guard)
+{
+  auto& system = guard.GetSystem();
+  const u8* ram = system.GetMemory().GetRAM();
+  const auto& ppc = system.GetPPCState();
+  const u32 bytes = ppc.gpr[4], st = ppc.gpr[5];
+  if ((st & 0xFE000000) != 0x80000000)
+    return;
+  u64 sum = 0;
+  u32 n = Rd32(ram, st + 0x11C), cnt = 0;
+  while (n && (n & 0xFE000000) == 0x80000000 && cnt < 400)
+  {
+    sum += Rd32(ram, n + 0x1C);
+    n = Rd32(ram, n);
+    cnt++;
+  }
+  // ring of the last consumes of every stream (dumped at an underrun)
+  struct LabEv { u32 frame, bytes, sum, cnt, head, hrem, hpos, hsize; bool resim, frozen; u64 ticks; };
+  static std::map<u32, std::deque<LabEv>> ring;
+  auto& rg = ring[st];
+  {
+    const u32 h = Rd32(ram, st + 0x11C);
+    const bool okh = h && (h & 0xFE000000) == 0x80000000;
+    rg.push_back({Rd32(ram, W_FRAME), bytes, u32(sum), cnt, h, okh ? Rd32(ram, h + 0x1C) : 0, okh ? Rd32(ram, h + 0x14) : 0,
+                  okh ? Rd32(ram, h + 0x18) : 0, s_resim_target != 0, system.GetCoreTiming().IsFrozen(),
+                  system.GetCoreTiming().GetTicks()});
+    if (rg.size() > 64)
+      rg.pop_front();
+  }
+  auto& ss = s_lab_streams[st];
+  ss.calls++;
+  ss.bytes += bytes;
+  if (s_resim_target != 0)
+  {
+    ss.resim_calls++;
+    ss.resim_bytes += bytes;
+  }
+  if (system.GetCoreTiming().IsFrozen())
+    ss.frozen_calls++;
+  const s64 margin = s64(sum) - s64(bytes);
+  if (margin < ss.min_margin)
+    ss.min_margin = margin;
+  if (cnt < ss.min_count)
+    ss.min_count = cnt;
+  if (cnt == 0)
+    ss.empty++;
+  if (s64(bytes) > s64(sum))
+  {
+    ss.under++;
+    if (ss.under <= 50)
+      fprintf(stderr, "FFNYLAB STREAM UNDERRUN stream %08x wants %u has %llu in %u chunks (list count %u) frame %u ctr %u thread %08x lr %08x\n",
+              st, bytes, (unsigned long long)sum, cnt, Rd32(ram, st + 0x124), Rd32(ram, W_FRAME), Rd32(ram, ADDR_COUNTER),
+              Rd32(ram, 0x800000E4), ppc.spr[SPR_LR]);
+    if (ss.under <= 3)
+    {
+      fprintf(stderr, "FFNYLAB   now: resim %d frozen %d; stream words +0x100..+0x140:", s_resim_target != 0, system.GetCoreTiming().IsFrozen());
+      for (u32 o = 0x100; o < 0x140; o += 4)
+        fprintf(stderr, " %08x", Rd32(ram, st + o));
+      const u32 h = Rd32(ram, st + 0x11C);
+      if (h && (h & 0xFE000000) == 0x80000000)
+      {
+        fprintf(stderr, "; head chunk %08x:", h);
+        for (u32 o = 0; o < 0x30; o += 4)
+          fprintf(stderr, " %08x", Rd32(ram, h + o));
+      }
+      fprintf(stderr, "\n");
+      for (const auto& e : rg)
+        fprintf(stderr, "FFNYLAB   consume frame %u bytes %u had %u in %u chunks; head %08x rem %u pos %u size %u; resim %d frozen %d ticks %llu\n",
+                e.frame, e.bytes, e.sum, e.cnt, e.head, e.hrem, e.hpos, e.hsize, e.resim, e.frozen, (unsigned long long)e.ticks);
+    }
+  }
+}
+void LabStreamReport()
+{
+  for (auto& [st, ss] : s_lab_streams)
+    fprintf(stderr, "FFNYLAB stream %08x: %llu consumes (%llu bytes), %llu underruns, %llu with an empty list, min margin %lld bytes, min chunks %u; during re-simulations %llu consumes (%llu bytes), with time frozen %llu\n",
+            st, (unsigned long long)ss.calls, (unsigned long long)ss.bytes, (unsigned long long)ss.under, (unsigned long long)ss.empty,
+            (long long)ss.min_margin, ss.min_count, (unsigned long long)ss.resim_calls, (unsigned long long)ss.resim_bytes,
+            (unsigned long long)ss.frozen_calls);
+  fprintf(stderr, "FFNYLAB cue dups: %u made, %u sent; stream guard skips %u\n", s_lab_dups_made, s_lab_dups_sent, s_stream_guard_skips);
+  const u8* ram = Core::System::GetInstance().GetMemory().GetRAM();
+  const u32 nst = ram[0x803DE6E2 & 0x01FFFFFF];
+  std::string line;
+  for (u32 i = 0; i < nst && i < 32; i++)
+  {
+    const u32 st = Rd32(ram, 0x803ECD68 + 4 * i);
+    if ((st & 0xFE000000) != 0x80000000)
+      continue;
+    line += fmt::format(" {}:{:08x} active {} free {} cur {:08x}", i, st, Rd32(ram, st + 0x124), Rd32(ram, st + 0x130), Rd32(ram, st + 0x134));
+  }
+  fprintf(stderr, "FFNYLAB stream pool at frame %u (%u streams):%s; heap2 note queue %u\n", Rd32(ram, W_FRAME), nst, line.c_str(), Rd32(ram, 0x803EC9C0));
+}
+
+// Stale sound notes after a stream reset (30 October 2026, lab). The mixer queues notes for the audio thread
+// (0x803EC9C0 = count, 0x803EC9C4 = 8-byte entries {u16 kind, u16 channel, u32 value}; channel objects 0x803ECCC4[ch],
+// +0x58 / +0x54 = handler for kind 0 ("bytes played", 0x801E7F90) / other ("buffer done", 0x801E7F54), +0x5C = the
+// stream). 0x801E72E0 runs them. The stream reset 0x801E8BAC (music restart, e.g. cue 0x0002 at a Blazin' activation)
+// moves the stream's chunks to its free list but leaves notes already queued for it; run after the reset they act on
+// the new, empty buffer list (crash at 0x801E7FC8) or on a reused buffer header (crash at 0x801E7F6C). With rollback
+// the main thread's timing makes such a reset between a note and its processing much more likely (lab: crash in
+// fight 3 / 4 of a scripted session; never in the same session without rollback). Here: every reset remembers how
+// many notes were queued; those notes of that stream are skipped when the queue runs. FFNY_RB_NOSTREAMGUARD=1 = off.
+struct SndResetRec
+{
+  u32 stream, count;
+};
+static std::vector<SndResetRec> s_snd_resets;
+u32 s_stale_notes = 0;
+void HookStreamReset(const Core::CPUThreadGuard& guard)  // Start hook at 0x801E8BCC: r3 = the stream being reset (or 0)
+{
+  auto& system = guard.GetSystem();
+  const u8* ram = system.GetMemory().GetRAM();
+  const u32 st = system.GetPPCState().gpr[3];
+  const u32 q = Rd32(ram, 0x803EC9C0);
+  if ((st & 0xFE000000) == 0x80000000 && q != 0 && q < 0x60 && s_snd_resets.size() < 64)
+    s_snd_resets.push_back({st, q});
+}
+static bool RamPtr(u32 a)
+{
+  return a >= 0x80000000 && a < 0x81800000;
+}
+// Is the queued note still about the buffer its stream holds now? kind 0 = "bytes played": the stream must hold that
+// many bytes; other kinds = "buffer done" (value = buffer, *(buffer - 4) = header, header byte 3 = stream index in
+// 0x803ECD68): the header must still lead back to this stream. (The game's own check, the generation byte obj+0x42
+// in 0x801E7274, does not change at a stream reset, so notes of the old buffer keep coming for a few mixer passes.)
+static const char* StaleNote(const u8* ram, u32 idx, u32 obj, u32* why_val)
+{
+  const u32 st = Rd32(ram, obj + 0x5C);
+  const u32 e = 0x803EC9C4 + idx * 8;
+  const u32 kind = Rd32(ram, e) >> 16, val = Rd32(ram, e + 4);
+  *why_val = val;
+  for (const auto& r : s_snd_resets)
+    if (r.stream == st && idx < r.count)
+      return "queued before the stream was reset";
+  if (!RamPtr(st))
+    return nullptr;
+  if (kind == 0)
+  {
+    u64 sum = 0;
+    u32 n = Rd32(ram, st + 0x11C), cnt = 0;
+    while (n != 0 && RamPtr(n) && cnt < 400)
+    {
+      sum += Rd32(ram, n + 0x1C);
+      n = Rd32(ram, n);
+      cnt++;
+    }
+    return u64(val) > sum ? "bytes played: more than the stream holds" : nullptr;
+  }
+  if (Rd32(ram, obj + 0x54) != 0x801E7F54)
+    return nullptr;  // not the stream handler: leave it alone
+  if (!RamPtr(val) || !RamPtr(val - 4))
+    return "buffer done: bad buffer pointer";
+  const u32 hdr = Rd32(ram, val - 4);
+  if (!RamPtr(hdr))
+    return "buffer done: bad buffer header";
+  const u32 si = Rd32(ram, hdr) & 0xFF;  // byte 3 of the header word
+  const u32 count = ram[0x803DE6E2 & 0x01FFFFFF];  // number of streams
+  if (si >= count || Rd32(ram, 0x803ECD68 + 4 * si) != st)
+    return "buffer done: the buffer no longer belongs to this stream";
+  return nullptr;
+}
+static void NoteDispatch(const Core::CPUThreadGuard& guard, u32 here)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  const u32 idx = ppc.gpr[31], obj = ppc.gpr[9];
+  u32 val = 0;
+  const char* why = (RamPtr(obj) && idx < 0x60) ? StaleNote(ram, idx, obj, &val) : nullptr;
+  if (why != nullptr)
+  {
+    if (s_stale_notes++ < 3)
+      Report(fmt::format("FFNY: stale sound note skipped at frame {} ({}; value {:08x}, stream {:08x}; without the guard "
+                         "the audio thread could crash)",
+                         Rd32(ram, W_FRAME), why, val, Rd32(ram, obj + 0x5C)));
+    s_stream_guard_fight++;
+    ppc.npc = 0x801E7360;
+    return;
+  }
+  const u32 target = ppc.spr[SPR_LR];  // the replaced blrl
+  ppc.spr[SPR_LR] = here + 4;
+  ppc.npc = target;
+}
+void HookNoteDispatch0(const Core::CPUThreadGuard& guard)  // 0x801E7344
+{
+  NoteDispatch(guard, 0x801E7344);
+}
+void HookNoteDispatch1(const Core::CPUThreadGuard& guard)  // 0x801E735C
+{
+  NoteDispatch(guard, 0x801E735C);
+}
+void HookNotesDone(const Core::CPUThreadGuard&)  // Start hook at 0x801E7370: the queue has run
+{
+  s_snd_resets.clear();
+}
+
 // rbtag's post-allocation hook (called by the heap allocator for every allocation, r3 = info: +0x18 pointer)
 void HookSysAlloc(const Core::CPUThreadGuard& guard)
 {
@@ -4366,10 +4637,15 @@ static void SndDropFrom(u32 s)
   for (auto& e : s_music_sent)
     if (e.first.frame >= s)
       e.second = false;  // the re-simulation from s may send these again: match them anew
-  while (!s_snd_q.empty() && s_snd_q.back().frame >= s)
+  for (auto it = s_snd_q.begin(); it != s_snd_q.end();)
   {
-    s_snd_q.pop_back();
-    s_snd_dropped++;
+    if (it->frame >= s && !it->lab)
+    {
+      it = s_snd_q.erase(it);
+      s_snd_dropped++;
+    }
+    else
+      ++it;
   }
 }
 
@@ -4380,6 +4656,12 @@ static bool SndSendNext(PowerPC::PowerPCState& ppc, u32 upto)
     return false;
   const SndCall c = s_snd_q.front();
   s_snd_q.pop_front();
+  if (c.lab)
+  {
+    s_lab_dups_sent++;
+    fprintf(stderr, "FFNYLAB cue dup %04x sent at frame %u (made for frame %u)\n", c.r[0] & 0xFFFF,
+            Rd32(Core::System::GetInstance().GetMemory().GetRAM(), W_FRAME), c.frame);
+  }
   for (int i = 0; i < 8; i++)
     ppc.gpr[3 + i] = c.r[i];
   ppc.spr[SPR_LR] = ADDR_PRE;
@@ -4516,6 +4798,19 @@ static void SndHook(const Core::CPUThreadGuard& guard, u32 fn)
     {
       s_music_sent.push_back({c, false});
       log_cue("sent (first run)");
+      fprintf(stderr, "FFNYLAB cue %04x first run frame %u\n", ev, c.frame);
+      if (s_lab_cuedup && (s_lab_cuedup_ev == 0xFFFFFFFF || ev == s_lab_cuedup_ev))
+        for (u32 k = 1; k <= s_lab_cuedup_n; k++)
+        {
+          SndCall d = c;
+          d.frame = c.frame + s_lab_cuedup * k;
+          d.lab = true;
+          auto it = s_snd_q.begin();
+          while (it != s_snd_q.end() && it->frame <= d.frame)
+            ++it;
+          s_snd_q.insert(it, d);
+          s_lab_dups_made++;
+        }
       SndExecOriginal(ram, ppc, fn);
       return;
     }
@@ -4528,6 +4823,7 @@ static void SndHook(const Core::CPUThreadGuard& guard, u32 fn)
         {
           e.second = true;  // matched in this re-simulation
           s_music_deduped++;
+          fprintf(stderr, "FFNYLAB cue %04x resim dedup pass %d frame %u (first %u)\n", ev, pass, c.frame, e.first.frame);
           if (pass == 1)
             log_cue(fmt::format("not sent again (the first run sent it at frame {})", e.first.frame).c_str());
           ppc.gpr[3] = 1;
@@ -4536,6 +4832,7 @@ static void SndHook(const Core::CPUThreadGuard& guard, u32 fn)
         }
     s_music_sent.push_back({c, true});
     s_music_resent++;
+    fprintf(stderr, "FFNYLAB cue %04x RESIM-SENT frame %u\n", ev, c.frame);
     log_cue("sent by a re-simulation (the first run did not send it)");
     SndExecOriginal(ram, ppc, fn);
     return;
@@ -5286,6 +5583,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
               s_idle_wait.size(), s_async_busy_frames, s_async_last, s_async_last_thread, s_async_barriers, s_async_aborts);
       fprintf(stderr, "FFNYRB lockstep outside the fight: %u frames; barrier calls with a late misprediction %u\n", s_menu_lock_frames, s_barrier_late);
       fprintf(stderr, "FFNYRB logic counter stalls: %u (last at frame %u)\n", s_stalls, s_stall_guard);
+      LabStreamReport();
       fprintf(stderr, "FFNYRB music cues: %u not sent again in re-simulations, %u sent by re-simulations, %u refused by the player (the logic got 1)\n", s_music_deduped, s_music_resent, s_music_refused);
       fprintf(stderr, "FFNYRB memory card: %u calls, last activity frame %u, %u barrier waits (%.1f ms), %u frames abandoned, %u calls in re-simulations\n",
               s_card_calls, s_card_last, s_card_waits, s_card_wait_us / 1000.0, s_card_aborts, s_card_resim_calls);
@@ -5479,8 +5777,45 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   {
     const u32 s = std::max(s_mispredict_from, s_start_frame);
     s_mispredict_from = 0xFFFFFFFF;
+    struct LabSt { u32 st, head, tail, cnt, sum; };
+    auto lab_snap = [&](std::vector<LabSt>& v) {
+      v.clear();
+      const u32 nst = ram[0x803DE6E2 & 0x01FFFFFF];
+      for (u32 i = 0; i < nst && i < 32; i++)
+      {
+        const u32 st = Rd32(ram, 0x803ECD68 + 4 * i);
+        if ((st & 0xFE000000) != 0x80000000)
+          continue;
+        LabSt e{st, Rd32(ram, st + 0x11C), Rd32(ram, st + 0x120), Rd32(ram, st + 0x124), 0};
+        u32 n = e.head, k = 0;
+        while (n && (n & 0xFE000000) == 0x80000000 && k++ < 400)
+        {
+          e.sum += Rd32(ram, n + 0x1C);
+          n = Rd32(ram, n);
+        }
+        v.push_back(e);
+      }
+    };
+    static const bool lab_stcheck = std::getenv("FFNY_LAB_STREAMCHECK") != nullptr;
+    static std::vector<LabSt> lab_before, lab_after;
+    static u32 lab_touch = 0;
+    if (lab_stcheck)
+      lab_snap(lab_before);
     if (s < f && LoadState(system, s))
     {
+      if (lab_stcheck)
+      {
+        lab_snap(lab_after);
+        for (size_t i = 0; i < lab_before.size() && i < lab_after.size(); i++)
+        {
+          const auto &a = lab_before[i], &b = lab_after[i];
+          if ((a.st != b.st || a.head != b.head || a.tail != b.tail || a.cnt != b.cnt || a.sum != b.sum) && lab_touch++ < 40)
+            fprintf(stderr, "FFNYLAB REWIND %u->%u CHANGED stream %08x: head %08x->%08x tail %08x->%08x count %u->%u bytes %u->%u\n",
+                    f, s, a.st, a.head, b.head, a.tail, b.tail, a.cnt, b.cnt, a.sum, b.sum);
+        }
+        if (lab_before.size() != lab_after.size() && lab_touch++ < 40)
+          fprintf(stderr, "FFNYLAB REWIND %u->%u CHANGED stream count %zu->%zu\n", f, s, lab_before.size(), lab_after.size());
+      }
       if (!s_diag_heap_reported)
       {
         // a list broken right here was broken by the restore itself (or was broken in the saved state)
