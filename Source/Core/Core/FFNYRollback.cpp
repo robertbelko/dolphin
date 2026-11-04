@@ -4540,8 +4540,9 @@ void HookNotesDone(const Core::CPUThreadGuard&)  // Start hook at 0x801E7370: th
 // (0x80440AD0 main player, 0x8035D4E0 second player = KO / win stingers, 0x80440B24 its bank), which the rollback
 // rewinds, while the library itself (not rewound) keeps its own state. A rollback across the KO stinger's close
 // (0x800110AC: bank unload 0x801DFD40, player close 0x801D7DD0) brought the closed handle back and the re-simulation
-// closed it a second time. The library's close matches handles by their bits, so the second close of 0x11000002 hit
-// the main player 0x11000001's record (freed it, its music stream stayed open); the next song start (the match set-up
+// closed it a second time. The library's close matches handles by their bits: 0x11000001 (music) and 0x11000002
+// (stinger) are sources 0 and 1 of the same player record; closing the already free source 1 found no source and
+// then freed every record of type 0x10000000 (0x801D85A8), the music's too, while its stream stayed open; the next song start (the match set-up
 // after the rematch: stop all -> close 0x11000001 = nothing left to close -> open) then opened the music stream again
 // while it was still registered: the stream sat twice in the stream table 0x803ECD68 (and its channel twice in
 // 0x803ECCC4), the mixer served it twice per pass -> the song used up twice as fast (fast, crackly, normal pitch, 2x
@@ -4551,11 +4552,20 @@ void HookNotesDone(const Core::CPUThreadGuard&)  // Start hook at 0x801E7370: th
 // first run left them. FFNY_RB_NOPFGUARD=1 = off.
 static u32 s_pf_skips = 0, s_pf_skips_fight = 0;
 static u32 s_pf_bank2 = 0xFFFFFFFF;  // bank the second player got from its last real open (0x80440B24)
+// Does the library hold what handle h names? A handle = type bits 0xF0000000 | player bits 0x0F000000 | one bit per
+// source (0..23); a player record (0x803DA114 + i * 0x928: +0x30 its type / player bits, +0x34 in use, +0x58 + 4 * k
+// source k, 0 = free) matches like in the library's close 0x801D7DD0, and the named source must be in use.
 static bool PfPlayerOpen(const u8* ram, u32 h)
 {
   for (u32 i = 0; i < 4; i++)
-    if (Rd32(ram, 0x803DA148 + i * 0x928) != 0 && Rd32(ram, 0x803DA144 + i * 0x928) == h)
-      return true;
+  {
+    const u32 rec = 0x803DA114 + i * 0x928, rh = Rd32(ram, rec + 0x30);
+    if (Rd32(ram, rec + 0x34) == 0 || (rh & 0xF0000000 & h) == 0 || (rh & 0x0F000000 & h) == 0)
+      continue;
+    for (u32 k = 0; k < 24; k++)
+      if (((h >> k) & 1) && Rd32(ram, rec + 0x58 + 4 * k) != 0)
+        return true;
+  }
   return false;
 }
 static void PfReport(const u8* ram, const char* what, u32 v)
