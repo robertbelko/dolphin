@@ -812,11 +812,27 @@ bool LoadState(Core::System& system, u32 frame)
   const auto t0 = std::chrono::steady_clock::now();
   auto& ppc = system.GetPPCState();
   u8* ram = system.GetMemory().GetRAM();
+  // lab: FFNY_LAB_RESTOREWATCH=1 reports words of the music module that a rewind changes (4 November: the music
+  // player handle 0x80440AD0 written by the loader thread at a fight set-up)
+  static const bool rwatch = std::getenv("FFNY_LAB_RESTOREWATCH") != nullptr;
+  static constexpr u32 rw_addr[] = {0x80440AD0, 0x80440B0C, 0x8035D4E0, 0x80440B24};
+  u32 rw_before[4] = {};
+  if (rwatch)
+    for (int i = 0; i < 4; i++)
+      rw_before[i] = Rd32(ram, rw_addr[i]);
   size_t o = 0;
   for (auto [lo, hi] : s.ranges)
   {
-    memcpy(ram + lo, s.data.data() + o, hi - lo);
+    memcpy(ram + (lo & 0x01FFFFFF), s.data.data() + o, hi - lo);
     o += hi - lo;
+  }
+  if (rwatch)
+  {
+    static u32 n = 0;
+    for (int i = 0; i < 4; i++)
+      if (Rd32(ram, rw_addr[i]) != rw_before[i] && n++ < 200)
+        fprintf(stderr, "FFNYLAB RESTORE changed %08x: %08x -> %08x (load of frame %u, at frame %u, ctr %u)\n", rw_addr[i],
+                rw_before[i], Rd32(ram, rw_addr[i]), frame, Rd32(ram, 0x8049B504), Rd32(ram, ADDR_COUNTER));
   }
   if (u8* vmem = system.GetMemory().GetFakeVMEM())
   {
@@ -2443,7 +2459,25 @@ public:
   {
     const auto now = std::chrono::steady_clock::now();
     const int d = m_lag + (m_jitter ? std::rand() % (m_jitter + 1) : 0);
-    m_out.push_back({now + std::chrono::milliseconds(d), msg});
+    auto when = now + std::chrono::milliseconds(d);
+    // lab: FFNY_RB_SPIKE=every_ms:dur_ms - every every_ms, nothing gets through for dur_ms (a short freeze of both
+    // machines, like the ones Robert noticed in the 4 November friend session); held messages arrive at its end
+    static int spike_every = -1, spike_dur = 0;
+    static const auto t0 = std::chrono::steady_clock::now();
+    if (spike_every < 0)
+    {
+      spike_every = 0;
+      if (const char* sp = std::getenv("FFNY_RB_SPIKE"))
+        sscanf(sp, "%d:%d", &spike_every, &spike_dur);
+    }
+    if (spike_every > 0 && spike_dur > 0)
+    {
+      const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(when - t0).count();
+      const long long ph = ms % spike_every;
+      if (ph < spike_dur)
+        when += std::chrono::milliseconds(spike_dur - ph);
+    }
+    m_out.push_back({when, msg});
     Flush();
   }
   // lab: FFNY_RB_LOSS=percent drops unreliable messages, FFNY_RB_BURST=n makes every drop a run of n
@@ -2754,6 +2788,17 @@ void OnVIField(Core::System& system)
     if (s_card_on)
       for (size_t i = 0; i < CARD_FUNCS.size(); i++)
         HLE::Patch(system, CARD_FUNCS[i], "FFNYRollbackCard" + std::to_string(i));
+  }
+  // music players vs rollback (see HookPfClose)
+  if (std::getenv("FFNY_RB_NOPFGUARD") == nullptr && Rd32(ram, 0x801D7DD0) == 0x9421FFE0 &&
+      Rd32(ram, 0x800110D8) == 0x481CEC69 && Rd32(ram, 0x80010FD0) == 0x481C6A05 &&
+      Rd32(ram, 0x80010F1C) == 0x481C6AB9 && Rd32(ram, 0x80011004) == 0x80BE0B24)
+  {
+    HLE::Patch(system, 0x801D7DD0, "FFNYRollbackPfClose");
+    HLE::Patch(system, 0x800110D8, "FFNYRollbackPfBankUnload");
+    HLE::Patch(system, 0x80010FD0, "FFNYRollbackPfOpen2");
+    HLE::Patch(system, 0x80011004, "FFNYRollbackPfBank2Loaded");
+    HLE::Patch(system, 0x80010F1C, "FFNYRollbackPfOpenMain");
   }
   // deterministic file ids (see HookAfSetId)
   s_af_on = std::getenv("FFNY_RB_NOAFID") == nullptr && Rd32(ram, AF_SETID) == 0x812D8DCC &&
@@ -4115,16 +4160,29 @@ template void HookCountN<31>(const Core::CPUThreadGuard&);
 template <int I>
 void HookTraceN(const Core::CPUThreadGuard& guard)
 {
-  if (!s_active)
+  static const bool any = std::getenv("FFNY_RB_TRACE_ANY") != nullptr;  // lab: every thread, also outside rollback
+  if (!s_active && !any)
     return;
   auto& system = guard.GetSystem();
   const u8* ram = system.GetMemory().GetRAM();
-  if (Rd32(ram, 0x800000E4) != 0x80432D10)
+  const u32 thr = Rd32(ram, 0x800000E4);
+  if (thr != 0x80432D10 && !any)
     return;
   const auto& ppc = system.GetPPCState();
-  fprintf(stderr, "TRACE %08x %u %c %08x %08x %08x %08x %08x %08x %08x %08x lr %08x\n", s_trace_addr[I],
-          Rd32(ram, W_FRAME), s_resim_target != 0 ? 'r' : 'f', ppc.gpr[3], ppc.gpr[4], ppc.gpr[5], ppc.gpr[6],
-          ppc.gpr[7], ppc.gpr[8], ppc.gpr[9], ppc.gpr[10], ppc.spr[SPR_LR]);
+  std::string chain;
+  u32 sp = ppc.gpr[1];
+  for (int k = 0; k < 6 && (sp & 0xFE000000) == 0x80000000; k++)
+  {
+    const u32 nsp = Rd32(ram, sp);
+    if ((nsp & 0xFE000000) != 0x80000000)
+      break;
+    chain += fmt::format(" {:08x}", Rd32(ram, nsp + 4));
+    sp = nsp;
+  }
+  fprintf(stderr, "TRACE %08x %u %c ctr %u thr %08x %08x %08x %08x %08x %08x %08x %08x %08x r31 %08x lr %08x mus %08x %08x chain%s\n", s_trace_addr[I],
+          Rd32(ram, W_FRAME), s_resim_target != 0 ? 'r' : 'f', Rd32(ram, ADDR_COUNTER), thr, ppc.gpr[3], ppc.gpr[4],
+          ppc.gpr[5], ppc.gpr[6], ppc.gpr[7], ppc.gpr[8], ppc.gpr[9], ppc.gpr[10], ppc.gpr[31], ppc.spr[SPR_LR],
+          Rd32(ram, 0x80440AD0), Rd32(ram, 0x8035D4E0), chain.c_str());
 }
 template void HookTraceN<0>(const Core::CPUThreadGuard&);
 template void HookTraceN<1>(const Core::CPUThreadGuard&);
@@ -4194,7 +4252,7 @@ static void SndMonTick(Core::System& system, const u8* ram)
   s_sndmon_next_tick = t + u64(s_sndmon_every) * 8100000ULL;  // 486 MHz / 60
   const u32 f = Rd32(ram, W_FRAME);
   const u32 nst = ram[0x803DE6E2 & 0x01FFFFFF];
-  std::string line = fmt::format("FFNYLAB SNDMON frame {} ctr {} vsec {:.1f} streams {}:", f, Rd32(ram, ADDR_COUNTER), t / 486e6, nst);
+  std::string line = fmt::format("FFNYLAB SNDMON frame {} ctr {} vsec {:.1f} players {:08x} {:08x} streams {}:", f, Rd32(ram, ADDR_COUNTER), t / 486e6, Rd32(ram, 0x80440AD0), Rd32(ram, 0x8035D4E0), nst);
   for (const auto& [st, v] : s_sndmon_stream)
     line += fmt::format(" st {:08x} {} consumes {} B;", st, v.first, v.second);
   s_sndmon_stream.clear();
@@ -4473,6 +4531,116 @@ void HookNoteDispatch1(const Core::CPUThreadGuard& guard)  // 0x801E735C
 void HookNotesDone(const Core::CPUThreadGuard&)  // Start hook at 0x801E7370: the queue has run
 {
   s_snd_resets.clear();
+}
+
+// Music players vs rollback (4 November 2026; Robert's friend session of 4 November: fast, crackly music from fight
+// 3 on one machine and fight 17 on the other; reproduced in the lab: 5-frame loopback, right after the KO of fight 2,
+// every time). The game keeps the handles of its two music players (EA's interactive music library, records at
+// 0x803DA114 + i * 0x928: +0x30 handle, +0x34 in use) and of the second player's sound bank in its music module
+// (0x80440AD0 main player, 0x8035D4E0 second player = KO / win stingers, 0x80440B24 its bank), which the rollback
+// rewinds, while the library itself (not rewound) keeps its own state. A rollback across the KO stinger's close
+// (0x800110AC: bank unload 0x801DFD40, player close 0x801D7DD0) brought the closed handle back and the re-simulation
+// closed it a second time. The library's close matches handles by their bits, so the second close of 0x11000002 hit
+// the main player 0x11000001's record (freed it, its music stream stayed open); the next song start (the match set-up
+// after the rematch: stop all -> close 0x11000001 = nothing left to close -> open) then opened the music stream again
+// while it was still registered: the stream sat twice in the stream table 0x803ECD68 (and its channel twice in
+// 0x803ECCC4), the mixer served it twice per pass -> the song used up twice as fast (fast, crackly, normal pitch, 2x
+// disc reads) until Dolphin was restarted, and every later music reset left stale notes (the audio-thread crash of
+// 25 / 29 October). Here the four calls are made idempotent: a close / bank unload of something the library does not
+// hold is skipped, an open of a player the library already holds is skipped with the game's handle words set as the
+// first run left them. FFNY_RB_NOPFGUARD=1 = off.
+static u32 s_pf_skips = 0, s_pf_skips_fight = 0;
+static u32 s_pf_bank2 = 0xFFFFFFFF;  // bank the second player got from its last real open (0x80440B24)
+static bool PfPlayerOpen(const u8* ram, u32 h)
+{
+  for (u32 i = 0; i < 4; i++)
+    if (Rd32(ram, 0x803DA148 + i * 0x928) != 0 && Rd32(ram, 0x803DA144 + i * 0x928) == h)
+      return true;
+  return false;
+}
+static void PfReport(const u8* ram, const char* what, u32 v)
+{
+  s_pf_skips_fight++;
+  if (s_pf_skips++ < 3)
+    Report(fmt::format("FFNY: music {} {:08x} skipped at frame {} (a rollback had undone what the library already did; "
+                       "without this the music would play twice as fast from now on)",
+                       what, v, Rd32(ram, W_FRAME)));
+}
+void HookPfClose(const Core::CPUThreadGuard& guard)  // Replace at 0x801D7DD0 (library player close, r3 = handle)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  const u32 h = ppc.gpr[3];
+  if (h != 0xFFFFFFFF && !PfPlayerOpen(ram, h))
+  {
+    PfReport(ram, "player close", h);
+    ppc.gpr[3] = 0;
+    ppc.npc = ppc.spr[SPR_LR];
+    return;
+  }
+  const u32 sp = ppc.gpr[1], nsp = sp - 0x20;  // the replaced stwu sp,-0x20(sp)
+  Wr32(ram, nsp, sp);
+  ppc.gpr[1] = nsp;
+  ppc.npc = 0x801D7DD4;
+}
+void HookPfBankUnload(const Core::CPUThreadGuard& guard)  // Replace at 0x800110D8 (bl 0x801DFD40, r3 = bank)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  const u32 id = ppc.gpr[3];
+  const u32 count = Rd32(ram, 0x803DE69C + 0x28) >> 16, table = Rd32(ram, 0x803DE69C + 0x1DC);
+  const bool loaded = id < count && (table & 0xFE000000) == 0x80000000 && ram[(table + id * 0xC + 8) & 0x01FFFFFF] != 0;
+  if (!loaded)
+  {
+    PfReport(ram, "bank unload", id);
+    ppc.gpr[3] = 0;  // the caller then marks the bank as gone (-1)
+    ppc.npc = 0x800110DC;
+    return;
+  }
+  ppc.spr[SPR_LR] = 0x800110DC;
+  ppc.npc = 0x801DFD40;
+}
+void HookPfOpen2(const Core::CPUThreadGuard& guard)  // Replace at 0x80010FD0 (bl 0x801D79D4 in 0x80010F5C)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  const u32 h = ppc.gpr[3];
+  if (PfPlayerOpen(ram, h))
+  {
+    PfReport(ram, "second player open", h);
+    Wr32(ram, 0x8035D4E0, ppc.gpr[31]);
+    if (s_pf_bank2 != 0xFFFFFFFF)
+      Wr32(ram, 0x80440B24, s_pf_bank2);
+    ppc.gpr[3] = 1;
+    ppc.npc = 0x80011028;  // the function's return (r3 = 1: started)
+    return;
+  }
+  ppc.spr[SPR_LR] = 0x80010FD4;
+  ppc.npc = 0x801D79D4;
+}
+void HookPfBank2Loaded(const Core::CPUThreadGuard& guard)  // Start hook at 0x80011004 (bank loaded, in 0x80440B24)
+{
+  s_pf_bank2 = Rd32(guard.GetSystem().GetMemory().GetRAM(), 0x80440B24);
+}
+void HookPfOpenMain(const Core::CPUThreadGuard& guard)  // Replace at 0x80010F1C (bl 0x801D79D4 in 0x80010EA0)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  const u32 h = ppc.gpr[3];
+  if (PfPlayerOpen(ram, h))
+  {
+    PfReport(ram, "main player open", h);
+    Wr32(ram, 0x80440AD0, ppc.gpr[31]);
+    ppc.gpr[28] = 1;
+    ppc.npc = 0x80010F44;  // the success path (r3 = r28 = 1)
+    return;
+  }
+  ppc.spr[SPR_LR] = 0x80010F20;
+  ppc.npc = 0x801D79D4;
 }
 
 // rbtag's post-allocation hook (called by the heap allocator for every allocation, r3 = info: +0x18 pointer)
