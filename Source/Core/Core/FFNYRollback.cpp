@@ -4154,6 +4154,88 @@ static void LabStreamConsume(const Core::CPUThreadGuard& guard);
 // bigger than everything buffered is dropped (it belongs to the old buffer), the rest runs as before. The original
 // game would crash the same way; with rollback the main thread's timing (re-simulations, frozen time) makes the race
 // much more likely. FFNY_RB_NOSTREAMGUARD=1 = off.
+static bool SmPtr(u32 a)
+{
+  return a >= 0x80000000 && a < 0x81800000;
+}
+// ---- Lab sound monitor (4 November 2026; FFNY_LAB_SNDMON=N = snapshot every N frames, default off) ----
+// Robert's friend session of 4 November: from some fight on, one machine's music stream was read from disc about twice
+// as often and ~183 stale "bytes played" notes followed every music reset (fast, crackly music, normal SFX). Counts
+// the notes per channel / kind and the bytes consumed per stream, and prints the channel / mixer / voice tables.
+static const u32 s_sndmon_every = std::getenv("FFNY_LAB_SNDMON") ? u32(std::max(1, atoi(std::getenv("FFNY_LAB_SNDMON")))) : 0;
+static u32 s_sndmon_next = 0;
+static u32 s_sndmon_notes[32][2], s_sndmon_notebytes[32];
+static std::map<u32, std::pair<u64, u64>> s_sndmon_stream;  // stream -> (consumes, bytes)
+static void SndMonNote(const u8* ram, u32 idx)
+{
+  const u32 e = 0x803EC9C4 + idx * 8;
+  const u32 kind = Rd32(ram, e) >> 16, ch = Rd32(ram, e) & 0xFFFF;
+  if (ch < 32)
+  {
+    s_sndmon_notes[ch][kind ? 1 : 0]++;
+    if (kind == 0)
+      s_sndmon_notebytes[ch] += Rd32(ram, e + 4);
+  }
+}
+static void SndMonConsume(const u8* ram, u32 st, u32 bytes)
+{
+  auto& v = s_sndmon_stream[st];
+  v.first++;
+  v.second += bytes;
+}
+static void SndMonTick(const u8* ram)
+{
+  if (s_sndmon_every == 0)
+    return;
+  const u32 f = Rd32(ram, W_FRAME);
+  if (f < s_sndmon_next && s_sndmon_next - f < 1000000)
+    return;
+  s_sndmon_next = f + s_sndmon_every;
+  const u32 nst = ram[0x803DE6E2 & 0x01FFFFFF];
+  std::string line = fmt::format("FFNYLAB SNDMON frame {} thread {:08x} streams {}:", f, Rd32(ram, 0x800000E4), nst);
+  for (const auto& [st, v] : s_sndmon_stream)
+    line += fmt::format(" st {:08x} {} consumes {} B;", st, v.first, v.second);
+  s_sndmon_stream.clear();
+  fprintf(stderr, "%s\n", line.c_str());
+  for (u32 ch = 0; ch < nst && ch < 32; ch++)
+  {
+    const u32 obj = Rd32(ram, 0x803ECCC4 + 4 * ch);
+    const u32 mx = Rd32(ram, 0x803DFD18 + 4 * ch);
+    std::string l = fmt::format("FFNYLAB SNDMON  ch {} obj {:08x}", ch, obj);
+    if (SmPtr(obj))
+      l += fmt::format(" h {:08x} sub {} cap {} w {} q {} left {} st {:08x} nsub {}", Rd32(ram, obj), s8(ram[(obj + 0x42) & 0x01FFFFFF]),
+                       s16(Rd32(ram, obj + 0x40) >> 16), u16(Rd32(ram, obj + 0x44)), Rd32(ram, obj + 0x48), s32(Rd32(ram, obj + 0x4C)),
+                       Rd32(ram, obj + 0x5C), ram[(obj + 0x62) & 0x01FFFFFF]);
+    l += fmt::format(" | mixer {:08x}", mx);
+    if (SmPtr(mx))
+    {
+      const s8 v = s8(ram[(mx + 0x2598) & 0x01FFFFFF]);
+      l += fmt::format(" slot {} half {} cnt {:02x} bound {:08x} halves {}/{} aram {:08x}", v, ram[(mx + 0x2599) & 0x01FFFFFF],
+                       ram[(mx + 0x259A) & 0x01FFFFFF], Rd32(ram, mx + 0x25B4), u16(Rd32(ram, mx + 0x25B8) >> 16),
+                       u16(Rd32(ram, mx + 0x25B8)), Rd32(ram, mx + 0x259C));
+      if (v >= 0)
+      {
+        const u32 vs = 0x803DE900 + u32(v) * 64;
+        const u32 vpb = Rd32(ram, vs + 0x3C);
+        l += fmt::format(" vslot {:08x} vpb {:08x}", vs, vpb);
+        if (SmPtr(vpb))
+          l += fmt::format(" pos {:04x}{:04x}", u16(Rd32(ram, vpb + 0x1B0)), u16(Rd32(ram, vpb + 0x1B4) >> 16));
+      }
+    }
+    l += fmt::format(" | notes {} bytes {} other {}", s_sndmon_notes[ch][0], s_sndmon_notebytes[ch], s_sndmon_notes[ch][1]);
+    s_sndmon_notes[ch][0] = s_sndmon_notes[ch][1] = s_sndmon_notebytes[ch] = 0;
+    fprintf(stderr, "%s\n", l.c_str());
+  }
+  std::string sl = "FFNYLAB SNDMON  streams:";
+  for (u32 i = 0; i < nst && i < 32; i++)
+  {
+    const u32 st = Rd32(ram, 0x803ECD68 + 4 * i);
+    if (SmPtr(st))
+      sl += fmt::format(" {}:{:08x} +4 {:08x} +8 {} active {} free {}", i, st, Rd32(ram, st + 4), s32(Rd32(ram, st + 8)),
+                        Rd32(ram, st + 0x124), Rd32(ram, st + 0x130));
+  }
+  fprintf(stderr, "%s\n", sl.c_str());
+}
 void HookStreamGuard(const Core::CPUThreadGuard& guard)
 {
   auto& system = guard.GetSystem();
@@ -4162,6 +4244,11 @@ void HookStreamGuard(const Core::CPUThreadGuard& guard)
   const u32 bytes = ppc.gpr[4], st = ppc.gpr[5];
   if (s_lab_streamcheck)
     LabStreamConsume(guard);
+  if (s_sndmon_every)
+  {
+    SndMonConsume(ram, st, bytes);
+    SndMonTick(ram);
+  }
   if ((st & 0xFE000000) == 0x80000000)
   {
     u64 sum = 0;
@@ -4355,6 +4442,8 @@ static void NoteDispatch(const Core::CPUThreadGuard& guard, u32 here)
   auto& ppc = system.GetPPCState();
   u8* ram = system.GetMemory().GetRAM();
   const u32 idx = ppc.gpr[31], obj = ppc.gpr[9];
+  if (s_sndmon_every && idx < 0x60)
+    SndMonNote(ram, idx);
   u32 val = 0;
   const char* why = (RamPtr(obj) && idx < 0x60) ? StaleNote(ram, idx, obj, &val) : nullptr;
   if (why != nullptr)
