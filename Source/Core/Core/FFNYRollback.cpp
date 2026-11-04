@@ -194,6 +194,7 @@ std::deque<SndCall> s_snd_q;
 std::deque<std::pair<SndCall, bool>> s_music_sent;  // music cues sent by first runs (+ matched in the current re-simulation)
 u32 s_music_deduped = 0, s_music_resent = 0, s_music_refused = 0;
 u32 s_stream_guard_skips = 0, s_stream_guard_fight = 0;  // sound stream notes dropped by HookStreamGuard (session / fight)
+u32 s_pf_skips = 0, s_pf_skips_fight = 0;  // music player calls skipped by HookPfClose etc. (session / fight)
 bool s_music_hold_old = std::getenv("FFNY_RB_MUSICHOLD") != nullptr;  // lab: the 153a233 behaviour (held until confirmed)
 bool s_snd_defer = false;     // hooks installed
 bool s_snd_trace = false, s_snd_hold_on = true;  // lab: FFNY_RB_SNDTRACE; FFNY_RB_NOSNDHOLD
@@ -1911,11 +1912,11 @@ static void MenusFightMarks(const u8* ram, u32 f)
                        "frames, {} frames re-simulated), {} waits for the other side ({:.1f} s), {} desyncs; lockstep "
                        "frames {} (game file loads incl. the fight start {}, music / speech stream reads {}, memory card "
                        "/ worker threads {}; {:.1f} s waiting), update starts during stream reads {}; other threads' "
-                       "random draws: {}; sound stream notes dropped {}",
+                       "random draws: {}; sound stream notes dropped {}; music player calls skipped {}",
                        s_fight_no, f, s_rollbacks, s_max_depth, s_resim_frames, s_waits, s_wait_us / 1e6,
                        s_desyncs_fight, s_lockstep_frames, s_ls_files, s_ls_stream, s_ls_other, s_lockstep_us / 1e6,
-                       s_fs_stream_only, SideDrawText(true), s_stream_guard_fight);
-    s_stream_guard_fight = 0;
+                       s_fs_stream_only, SideDrawText(true), s_stream_guard_fight, s_pf_skips_fight);
+    s_stream_guard_fight = s_pf_skips_fight = 0;
   }
   else
   {
@@ -2750,6 +2751,17 @@ void OnVIField(Core::System& system)
     if (s_card_on)
       for (size_t i = 0; i < CARD_FUNCS.size(); i++)
         HLE::Patch(system, CARD_FUNCS[i], "FFNYRollbackCard" + std::to_string(i));
+  }
+  // music players vs rollback (see HookPfClose)
+  if (std::getenv("FFNY_RB_NOPFGUARD") == nullptr && Rd32(ram, 0x801D7DD0) == 0x9421FFE0 &&
+      Rd32(ram, 0x800110D8) == 0x481CEC69 && Rd32(ram, 0x80010FD0) == 0x481C6A05 &&
+      Rd32(ram, 0x80010F1C) == 0x481C6AB9 && Rd32(ram, 0x80011004) == 0x80BE0B24)
+  {
+    HLE::Patch(system, 0x801D7DD0, "FFNYRollbackPfClose");
+    HLE::Patch(system, 0x800110D8, "FFNYRollbackPfBankUnload");
+    HLE::Patch(system, 0x80010FD0, "FFNYRollbackPfOpen2");
+    HLE::Patch(system, 0x80011004, "FFNYRollbackPfBank2Loaded");
+    HLE::Patch(system, 0x80010F1C, "FFNYRollbackPfOpenMain");
   }
   // deterministic file ids (see HookAfSetId)
   s_af_on = std::getenv("FFNY_RB_NOAFID") == nullptr && Rd32(ram, AF_SETID) == 0x812D8DCC &&
@@ -4274,6 +4286,133 @@ void HookNotesDone(const Core::CPUThreadGuard&)  // Start hook at 0x801E7370: th
   s_snd_resets.clear();
 }
 
+// Music players vs rollback (4 November 2026; Robert's friend session of 4 November: fast, crackly music from fight
+// 3 on one machine and fight 17 on the other; reproduced in the lab: 5-frame loopback, right after the KO of fight 2,
+// every time). The game keeps the handles of its two music players (EA's interactive music library, records at
+// 0x803DA114 + i * 0x928: +0x30 handle, +0x34 in use) and of the second player's sound bank in its music module
+// (0x80440AD0 main player, 0x8035D4E0 second player = KO / win stingers, 0x80440B24 its bank), which the rollback
+// rewinds, while the library itself (not rewound) keeps its own state. A rollback across the KO stinger's close
+// (0x800110AC: bank unload 0x801DFD40, player close 0x801D7DD0) brought the closed handle back and the re-simulation
+// closed it a second time. The library's close matches handles by their bits: 0x11000001 (music) and 0x11000002
+// (stinger) are sources 0 and 1 of the same player record; closing the already free source 1 found no source and
+// then freed every record of type 0x10000000 (0x801D85A8), the music's too, while its stream stayed open; the next song start (the match set-up
+// after the rematch: stop all -> close 0x11000001 = nothing left to close -> open) then opened the music stream again
+// while it was still registered: the stream sat twice in the stream table 0x803ECD68 (and its channel twice in
+// 0x803ECCC4), the mixer served it twice per pass -> the song used up twice as fast (fast, crackly, normal pitch, 2x
+// disc reads) until Dolphin was restarted, and every later music reset left stale notes (the audio-thread crash of
+// 25 / 29 October). Here the four calls are made idempotent: a close / bank unload of something the library does not
+// hold is skipped, an open of a player the library already holds is skipped with the game's handle words set as the
+// first run left them. FFNY_RB_NOPFGUARD=1 = off.
+static u32 s_pf_bank2 = 0xFFFFFFFF, s_pf_bank2_data = 0;  // bank the second player got at its last real open (0x80440B24)
+// Does the library hold what handle h names? A handle = type bits 0xF0000000 | player bits 0x0F000000 | one bit per
+// source (0..23); a player record (0x803DA114 + i * 0x928: +0x30 its type / player bits, +0x34 in use, +0x58 + 4 * k
+// source k, 0 = free) matches like in the library's close 0x801D7DD0, and the named source must be in use.
+static bool PfPlayerOpen(const u8* ram, u32 h)
+{
+  for (u32 i = 0; i < 4; i++)
+  {
+    const u32 rec = 0x803DA114 + i * 0x928, rh = Rd32(ram, rec + 0x30);
+    if (Rd32(ram, rec + 0x34) == 0 || (rh & 0xF0000000 & h) == 0 || (rh & 0x0F000000 & h) == 0)
+      continue;
+    for (u32 k = 0; k < 24; k++)
+      if (((h >> k) & 1) && Rd32(ram, rec + 0x58 + 4 * k) != 0)
+        return true;
+  }
+  return false;
+}
+static void PfReport(const u8* ram, const char* what, u32 v)
+{
+  s_pf_skips_fight++;
+  fprintf(stderr, "FFNYRB: music %s %08x skipped at frame %u (%s)\n", what, v, Rd32(ram, W_FRAME),
+          s_resim_target != 0 ? "re-simulation" : "first run");
+  if (s_pf_skips++ < 3)
+    Report(fmt::format("FFNY: music {} {:08x} skipped at frame {} (a rollback had undone what the library already did; "
+                       "without this the music would play twice as fast from now on)",
+                       what, v, Rd32(ram, W_FRAME)));
+}
+void HookPfClose(const Core::CPUThreadGuard& guard)  // Replace at 0x801D7DD0 (library player close, r3 = handle)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  const u32 h = ppc.gpr[3];
+  if (h != 0xFFFFFFFF && !PfPlayerOpen(ram, h))
+  {
+    PfReport(ram, "player close", h);
+    ppc.gpr[3] = 0;
+    ppc.npc = ppc.spr[SPR_LR];
+    return;
+  }
+  const u32 sp = ppc.gpr[1], nsp = sp - 0x20;  // the replaced stwu sp,-0x20(sp)
+  Wr32(ram, nsp, sp);
+  ppc.gpr[1] = nsp;
+  ppc.npc = 0x801D7DD4;
+}
+void HookPfBankUnload(const Core::CPUThreadGuard& guard)  // Replace at 0x800110D8 (bl 0x801DFD40, r3 = bank)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  const u32 id = ppc.gpr[3];
+  const u32 count = Rd32(ram, 0x803DE69C + 0x28) >> 16, table = Rd32(ram, 0x803DE69C + 0x1DC);
+  // loaded = the entry's data pointer is set (like the library's own check 0x801DFED0); for the stinger's bank also
+  // the same data as when it was loaded (a freed id may have been given to another bank since)
+  const u32 data = (id < count && (table & 0xFE000000) == 0x80000000) ? Rd32(ram, table + id * 0xC) : 0;
+  const bool loaded = data != 0 && !(id == s_pf_bank2 && s_pf_bank2_data != 0 && data != s_pf_bank2_data);
+  if (!loaded)
+  {
+    PfReport(ram, "bank unload", id);
+    ppc.gpr[3] = 0;  // the caller then marks the bank as gone (-1)
+    ppc.npc = 0x800110DC;
+    return;
+  }
+  ppc.spr[SPR_LR] = 0x800110DC;
+  ppc.npc = 0x801DFD40;
+}
+void HookPfOpen2(const Core::CPUThreadGuard& guard)  // Replace at 0x80010FD0 (bl 0x801D79D4 in 0x80010F5C)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  const u32 h = ppc.gpr[3];
+  if (PfPlayerOpen(ram, h))
+  {
+    PfReport(ram, "second player open", h);
+    Wr32(ram, 0x8035D4E0, ppc.gpr[31]);
+    if (s_pf_bank2 != 0xFFFFFFFF)
+      Wr32(ram, 0x80440B24, s_pf_bank2);
+    ppc.gpr[3] = 1;
+    ppc.npc = 0x80011028;  // the function's return (r3 = 1: started)
+    return;
+  }
+  ppc.spr[SPR_LR] = 0x80010FD4;
+  ppc.npc = 0x801D79D4;
+}
+void HookPfBank2Loaded(const Core::CPUThreadGuard& guard)  // Start hook at 0x80011004 (bank loaded, in 0x80440B24)
+{
+  const u8* ram = guard.GetSystem().GetMemory().GetRAM();
+  s_pf_bank2 = Rd32(ram, 0x80440B24);
+  const u32 count = Rd32(ram, 0x803DE69C + 0x28) >> 16, table = Rd32(ram, 0x803DE69C + 0x1DC);
+  s_pf_bank2_data = (s_pf_bank2 < count && (table & 0xFE000000) == 0x80000000) ? Rd32(ram, table + s_pf_bank2 * 0xC) : 0;
+}
+void HookPfOpenMain(const Core::CPUThreadGuard& guard)  // Replace at 0x80010F1C (bl 0x801D79D4 in 0x80010EA0)
+{
+  auto& system = guard.GetSystem();
+  auto& ppc = system.GetPPCState();
+  u8* ram = system.GetMemory().GetRAM();
+  const u32 h = ppc.gpr[3];
+  if (PfPlayerOpen(ram, h))
+  {
+    PfReport(ram, "main player open", h);
+    Wr32(ram, 0x80440AD0, ppc.gpr[31]);
+    ppc.gpr[28] = 1;
+    ppc.npc = 0x80010F44;  // the success path (r3 = r28 = 1)
+    return;
+  }
+  ppc.spr[SPR_LR] = 0x80010F20;
+  ppc.npc = 0x801D79D4;
+}
+
 // rbtag's post-allocation hook (called by the heap allocator for every allocation, r3 = info: +0x18 pointer)
 void HookSysAlloc(const Core::CPUThreadGuard& guard)
 {
@@ -4423,9 +4562,9 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
                "rollback state %u (at most %u frames after the file system was busy)",
                s_fs_episodes, LOAD_TAIL, s_lockstep_tail, s_conv_out, s_conv_gap_max);
       line += e;
-      snprintf(e, sizeof e, "; sound events held %u, sent %u, dropped %u (hold %s); music cues not repeated %u; sound stream notes dropped %u",
-               s_snd_held, s_snd_sent, s_snd_dropped, SndModeName(), s_music_deduped, s_stream_guard_fight);
-      s_stream_guard_fight = 0;
+      snprintf(e, sizeof e, "; sound events held %u, sent %u, dropped %u (hold %s); music cues not repeated %u; sound stream notes dropped %u; music player calls skipped %u",
+               s_snd_held, s_snd_sent, s_snd_dropped, SndModeName(), s_music_deduped, s_stream_guard_fight, s_pf_skips_fight);
+      s_stream_guard_fight = s_pf_skips_fight = 0;
       line += e;
       snprintf(e, sizeof e, "; reads finished at once %u; SysHeap blocks of thrown-away frames freed %u%s", s_fs_instant,
                s_sys_freed, s_sys_free_overflow ? (" (" + std::to_string(s_sys_free_overflow) + " left: free log full)").c_str() : "");

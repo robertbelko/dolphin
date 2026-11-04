@@ -114,6 +114,11 @@ void HookStreamReset(const Core::CPUThreadGuard& guard);    // 0x801E8BCC, sound
 void HookNoteDispatch0(const Core::CPUThreadGuard& guard);  // 0x801E7344, sound note handler call
 void HookNoteDispatch1(const Core::CPUThreadGuard& guard);  // 0x801E735C
 void HookNotesDone(const Core::CPUThreadGuard& guard);      // 0x801E7370
+void HookPfClose(const Core::CPUThreadGuard& guard);        // 0x801D7DD0, music player close
+void HookPfBankUnload(const Core::CPUThreadGuard& guard);   // 0x800110D8
+void HookPfOpen2(const Core::CPUThreadGuard& guard);        // 0x80010FD0
+void HookPfBank2Loaded(const Core::CPUThreadGuard& guard);  // 0x80011004
+void HookPfOpenMain(const Core::CPUThreadGuard& guard);     // 0x80010F1C
 void HookSndExtra(const Core::CPUThreadGuard& guard);  // more music wrappers, held the same way  // 0x80011108 music event send
 void HookSndTrAccept(const Core::CPUThreadGuard& guard);  // lab sound trace
 void HookSndTrMusRes(const Core::CPUThreadGuard& guard);
