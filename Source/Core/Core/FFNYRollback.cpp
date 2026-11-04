@@ -4551,7 +4551,7 @@ void HookNotesDone(const Core::CPUThreadGuard&)  // Start hook at 0x801E7370: th
 // hold is skipped, an open of a player the library already holds is skipped with the game's handle words set as the
 // first run left them. FFNY_RB_NOPFGUARD=1 = off.
 static u32 s_pf_skips = 0, s_pf_skips_fight = 0;
-static u32 s_pf_bank2 = 0xFFFFFFFF;  // bank the second player got from its last real open (0x80440B24)
+static u32 s_pf_bank2 = 0xFFFFFFFF, s_pf_bank2_data = 0;  // bank the second player got at its last real open (0x80440B24)
 // Does the library hold what handle h names? A handle = type bits 0xF0000000 | player bits 0x0F000000 | one bit per
 // source (0..23); a player record (0x803DA114 + i * 0x928: +0x30 its type / player bits, +0x34 in use, +0x58 + 4 * k
 // source k, 0 = free) matches like in the library's close 0x801D7DD0, and the named source must be in use.
@@ -4571,6 +4571,8 @@ static bool PfPlayerOpen(const u8* ram, u32 h)
 static void PfReport(const u8* ram, const char* what, u32 v)
 {
   s_pf_skips_fight++;
+  fprintf(stderr, "FFNYRB: music %s %08x skipped at frame %u (%s)\n", what, v, Rd32(ram, W_FRAME),
+          s_resim_target != 0 ? "re-simulation" : "first run");
   if (s_pf_skips++ < 3)
     Report(fmt::format("FFNY: music {} {:08x} skipped at frame {} (a rollback had undone what the library already did; "
                        "without this the music would play twice as fast from now on)",
@@ -4601,7 +4603,10 @@ void HookPfBankUnload(const Core::CPUThreadGuard& guard)  // Replace at 0x800110
   u8* ram = system.GetMemory().GetRAM();
   const u32 id = ppc.gpr[3];
   const u32 count = Rd32(ram, 0x803DE69C + 0x28) >> 16, table = Rd32(ram, 0x803DE69C + 0x1DC);
-  const bool loaded = id < count && (table & 0xFE000000) == 0x80000000 && ram[(table + id * 0xC + 8) & 0x01FFFFFF] != 0;
+  // loaded = the entry's data pointer is set (like the library's own check 0x801DFED0); for the stinger's bank also
+  // the same data as when it was loaded (a freed id may have been given to another bank since)
+  const u32 data = (id < count && (table & 0xFE000000) == 0x80000000) ? Rd32(ram, table + id * 0xC) : 0;
+  const bool loaded = data != 0 && !(id == s_pf_bank2 && s_pf_bank2_data != 0 && data != s_pf_bank2_data);
   if (!loaded)
   {
     PfReport(ram, "bank unload", id);
@@ -4633,7 +4638,10 @@ void HookPfOpen2(const Core::CPUThreadGuard& guard)  // Replace at 0x80010FD0 (b
 }
 void HookPfBank2Loaded(const Core::CPUThreadGuard& guard)  // Start hook at 0x80011004 (bank loaded, in 0x80440B24)
 {
-  s_pf_bank2 = Rd32(guard.GetSystem().GetMemory().GetRAM(), 0x80440B24);
+  const u8* ram = guard.GetSystem().GetMemory().GetRAM();
+  s_pf_bank2 = Rd32(ram, 0x80440B24);
+  const u32 count = Rd32(ram, 0x803DE69C + 0x28) >> 16, table = Rd32(ram, 0x803DE69C + 0x1DC);
+  s_pf_bank2_data = (s_pf_bank2 < count && (table & 0xFE000000) == 0x80000000) ? Rd32(ram, table + s_pf_bank2 * 0xC) : 0;
 }
 void HookPfOpenMain(const Core::CPUThreadGuard& guard)  // Replace at 0x80010F1C (bl 0x801D79D4 in 0x80010EA0)
 {
