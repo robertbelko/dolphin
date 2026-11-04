@@ -4183,16 +4183,18 @@ static void SndMonConsume(const u8* ram, u32 st, u32 bytes)
   v.first++;
   v.second += bytes;
 }
-static void SndMonTick(const u8* ram)
+static u64 s_sndmon_next_tick = 0;
+static void SndMonTick(Core::System& system, const u8* ram)
 {
   if (s_sndmon_every == 0)
     return;
-  const u32 f = Rd32(ram, W_FRAME);
-  if (f < s_sndmon_next && s_sndmon_next - f < 1000000)
+  const u64 t = system.GetCoreTiming().GetTicks();
+  if (t < s_sndmon_next_tick)
     return;
-  s_sndmon_next = f + s_sndmon_every;
+  s_sndmon_next_tick = t + u64(s_sndmon_every) * 8100000ULL;  // 486 MHz / 60
+  const u32 f = Rd32(ram, W_FRAME);
   const u32 nst = ram[0x803DE6E2 & 0x01FFFFFF];
-  std::string line = fmt::format("FFNYLAB SNDMON frame {} thread {:08x} streams {}:", f, Rd32(ram, 0x800000E4), nst);
+  std::string line = fmt::format("FFNYLAB SNDMON frame {} ctr {} vsec {:.1f} streams {}:", f, Rd32(ram, ADDR_COUNTER), t / 486e6, nst);
   for (const auto& [st, v] : s_sndmon_stream)
     line += fmt::format(" st {:08x} {} consumes {} B;", st, v.first, v.second);
   s_sndmon_stream.clear();
@@ -4200,7 +4202,7 @@ static void SndMonTick(const u8* ram)
   for (u32 ch = 0; ch < nst && ch < 32; ch++)
   {
     const u32 obj = Rd32(ram, 0x803ECCC4 + 4 * ch);
-    const u32 mx = Rd32(ram, 0x803DFD18 + 4 * ch);
+    const u32 mx = Rd32(ram, 0x803E1D18 + 4 * ch);
     std::string l = fmt::format("FFNYLAB SNDMON  ch {} obj {:08x}", ch, obj);
     if (SmPtr(obj))
       l += fmt::format(" h {:08x} sub {} cap {} w {} q {} left {} st {:08x} nsub {}", Rd32(ram, obj), s8(ram[(obj + 0x42) & 0x01FFFFFF]),
@@ -4215,7 +4217,7 @@ static void SndMonTick(const u8* ram)
                        u16(Rd32(ram, mx + 0x25B8)), Rd32(ram, mx + 0x259C));
       if (v >= 0)
       {
-        const u32 vs = 0x803DE900 + u32(v) * 64;
+        const u32 vs = 0x803E0900 + u32(v) * 64;
         const u32 vpb = Rd32(ram, vs + 0x3C);
         l += fmt::format(" vslot {:08x} vpb {:08x}", vs, vpb);
         if (SmPtr(vpb))
@@ -4247,7 +4249,7 @@ void HookStreamGuard(const Core::CPUThreadGuard& guard)
   if (s_sndmon_every)
   {
     SndMonConsume(ram, st, bytes);
-    SndMonTick(ram);
+    SndMonTick(system, ram);
   }
   if ((st & 0xFE000000) == 0x80000000)
   {
