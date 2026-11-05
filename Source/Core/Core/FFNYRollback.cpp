@@ -166,6 +166,60 @@ Transport* s_transport = nullptr;
 // frame up to it); input messages always restart there, so any number of lost packets is repaired by one
 u32 s_ack[4][4] = {};
 u32 s_input_msgs_in = 0, s_input_msgs_stale = 0;  // stats
+// 5 November: where the waits of a fight come from (count, microseconds): 0 file loads (incl. the fight start), 1 music
+// / speech stream reads, 2 memory card / worker threads / menus, 3 not in lockstep = this machine was more than
+// max_rollback frames ahead of the other side's inputs (the rollback limit)
+u32 s_wait_n[4] = {};
+u64 s_wait_c_us[4] = {};
+// how early the other side's inputs arrive: margin = frame the input is for - this machine's frame when it arrived
+// (>= 1: in time; <= 0: the frame had already run with a predicted input), real fight frames only, -24..+24 clamped
+u32 s_margin_hist[49] = {};
+static void ResetWaitStats()
+{
+  for (int i = 0; i < 4; i++)
+    s_wait_n[i] = 0, s_wait_c_us[i] = 0;
+  for (u32& v : s_margin_hist)
+    v = 0;
+}
+// for the fight-over line: waits by cause and how early the other side's inputs arrived, with the input delay that
+// would have had them in time (so the players can pick the delay for their connection)
+static std::string WaitText()
+{
+  static const char* names[4] = {"file loads", "music / speech stream reads", "memory card / worker threads",
+                                 "rollback limit (too far ahead of the other side)"};
+  std::string t = "; waits by cause:";
+  for (int i = 0; i < 4; i++)
+    t += fmt::format("{} {} {} ({:.2f} s)", i ? "," : "", names[i], s_wait_n[i], s_wait_c_us[i] / 1e6);
+  u32 n = 0;
+  for (u32 v : s_margin_hist)
+    n += v;
+  if (!n)
+    return t;
+  auto pct = [&](double q) {  // margin below which a fraction q of the inputs arrived
+    u32 c = 0;
+    for (int i = 0; i < 49; i++)
+    {
+      c += s_margin_hist[i];
+      if (c >= q * n)
+        return i - 24;
+    }
+    return 24;
+  };
+  u32 late = 0;
+  for (int i = 0; i <= 24; i++)
+    late += s_margin_hist[i];
+  const s32 d = s32(s_settings.input_delay);
+  const s32 p50 = pct(0.5), p10 = pct(0.1), p1 = pct(0.01);
+  auto when = [](s32 m) {  // m = margin; m - 1 frames early (0 = just in time)
+    return m - 1 >= 0 ? fmt::format("{} frames early", m - 1) : fmt::format("{} frames late", 1 - m);
+  };
+  t += fmt::format("; the other side's inputs arrived {} (median; the latest 10 % {} or later, the latest 1 % {} or "
+                   "later), {:.0f} % too late for the first run (input delay {}; in time for half of them would take "
+                   "input delay {}, for 90 % input delay {})",
+                   when(p50), when(p10), when(p1), 100.0 * late / n, d, std::max(0, d + 1 - p50),
+                   std::max(0, d + 1 - p10));
+  return t;
+}
 // time synchronisation: the newest current frame each remote player reported, and how far ahead of us it
 // believed it was. Our own estimate f - remote frame is too large by the one-way latency, the remote's estimate
 // too; the difference of the two is twice the real lead.
@@ -965,6 +1019,8 @@ void OnRemoteInput(int port, u32 f, const u8* rec)
   fi.frame = f;
   fi.have = true;
   memcpy(fi.rec.data(), rec, REC_SIZE);
+  if (s_real_fight_now && s_frame_now >= s_start_frame)
+    s_margin_hist[std::clamp(s32(f) - s32(s_frame_now), -24, 24) + 24]++;
   while (true)
   {
     const u32 nf = s_confirmed[port] + 1;
@@ -1937,6 +1993,7 @@ static void MenusFightMarks(const u8* ram, u32 f)
                        s_fight_no, f, s_rollbacks, s_max_depth, s_resim_frames, s_waits, s_wait_us / 1e6,
                        s_desyncs_fight, s_lockstep_frames, s_ls_files, s_ls_stream, s_ls_other, s_lockstep_us / 1e6,
                        s_fs_stream_only, SideDrawText(true));
+    line += WaitText();
   }
   else
   {
@@ -1954,6 +2011,7 @@ static void MenusFightMarks(const u8* ram, u32 f)
   s_fight_from = f;
   s_rollbacks = s_resim_frames = s_max_depth = s_waits = 0;
   s_wait_us = 0;
+  ResetWaitStats();
   s_lockstep_frames = 0;
   s_lockstep_us = 0;
   s_ls_files = s_ls_stream = s_ls_other = s_fs_stream_only = 0;
@@ -2100,6 +2158,7 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   }
   s_loader_undo.clear();
   s_rollbacks = s_resim_frames = s_max_depth = s_waits = s_frames = 0;
+  ResetWaitStats();
   s_wait_us = s_save_us = s_load_us = 0;
   s_max_acq = s_max_rel = s_max_frl = 0;
   s_diag_heap_reported = false;
@@ -4816,6 +4875,7 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
       snprintf(e, sizeof e, "; sound events held %u, sent %u, dropped %u (hold %s); music cues not repeated %u",
                s_snd_held, s_snd_sent, s_snd_dropped, SndModeName(), s_music_deduped);
       line += e;
+      line += WaitText();
       snprintf(e, sizeof e, "; reads finished at once %u; SysHeap blocks of thrown-away frames freed %u%s", s_fs_instant,
                s_sys_freed, s_sys_free_overflow ? (" (" + std::to_string(s_sys_free_overflow) + " left: free log full)").c_str() : "");
       line += e;
@@ -6040,6 +6100,10 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     s_wait_us += us;
     if (lockstep)
       s_lockstep_us += us;
+    const int cause = !lockstep ? 3 : (s_settings.load_lockstep && fight && f <= s_fs_last_busy + LOAD_TAIL) ? 0 :
+                      stream_lock ? 1 : 2;
+    s_wait_n[cause]++;
+    s_wait_c_us[cause] += us;
   }
 
   // Menus mode (28 October): rbtag's "fight" word decides whether frees of its tagged main-heap blocks by other

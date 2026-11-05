@@ -152,7 +152,12 @@ static constexpr u32 s_static_ranges[][2] = {
   {0x80430084, 0x804300E0},
   {0x804301AC, 0x804301B4},
   {0x804301BC, 0x804301F0},
-  {0x80433C48, 0x8043F614},
+  {0x80433C48, 0x8043A1DC},
+  // 0x8043A1DC-0x8043A5FC: the sound library's instance registry (24 pointers + 24 x 0x28-byte records; register
+  // 0x800CF800 from the library open 0x801D7D70, unregister 0x800CF9EC from the close 0x801D7E28). It belongs to the
+  // library (not rewound) - rewound, a rollback across a music / stinger open emptied the slot of a source the library
+  // still held, and the next close read through the empty slot: invalid read 00000064 at 0x800CFA10 (lab, 5 November)
+  {0x8043A5FC, 0x8043F614},
   {0x8043F62C, 0x8043FB28},
   {0x8043FB40, 0x8043FB44},
   {0x8043FB60, 0x8043FBB0},
