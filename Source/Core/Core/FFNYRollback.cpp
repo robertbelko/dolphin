@@ -1425,6 +1425,7 @@ void StressCheck(const u8* ram, u32 f, bool first)
 
 // rbtag v4 words (sound reference bookkeeping; see rbtag.c)
 constexpr u32 W_CONF = 0x8049A40C, W_ACT = 0x8049B500, W_FRAME = 0x8049B504, W_RB = 0x8049B508;
+static u32 s_rbconf_hi = 0, s_rbconf_warn = 0;  // rbtag's final frame as last written (RbConf)
 // set to 1 by HookMatchUpdate, read and cleared at every update start: "the match update ran in the previous update".
 // In emulated RAM (free word of rbtag's area, which rollback never rewinds), so a resync carries it: both machines then
 // agree on it at the next update even if the host paused a little later inside that update than the client.
@@ -2004,6 +2005,7 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_snd_q.clear();
   s_snd_held = s_snd_sent = s_snd_dropped = 0;
   Wr32(ram, W_CONF, f - 1);
+  s_rbconf_hi = 0;
   Wr32(ram, W_RB, 0);
   Wr32(ram, W_FRAME, f);
   Wr32(ram, W_ACT, 1);
@@ -2911,7 +2913,8 @@ void OnVIField(Core::System& system)
   {
     TMemCheck mc;
     mc.start_address = u32(strtoul(w, nullptr, 16));
-    mc.end_address = mc.start_address + 3;
+    const char* colon = strchr(w, ':');  // FFNY_RB_WATCHW=hexaddr[:hexlen]
+    mc.end_address = mc.start_address + (colon ? u32(strtoul(colon + 1, nullptr, 16)) : 4) - 1;
     mc.is_ranged = true;
     mc.is_break_on_write = true;
     mc.log_on_hit = true;
@@ -3222,7 +3225,7 @@ bool OnMemCheck(Core::System& system, u32 addr, u64 value, u32 pc, bool write)
   if (!std::getenv("FFNY_RB_WATCHW"))
     return false;
   const u8* ram = system.GetMemory().GetRAM();
-  if (!s_active)
+  if (!s_active && !std::getenv("FFNY_RB_WATCHANY"))
     return true;
   static u32 n = 0;
   if (n++ > 200000)
@@ -4909,6 +4912,19 @@ static u32 SndReadyUpTo(u32 f)
   return std::min(MinConfirmed(), f - 1);
 }
 
+// rbtag's "final" frame (W_CONF): sound-reference releases, dropped acquires and SndHeap / SysHeap frees of frames up
+// to it are done for good, so it must never reach a frame a later rewind can still go back to. Before 5 November it
+// was min(MinConfirmed, f - 1): right in netplay (a rewind never goes back to a confirmed frame), wrong in the lab's
+// stress mode, where every frame counts as confirmed at once (no remote player) but forced rewinds go back up to N
+// frames: a release done for good was then done again by the re-simulation -> a sound object freed while the audio
+// thread still used it -> broken SndHeap free list (heap 2, lab 4 / 5 November, frames 17687 and 19414). Same bound
+// as the held sound calls (SndReadyUpTo).
+static void RbConf(u8* ram, u32 conf)
+{
+  Wr32(ram, W_CONF, conf);
+  s_rbconf_hi = conf;
+}
+
 static void SndDropFrom(u32 s)
 {
   for (auto& e : s_music_sent)
@@ -5690,7 +5706,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     Inject(ram, tick_obj, f);
     SaveState(system, f);
     LoaderDropConfirmed(std::min(MinConfirmed(), f - 1), f, ram);
-    Wr32(ram, W_CONF, std::min(MinConfirmed(), f - 1));
+    RbConf(ram, SndReadyUpTo(f));
     Wr32(ram, W_FRAME, f);
     DrainSysPending(ram);
     s_resim_frames++;
@@ -6140,13 +6156,16 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
       Inject(ram, ppc.gpr[28], s);
       SaveState(system, s);
       {
+        if (s <= s_rbconf_hi && s_rbconf_warn++ < 5)
+          fprintf(stderr, "FFNYRB: rewind to frame %u goes back across frame %u, which rbtag already counted as final "
+                          "(its sound references / heap frees were done for good)\n", s, s_rbconf_hi);
         const u32 old = Rd32(ram, W_RB);
         Wr32(ram, W_RB, old ? std::min(old, s + 1) : s + 1);
         FreeThrownSysAllocs(ram, s);
         DrainSysPending(ram);
         SndDropFrom(s);
         AfRewind(ram, s);
-        Wr32(ram, W_CONF, std::min(MinConfirmed(), s - 1));
+        RbConf(ram, SndReadyUpTo(s));
         Wr32(ram, W_FRAME, s);
       }
       s_resim_frames++;
@@ -6175,7 +6194,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   SaveState(system, f);
   s_stall_now = false;
   LoaderDropConfirmed(std::min(MinConfirmed(), f - 1), f, ram);
-  Wr32(ram, W_CONF, std::min(MinConfirmed(), f - 1));
+  RbConf(ram, SndReadyUpTo(f));
   Wr32(ram, W_FRAME, f);
   DrainSysPending(ram);
   if (f > s_hashed_upto && MinConfirmed() >= f)
