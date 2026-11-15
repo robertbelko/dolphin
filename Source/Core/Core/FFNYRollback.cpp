@@ -282,6 +282,97 @@ u32 s_time_base = 0, s_time_dt = 0;  // game timing object 0x8035D618: +8 VI cou
 u32 s_frames = 0, s_rollbacks = 0, s_resim_frames = 0, s_max_depth = 0, s_waits = 0;
 u64 s_wait_us = 0, s_save_us = 0, s_load_us = 0;
 u32 s_desyncs = 0, s_hash_checked = 0;
+
+// Per-fight timing (15 November, Robert: the game dips under 100 % with low input delays): where the real time of each
+// fight frame goes. A "front" is the first run of a new fight frame (not a re-simulation); between two fronts the
+// machine waited for inputs, re-simulated after a rollback (state load + replayed updates + their saves), saved the
+// state of the new frame and ran / drew the frame itself. A frame slower than 60 fps (> 115 % of 16.683 ms) is put down
+// to the biggest of these four parts.
+constexpr u64 PERF_FRAME_US = 16683;
+struct PerfStats
+{
+  u64 save_first_us = 0, save_resim_us = 0, load_us = 0, resim_us = 0, wait_us = 0, wall_us = 0, lost_us = 0;
+  u32 saves_first = 0, saves_resim = 0, loads = 0, frames = 0, slow = 0, worst_us = 0, worst_frame = 0;
+  int worst_cause = 0;
+  std::array<u64, 4> lost_by{};
+  std::array<u32, 4> slow_by{};
+  std::array<u32, 4> bucket{};  // frame times: <= 20 ms, 20-33 ms, 33-50 ms, > 50 ms
+};
+PerfStats s_perf;
+u32 s_perf_front = 0;
+bool s_perf_have = false;
+std::chrono::steady_clock::time_point s_perf_t;
+std::array<u64, 3> s_perf_snap{};
+std::chrono::steady_clock::time_point s_resim_t0;
+bool s_resim_timing = false;
+constexpr const char* PERF_CAUSE[4] = {"waiting for the other side's inputs", "rollback re-simulation",
+                                       "saving the state", "running / drawing the frame itself"};
+
+static void PerfFront(u32 f)
+{
+  const auto now = std::chrono::steady_clock::now();
+  const std::array<u64, 3> cur = {s_perf.wait_us, s_perf.resim_us, s_perf.save_first_us};
+  if (s_perf_have && f == s_perf_front + 1)
+  {
+    const u64 iv = u64(std::chrono::duration_cast<std::chrono::microseconds>(now - s_perf_t).count());
+    s_perf.frames++;
+    s_perf.wall_us += iv;
+    s_perf.bucket[iv <= 20000 ? 0 : iv <= 33367 ? 1 : iv <= 50050 ? 2 : 3]++;
+    if (iv > PERF_FRAME_US * 115 / 100)
+    {
+      std::array<u64, 4> d = {cur[0] - s_perf_snap[0], cur[1] - s_perf_snap[1], cur[2] - s_perf_snap[2], 0};
+      const u64 known = d[0] + d[1] + d[2];
+      d[3] = iv > known ? iv - known : 0;
+      int c = 0;
+      for (int k = 1; k < 4; k++)
+        if (d[k] > d[c])
+          c = k;
+      const u64 lost = iv - PERF_FRAME_US;
+      s_perf.slow++;
+      s_perf.lost_us += lost;
+      s_perf.lost_by[c] += lost;
+      s_perf.slow_by[c]++;
+      if (iv > s_perf.worst_us)
+      {
+        s_perf.worst_us = u32(iv);
+        s_perf.worst_frame = f - 1;
+        s_perf.worst_cause = c;
+      }
+    }
+  }
+  s_perf_have = true;
+  s_perf_front = f;
+  s_perf_t = now;
+  s_perf_snap = cur;
+}
+
+static void PerfReset()
+{
+  s_perf = PerfStats{};
+  s_perf_have = false;
+}
+
+static std::string PerfText(u32 resim_frames)
+{
+  const PerfStats& p = s_perf;
+  if (!p.frames)
+    return "; timing: no fight frames measured";
+  std::string t = fmt::format(
+      "; timing: {} fight frames, average speed {:.0f} %, frame times <= 20 ms {} / 20-33 ms {} / 33-50 ms {} / over 50 ms "
+      "{}; {} frames slower than 60 fps, {:.2f} s lost in them (",
+      p.frames, p.wall_us ? 100.0 * p.frames * PERF_FRAME_US / p.wall_us : 0.0, p.bucket[0], p.bucket[1], p.bucket[2],
+      p.bucket[3], p.slow, p.lost_us / 1e6);
+  for (int k = 0; k < 4; k++)
+    t += fmt::format("{}{} {} frames / {:.2f} s", k ? ", " : "", PERF_CAUSE[k], p.slow_by[k], p.lost_by[k] / 1e6);
+  t += fmt::format("); slowest frame {:.1f} ms at frame {} ({}); costs: state save {:.2f} ms per frame ({} saves), "
+                   "rollback {:.2f} ms per re-simulated frame incl. the state load {:.2f} ms ({} loads) and its saves "
+                   "{:.2f} ms, waiting {:.2f} s",
+                   p.worst_us / 1000.0, p.worst_frame, PERF_CAUSE[p.worst_cause],
+                   p.saves_first ? p.save_first_us / 1000.0 / p.saves_first : 0.0, p.saves_first,
+                   resim_frames ? p.resim_us / 1000.0 / resim_frames : 0.0, p.loads ? p.load_us / 1000.0 / p.loads : 0.0,
+                   p.loads, p.saves_resim ? p.save_resim_us / 1000.0 / p.saves_resim : 0.0, p.wait_us / 1e6);
+  return t;
+}
 u32 s_desyncs_fight = 0;  // desyncs since this fight started (the chat gets the first 3 of every fight)
 bool s_log = false;
 u32 s_stress = 0;
@@ -849,9 +940,20 @@ void SaveState(Core::System& system, u32 frame)
   s.ctr = ppc.spr[SPR_CTR];
   for (int i = 0; i < 8; i++)
     s.gqr[i] = ppc.spr[SPR_GQR0 + i];
-  s_save_us += std::chrono::duration_cast<std::chrono::microseconds>(
-                   std::chrono::steady_clock::now() - t0)
-                   .count();
+  const u64 save_us = u64(std::chrono::duration_cast<std::chrono::microseconds>(
+                              std::chrono::steady_clock::now() - t0)
+                              .count());
+  s_save_us += save_us;
+  if (s_resim_target)
+  {
+    s_perf.save_resim_us += save_us;
+    s_perf.saves_resim++;
+  }
+  else
+  {
+    s_perf.save_first_us += save_us;
+    s_perf.saves_first++;
+  }
 }
 
 bool LoadState(Core::System& system, u32 frame)
@@ -894,9 +996,12 @@ bool LoadState(Core::System& system, u32 frame)
     if (bad && bad_reports++ < 20)
       fprintf(stderr, "FFNYRB HEAPCHECK load frame %u: bad block %08x (kind %u)\n", frame, bad & ~3u, bad & 3);
   }
-  s_load_us += std::chrono::duration_cast<std::chrono::microseconds>(
-                   std::chrono::steady_clock::now() - t0)
-                   .count();
+  const u64 load_us = u64(std::chrono::duration_cast<std::chrono::microseconds>(
+                              std::chrono::steady_clock::now() - t0)
+                              .count());
+  s_load_us += load_us;
+  s_perf.load_us += load_us;
+  s_perf.loads++;
   return true;
 }
 
@@ -1984,6 +2089,7 @@ static void MenusFightMarks(const u8* ram, u32 f)
                        s_desyncs_fight, s_lockstep_frames, s_ls_files, s_ls_stream, s_ls_other, s_lockstep_us / 1e6,
                        s_fs_stream_only, SideDrawText(true), s_stream_guard_fight, s_pf_skips_fight);
     line += WaitText();
+    line += PerfText(s_resim_frames);
     if (s_ls_other)
     {
       // which worker kept the fight in lockstep (15 November: whole fights in lockstep from a wrongly learned idle wait)
@@ -2013,6 +2119,7 @@ static void MenusFightMarks(const u8* ram, u32 f)
   s_rollbacks = s_resim_frames = s_max_depth = s_waits = 0;
   s_wait_us = 0;
   ResetWaitStats();
+  PerfReset();
   s_lockstep_frames = 0;
   s_lockstep_us = 0;
   s_ls_files = s_ls_stream = s_ls_other = s_fs_stream_only = 0;
@@ -2160,6 +2267,7 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_loader_undo.clear();
   s_rollbacks = s_resim_frames = s_max_depth = s_waits = s_frames = 0;
   ResetWaitStats();
+  PerfReset();
   s_wait_us = s_save_us = s_load_us = 0;
   s_max_acq = s_max_rel = s_max_frl = 0;
   s_diag_heap_reported = false;
@@ -4649,6 +4757,7 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
       s_stream_guard_fight = s_pf_skips_fight = 0;
       line += e;
       line += WaitText();
+      line += PerfText(s_resim_frames);
       snprintf(e, sizeof e, "; reads finished at once %u; SysHeap blocks of thrown-away frames freed %u%s", s_fs_instant,
                s_sys_freed, s_sys_free_overflow ? (" (" + std::to_string(s_sys_free_overflow) + " left: free log full)").c_str() : "");
       line += e;
@@ -5609,6 +5718,15 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
                 Rd32(ram, t + 0x84), Rd32(ram, t + 0x308), Rd32(ram, t + 0x304));
   }
   const bool caught_up = s_resim_target != 0;  // f == target: this frame's local input is known
+  if (caught_up && s_resim_timing)
+  {
+    s_perf.resim_us += u64(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() -
+                                                                                   s_resim_t0)
+                               .count());
+    s_resim_timing = false;
+  }
+  if (!caught_up && s_real_fight_now)
+    PerfFront(f);
   s_resim_target = 0;
   if (caught_up)
     system.GetCoreTiming().SetFrozen(false);  // the re-simulation is over: emulated time runs again
@@ -5891,6 +6009,8 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
                        std::chrono::steady_clock::now() - wait_start)
                        .count();
     s_wait_us += us;
+    if (s_real_fight_now)
+      s_perf.wait_us += us;
     if (lockstep)
       s_lockstep_us += us;
     const int cause = !lockstep ? 3 : (s_settings.load_lockstep && fight && f <= s_fs_last_busy + LOAD_TAIL) ? 0 :
@@ -5927,8 +6047,11 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   {
     const u32 s = std::max(s_mispredict_from, s_start_frame);
     s_mispredict_from = 0xFFFFFFFF;
+    const auto rb_t0 = std::chrono::steady_clock::now();
     if (s < f && LoadState(system, s))
     {
+      s_resim_t0 = rb_t0;
+      s_resim_timing = true;
       if (!s_diag_heap_reported)
       {
         // a list broken right here was broken by the restore itself (or was broken in the saved state)
