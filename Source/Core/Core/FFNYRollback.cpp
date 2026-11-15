@@ -1544,6 +1544,8 @@ bool s_af_on = false;  // deterministic async file ids (HookAfSetId)
 // Workers = threads other than the main thread with priority >= 5 (the file system 2, audio 1, the per-frame pump 4
 // are not: their work is either instant for the logic or handled elsewhere).
 std::map<u32, u32> s_idle_wait;  // worker thread -> what it waits on when idle
+std::map<u32, std::map<u32, u32>> s_wait_seen;  // worker thread -> wait object -> update starts seen asleep on it
+u32 s_idle_relearned = 0;
 u32 s_async_last = 0, s_async_busy_frames = 0, s_async_barriers = 0, s_async_aborts = 0;
 u32 s_async_last_thread = 0;
 bool s_async_on = false;
@@ -1982,6 +1984,16 @@ static void MenusFightMarks(const u8* ram, u32 f)
                        s_desyncs_fight, s_lockstep_frames, s_ls_files, s_ls_stream, s_ls_other, s_lockstep_us / 1e6,
                        s_fs_stream_only, SideDrawText(true), s_stream_guard_fight, s_pf_skips_fight);
     line += WaitText();
+    if (s_ls_other)
+    {
+      // which worker kept the fight in lockstep (15 November: whole fights in lockstep from a wrongly learned idle wait)
+      const u32 bt = s_async_last_thread;
+      const auto it = s_idle_wait.find(bt);
+      line += fmt::format("; memory card / worker lockstep: last busy worker {:08x} (asleep on {:08x}, idle wait "
+                          "{:08x}), idle waits relearned so far {}",
+                          bt, bt ? Rd32(ram, bt + 0x2DC) : 0, it != s_idle_wait.end() ? it->second : 0,
+                          s_idle_relearned);
+    }
     s_stream_guard_fight = s_pf_skips_fight = 0;
   }
   else
@@ -4598,6 +4610,7 @@ static void EndFight(Core::System& system, u8* ram, u32 f, const std::string& fo
   AfEnd(ram);
   s_music_sent.clear();
   s_idle_wait.clear();
+  s_wait_seen.clear();
   s_fs_main_queued = false;
   fprintf(stderr, "FFNYRB file ids: %u virtual opens, %u objects of thrown-away frames returned (%u busy), %u releases taken back, %u done after confirmation; %u reads of other threads hurried for the logic\n",
           s_af_opened, s_af_orphans, s_af_busy_orphans, s_af_unfreed, s_af_freed, s_fs_hurried);
@@ -5181,9 +5194,55 @@ static bool CardLocked(u32 f)
 static void LearnIdleWaits(const u8* ram)
 {
   s_idle_wait.clear();
+  s_wait_seen.clear();
   for (u32 t = Rd32(ram, 0x800000DC), k = 0; t && k < 64; t = Rd32(ram, t + 0x2FC), k++)
     if (t != 0x80432D10 && s32(Rd32(ram, t + 0x2D0)) >= 5 && (Rd32(ram, t + 0x2C8) >> 16) == 4)
+    {
       s_idle_wait[t] = Rd32(ram, t + 0x2DC);
+      s_wait_seen[t][s_idle_wait[t]] = 1;
+    }
+}
+
+// Idle waits relearned (15 November): the idle waits above are learned once, at the first update of a rollback session.
+// If a worker was in the middle of a job right then (e.g. the fight loader at the start of the first fight), its job
+// wait was stored as "idle" and the worker counted as busy at every later update start - whole fights in lockstep
+// (Robert's two-Dolphin sessions: 1531 of 1561 / 3405 of 3542 fight frames, 0 rollbacks). Now every update start
+// counts where each worker sleeps; a wait seen more than twice as often as the stored one plus RELEARN_MARGIN, and
+// that looks like a worker waiting for its next job (asleep in OSReceiveMessage on an EMPTY message queue: wait object =
+// queue + 8, the thread at the head or tail of that queue's receive list), becomes the idle wait. A real job (waiting
+// for a file read, the card, a reply that has not come) never qualifies: its queue is not empty or it is no queue wait.
+constexpr u32 RELEARN_MARGIN = 60;
+static bool LooksLikeIdleReceive(const u8* ram, u32 t, u32 w)
+{
+  if (w < 0x80000008 || w >= 0x81800000)
+    return false;
+  const u32 q = w - 8;
+  const u32 arr = Rd32(ram, q + 0x10);
+  const s32 cnt = s32(Rd32(ram, q + 0x14)), first = s32(Rd32(ram, q + 0x18)), used = s32(Rd32(ram, q + 0x1C));
+  return arr >= 0x80000000 && arr < 0x81800000 && cnt >= 1 && cnt <= 4096 && first >= 0 && first < cnt && used == 0 &&
+         (Rd32(ram, w) == t || Rd32(ram, w + 4) == t);
+}
+static void SampleWorkerWaits(const u8* ram, u32 f)
+{
+  for (auto& [t, idle] : s_idle_wait)
+  {
+    if ((Rd32(ram, t + 0x2C8) >> 16) != 4)
+      continue;
+    const u32 w = Rd32(ram, t + 0x2DC);
+    auto& seen = s_wait_seen[t];
+    const u32 n = ++seen[w];
+    if (w != idle && n > 2 * seen[idle] + RELEARN_MARGIN && LooksLikeIdleReceive(ram, t, w))
+    {
+      s_idle_relearned++;
+      const std::string line =
+          fmt::format("FFNY worker thread {:08x}: idle wait relearned at frame {} ({:08x} -> {:08x}; it had been "
+                      "counted busy while waiting there)",
+                      t, f, idle, w);
+      fprintf(stderr, "FFNYRB %s\n", line.c_str());
+      LogLine(line);
+      idle = w;
+    }
+  }
 }
 static u32 BusyWorker(const u8* ram)
 {
@@ -5666,8 +5725,8 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
             per += fmt::format(" {:08x}:{}", CARD_FUNCS[i], s_card_fn_calls[i]);
         fprintf(stderr, "FFNYRB memory card calls per function:%s; device commands %u\n", per.c_str(), g_card_activity);
       }
-      fprintf(stderr, "FFNYRB worker threads: %zu known, busy at %u update starts (last frame %u, thread %08x), %u messages to them, %u frames abandoned\n",
-              s_idle_wait.size(), s_async_busy_frames, s_async_last, s_async_last_thread, s_async_barriers, s_async_aborts);
+      fprintf(stderr, "FFNYRB worker threads: %zu known, busy at %u update starts (last frame %u, thread %08x), %u messages to them, %u frames abandoned, %u idle waits relearned\n",
+              s_idle_wait.size(), s_async_busy_frames, s_async_last, s_async_last_thread, s_async_barriers, s_async_aborts, s_idle_relearned);
       fprintf(stderr, "FFNYRB lockstep outside the fight: %u frames; barrier calls with a late misprediction %u\n", s_menu_lock_frames, s_barrier_late);
       fprintf(stderr, "FFNYRB logic counter stalls: %u (last at frame %u)\n", s_stalls, s_stall_guard);
       fprintf(stderr, "FFNYRB music cues: %u not sent again in re-simulations, %u sent by re-simulations, %u refused by the player (the logic got 1)\n", s_music_deduped, s_music_resent, s_music_refused);
@@ -5721,6 +5780,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   {
     if (s_idle_wait.empty())
       LearnIdleWaits(ram);
+    SampleWorkerWaits(ram, f);
     if (const u32 bt = BusyWorker(ram))
     {
       s_async_last = std::max(s_async_last, f);
