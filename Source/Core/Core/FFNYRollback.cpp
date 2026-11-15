@@ -1610,6 +1610,15 @@ const u32 s_stream_tail = std::getenv("FFNY_RB_STREAMTAIL") ? u32(std::atoi(std:
 u32 s_fs_stream_last = 0;           // newest frame where the file system served only the music / speech streams
 u32 s_fs_stream_only = 0;           // update starts where the file system served only the music / speech streams
 u32 s_ls_files = 0, s_ls_stream = 0, s_ls_other = 0;  // lockstep frames of the fight by cause
+// 16 November: "memory card / worker threads" split by what really caused it (Robert's 22:27 fight: 8231 frames there,
+// 0 rollbacks) - the card, a busy worker thread, logic counter stalls, or the match update not running (pause menu)
+u32 s_ls_card = 0, s_ls_worker = 0, s_ls_stall = 0, s_ls_nomatch = 0;
+u32 s_lsx_lines = 0, s_card_fight_lines = 0;  // lockstep-stretch / card-call log lines this fight (capped)
+char s_lsx_cause = 0;
+bool s_lsx_logged = false;
+u32 s_lsx_from = 0, s_lsx_last = 0;
+u32 s_card_last_fn = 0, s_card_last_thread = 0, s_card_last_lr = 0, s_card_last_call_frame = 0;
+u32 s_card_dev_frame = 0, s_card_dev_fight = 0;
 static bool FsBusyForLogic(const u8* ram)
 {
   auto counts = [&](u32 node) {
@@ -2099,6 +2108,10 @@ static void MenusFightMarks(const u8* ram, u32 f)
                           "{:08x}), idle waits relearned so far {}",
                           bt, bt ? Rd32(ram, bt + 0x2DC) : 0, it != s_idle_wait.end() ? it->second : 0,
                           s_idle_relearned);
+      line += fmt::format("; memory card / worker threads lockstep by cause: memory card {}, worker threads busy {}, "
+                          "logic counter stalls {}, match update not running (pause menu, KO / results) {}; memory "
+                          "card device commands in this fight {}",
+                          s_ls_card, s_ls_worker, s_ls_stall, s_ls_nomatch, s_card_dev_fight);
     }
     s_stream_guard_fight = s_pf_skips_fight = 0;
   }
@@ -2123,6 +2136,9 @@ static void MenusFightMarks(const u8* ram, u32 f)
   s_lockstep_frames = 0;
   s_lockstep_us = 0;
   s_ls_files = s_ls_stream = s_ls_other = s_fs_stream_only = 0;
+  s_ls_card = s_ls_worker = s_ls_stall = s_ls_nomatch = 0;
+  s_lsx_lines = s_card_fight_lines = s_card_dev_fight = 0;
+  s_lsx_cause = 0;
   LogLine(line);
   if (s_report_cb)
     s_report_cb(line);
@@ -2282,6 +2298,9 @@ void StartFight(u8* ram, u32 tick_obj, u32 f)
   s_lockstep_frames = 0;
   s_lockstep_us = 0;
   s_ls_files = s_ls_stream = s_ls_other = s_fs_stream_only = 0;
+  s_ls_card = s_ls_worker = s_ls_stall = s_ls_nomatch = 0;
+  s_lsx_lines = s_card_fight_lines = s_card_dev_fight = 0;
+  s_lsx_cause = 0;
   s_conv_warned = false;
   s_min_free2 = s_min_free3 = 0xFFFFFFFF;
   s_min_free3_frame = s_min_free3_largest = s_min_free3_nodes = 0;
@@ -2484,6 +2503,19 @@ static void WatchdogLoop()
       resync_reported = false;
     }
     const u64 c = s_pre_count.load();
+    {
+      // 16 November: Robert's host wrote nothing for 7 minutes (22:18) - say when Dolphin itself pauses / resumes
+      static Core::State shown = Core::State::Running;
+      const Core::State st = Core::GetState(system);
+      if ((s_active || s_menus_on) && st != shown && (st == Core::State::Paused || st == Core::State::Running))
+      {
+        if (st == Core::State::Paused || shown == Core::State::Paused)
+          LogLine(fmt::format("FFNY: emulation {} by Dolphin (frame {})",
+                             st == Core::State::Paused ? "PAUSED" : "running again",
+                             Rd32(system.GetMemory().GetRAM(), ADDR_COUNTER)));
+        shown = st;
+      }
+    }
     const bool watch = (s_active || s_menus_on) && Core::GetState(system) == Core::State::Running && !s_resync_waiting;
     if (c != last || !watch)
     {
@@ -5366,6 +5398,72 @@ static u32 BusyWorker(const u8* ram)
 }
 
 
+static std::string ThreadChain(const u8* ram, u32 t)
+{
+  u32 sp = Rd32(ram, t + 4);
+  std::string ch;
+  for (int k = 0; k < 10 && (sp & 0xFE000000) == 0x80000000; k++)
+  {
+    const u32 nsp = Rd32(ram, sp);
+    if ((nsp & 0xFE000000) != 0x80000000)
+      break;
+    ch += fmt::format(" {:08x}", Rd32(ram, nsp + 4));
+    sp = nsp;
+  }
+  return ch;
+}
+
+// 16 November: one log line when a stretch of "memory card / worker threads" lockstep starts during a match (and one
+// when it ends), saying what caused it - at most 40 lines per fight. cause: c card, w worker, s stall, m no match update
+static void LockstepStretch(const u8* ram, u32 f, char cause)
+{
+  if (cause == s_lsx_cause)
+  {
+    if (cause)
+      s_lsx_last = f;
+    return;
+  }
+  const bool in_fight_loop = Rd32(ram, ADDR_FIGHT) == 1;
+  if (s_lsx_cause && s_lsx_logged && s_lsx_lines < 40)
+  {
+    s_lsx_lines++;
+    LogLine(fmt::format("FFNY lockstep stretch ended at frame {}: {} frames", s_lsx_last, s_lsx_last - s_lsx_from + 1));
+  }
+  s_lsx_cause = cause;
+  s_lsx_from = s_lsx_last = f;
+  s_lsx_logged = false;
+  if (!cause || !in_fight_loop || s_lsx_lines >= 40)
+    return;
+  std::string why;
+  if (cause == 'm')
+    why = fmt::format("the match update did not run in the previous update (pause menu, KO scene, results); fight "
+                      "flags {:x}", Rd32(ram, ADDR_FIGHT_FLAGS));
+  else if (cause == 's')
+    why = fmt::format("logic counter stall (the update ran again without moving the frame counter), stalls so far {}",
+                      s_stalls);
+  else if (cause == 'w')
+  {
+    const u32 t = s_async_last_thread;
+    const auto it = s_idle_wait.find(t);
+    why = fmt::format("worker thread {:08x} busy (state {}, asleep on {:08x}, idle wait {:08x}, pc {:08x}, lr {:08x}, "
+                      "calls{}); last busy at frame {}",
+                      t, t ? Rd32(ram, t + 0x2C8) >> 16 : 0, t ? Rd32(ram, t + 0x2DC) : 0,
+                      it != s_idle_wait.end() ? it->second : 0, t ? Rd32(ram, t + 0x198) : 0, t ? Rd32(ram, t + 0x84) : 0,
+                      t ? ThreadChain(ram, t) : std::string(), s_async_last);
+  }
+  else
+    why = fmt::format("memory card: last card call {:08x} from {:08x} on thread {:08x} at frame {}, last card device "
+                      "command at frame {}, device commands this fight {}",
+                      s_card_last_fn, s_card_last_lr, s_card_last_thread, s_card_last_call_frame, s_card_dev_frame,
+                      s_card_dev_fight);
+  {
+    s_lsx_lines++;
+    s_lsx_logged = true;
+    LogLine(fmt::format("FFNY lockstep stretch starts at frame {} ({}): {}", f, cause == 'm' ? "no match update" :
+                        cause == 's' ? "stall" : cause == 'w' ? "worker thread" : "memory card", why));
+  }
+}
+
 // wait until all inputs up to f are known; if one was mispredicted, roll back from here (true: rolled back)
 static bool BarrierWait(Core::System& system, u8* ram, u32 f, const char* what)
 {
@@ -5468,6 +5566,19 @@ void HookCardBarrierN(const Core::CPUThreadGuard& guard)
     if (s_log && s_card_fn_calls[I] <= 3)
       fprintf(stderr, "FFNYRB CARD %08x frame %u thread %08x lr %08x r3 %08x\n", CARD_FUNCS[I], f, Rd32(ram, 0x800000E4),
               ppc.spr[SPR_LR], ppc.gpr[3]);
+    s_card_last_fn = CARD_FUNCS[I];
+    s_card_last_thread = Rd32(ram, 0x800000E4);
+    s_card_last_lr = ppc.spr[SPR_LR];
+    s_card_last_call_frame = f;
+    if (s_real_fight_now && s_card_fight_lines < 20)
+    {
+      // 16 November: the card is normally never used during a fight - log it when it is
+      s_card_fight_lines++;
+      LogLine(fmt::format("FFNY memory card call during the fight at frame {}: function {:08x} from {:08x}, thread "
+                          "{:08x}{}",
+                          f, CARD_FUNCS[I], ppc.spr[SPR_LR], Rd32(ram, 0x800000E4),
+                          s_resim_target ? " (re-simulation)" : ""));
+    }
     s_card_last = std::max(s_card_last, f);
     if (Rd32(ram, 0x800000E4) == 0x80432D10 && s_phase == 'U')
     {
@@ -5924,6 +6035,9 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
   }
   if (g_card_activity != s_card_seen)
   {
+    if (s_real_fight_now)
+      s_card_dev_fight += g_card_activity - s_card_seen;
+    s_card_dev_frame = f;
     s_card_seen = g_card_activity;
     if (s_card_on)
       s_card_last = std::max(s_card_last, f > 0 ? f - 1 : 0);
@@ -5951,10 +6065,24 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     else if (stream_lock)
       s_ls_stream++;
     else
+    {
       s_ls_other++;
+      char cause;
+      if (menu_lock)
+        cause = 'm', s_ls_nomatch++;
+      else if (s_stall_guard && f <= s_stall_guard + 1)
+        cause = 's', s_ls_stall++;
+      else if (s_async_on && s_async_last && f <= s_async_last + ASYNC_TAIL)
+        cause = 'w', s_ls_worker++;
+      else
+        cause = 'c', s_ls_card++;
+      LockstepStretch(ram, f, cause);
+    }
     if (f > s_fs_last_busy && f > s_start_frame + START_LOCKSTEP)
       s_lockstep_tail++;  // only because of the tail: the file system is idle and no conversion is this recent
   }
+  if (!(lockstep && !(s_settings.load_lockstep && fight && f <= s_fs_last_busy + LOAD_TAIL) && !stream_lock))
+    LockstepStretch(ram, f, 0);
   s_wait_where = "waiting for the other side's inputs (start of an update)";
   while (true)
   {
