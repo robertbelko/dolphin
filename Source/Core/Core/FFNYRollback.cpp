@@ -247,6 +247,9 @@ struct SndCall
 std::deque<SndCall> s_snd_q;
 std::deque<std::pair<SndCall, bool>> s_music_sent;  // music cues sent by first runs (+ matched in the current re-simulation)
 u32 s_music_deduped = 0, s_music_resent = 0, s_music_refused = 0;
+// 16 November: the last music cue handed to the music player (for the "refused" log line in HookSndMusicResult)
+u32 s_last_cue_ev = 0, s_last_cue_frame = 0, s_refused_lines = 0;
+bool s_last_cue_resim = false;
 u32 s_stream_guard_skips = 0, s_stream_guard_fight = 0;  // sound stream notes dropped by HookStreamGuard (session / fight)
 u32 s_pf_skips = 0, s_pf_skips_fight = 0;  // music player calls skipped by HookPfClose etc. (session / fight)
 bool s_music_hold_old = std::getenv("FFNY_RB_MUSICHOLD") != nullptr;  // lab: the 153a233 behaviour (held until confirmed)
@@ -5057,6 +5060,7 @@ static void SndHook(const Core::CPUThreadGuard& guard, u32 fn)
     {
       s_music_sent.push_back({c, false});
       log_cue("sent (first run)");
+      s_last_cue_ev = ev, s_last_cue_frame = c.frame, s_last_cue_resim = false;
       SndExecOriginal(ram, ppc, fn);
       return;
     }
@@ -5078,6 +5082,7 @@ static void SndHook(const Core::CPUThreadGuard& guard, u32 fn)
     s_music_sent.push_back({c, true});
     s_music_resent++;
     log_cue("sent by a re-simulation (the first run did not send it)");
+    s_last_cue_ev = ev, s_last_cue_frame = c.frame, s_last_cue_resim = true;
     SndExecOriginal(ram, ppc, fn);
     return;
   }
@@ -5268,7 +5273,17 @@ void HookSndMusicResult(const Core::CPUThreadGuard& guard)
   if (s_active && Rd32(ram, 0x800000E4) == 0x80432D10)
   {
     if (ppc.gpr[3] != 1)
+    {
       s_music_refused++;
+      // 16 November (Robert's fight-11 gap: no fight music for ~4 s after the intro, then the fight instrumental from
+      // its start): a cue the music player did not take is lost - the game drops refused cues anyway, and here it is
+      // also told the cue was taken (see above)
+      if (s_refused_lines++ < 100)
+        LogLine(fmt::format("FFNY music cue {:04x} at frame {} REFUSED by the music player (answer {}, {}); the cue "
+                            "is lost (the game does not send it again)",
+                            s_last_cue_ev, s_last_cue_frame, s32(ppc.gpr[3]),
+                            s_last_cue_resim ? "re-simulation" : "first run"));
+    }
     ppc.gpr[3] = 1;
   }
   ppc.gpr[0] = Rd32(ram, ppc.gpr[1] + 12);  // lwz r0,12(r1)
