@@ -1662,6 +1662,7 @@ std::map<u32, std::map<u32, u32>> s_wait_seen;  // worker thread -> wait object 
 u32 s_idle_relearned = 0;
 u32 s_async_last = 0, s_async_busy_frames = 0, s_async_barriers = 0, s_async_aborts = 0;
 u32 s_async_last_thread = 0;
+char s_async_last_src = 0;  // 16 November: 'b' = the worker was busy at an update start, 's' = the logic sent it a message
 bool s_async_on = false;
 constexpr u32 ASYNC_TAIL = 2;
 bool s_card_on = false;
@@ -5047,7 +5048,9 @@ static void SndHook(const Core::CPUThreadGuard& guard, u32 fn)
     static u32 cue_logged = 0;
     const u32 ev = c.r[0] & 0xFFFF;  // 0x80011108 uses only (s16)r3
     auto log_cue = [&](const char* what) {
-      if (cue_logged++ < 400)
+      // 16 November: cues 15 / 16 = the music is turned down while a streamed voice line plays / back up (0x80039AD8,
+      // Robert's 1-2 s music gaps): always logged, also after the first 400 cues
+      if (cue_logged++ < 400 || ev == 0x000F || ev == 0x0010)
         LogLine(fmt::format("FFNY music cue {:04x} ({:08x}) at frame {}: {}", ev, fn, c.frame, what));
     };
     if (!s_resim_target)
@@ -5445,9 +5448,10 @@ static void LockstepStretch(const u8* ram, u32 f, char cause)
   {
     const u32 t = s_async_last_thread;
     const auto it = s_idle_wait.find(t);
-    why = fmt::format("worker thread {:08x} busy (state {}, asleep on {:08x}, idle wait {:08x}, pc {:08x}, lr {:08x}, "
-                      "calls{}); last busy at frame {}",
-                      t, t ? Rd32(ram, t + 0x2C8) >> 16 : 0, t ? Rd32(ram, t + 0x2DC) : 0,
+    why = fmt::format("worker thread {:08x} {} (state {}, asleep on {:08x}, idle wait {:08x}, pc {:08x}, lr {:08x}, "
+                      "calls{}); last at frame {}",
+                      t, s_async_last_src == 's' ? "was sent a message by the logic (barrier), not seen busy" : "busy",
+                      t ? Rd32(ram, t + 0x2C8) >> 16 : 0, t ? Rd32(ram, t + 0x2DC) : 0,
                       it != s_idle_wait.end() ? it->second : 0, t ? Rd32(ram, t + 0x198) : 0, t ? Rd32(ram, t + 0x84) : 0,
                       t ? ThreadChain(ram, t) : std::string(), s_async_last);
   }
@@ -5531,6 +5535,7 @@ void HookAsyncSend(const Core::CPUThreadGuard& guard)
         {
           s_async_last = std::max(s_async_last, f);
           s_async_last_thread = t;
+          s_async_last_src = 's';
           if (BarrierWait(system, ram, f, "message to a worker thread"))
           {
             s_async_aborts++;
@@ -6014,6 +6019,7 @@ void HookPreUpdate(const Core::CPUThreadGuard& guard)
     {
       s_async_last = std::max(s_async_last, f);
       s_async_last_thread = bt;
+      s_async_last_src = 'b';
       s_async_busy_frames++;
       if (s_log && s_async_busy_frames % 25 == 1)
       {
